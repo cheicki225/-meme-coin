@@ -44,6 +44,17 @@ async def get_ai_verdict(dev_address: str, backtest_result: dict, regularity: di
     Retourne : {"verdict": "GO"|"CAUTION"|"AVOID", "reasoning": str, "provider": str}
     ou None si aucune clé IA n'est configurée (pas d'appel réseau dans ce cas).
     """
+    # DÉSACTIVÉ suite à une demande explicite — coupé ici (point d'entrée
+    # unique de ce module) plutôt que dans chaque appelant, pour garantir
+    # qu'AUCUN appel à Claude/Grok ne se fait plus nulle part dans le bot,
+    # que ce soit automatiquement (main.py, évaluation d'un nouveau dev) ou
+    # manuellement (bouton "📈 Score IA" dans Telegram, qui affichera
+    # simplement "Aucun avis IA disponible"). Ne dépend plus du toggle
+    # IA ON/OFF ni des clés API présentes ou non — retour immédiat, sans
+    # appel réseau, sans consommer de quota. Pour réactiver : supprimer ce
+    # bloc (les 3 lignes ci-dessous) et redéployer.
+    return None
+
     if not config.ANTHROPIC_API_KEY and not config.GROK_API_KEY:
         return None
 
