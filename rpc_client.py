@@ -98,7 +98,7 @@ async def rpc_post(payload: dict, timeout: int = 12) -> dict:
     return {}
 
 
-async def _try_endpoint(url: str, payload: dict, timeout: int):
+async def _try_endpoint(url: str, payload: dict, timeout: int, max_retries: int = 3):
     """
     CORRIGÉ suite à un vrai échec répété et non diagnosticable de
     getTransfersByAddress : les erreurs étaient loggées en niveau "debug"
@@ -111,28 +111,60 @@ async def _try_endpoint(url: str, payload: dict, timeout: int):
     survenaient même avec un cadencement local dans une seule fonction,
     parce que d'autres parties du script consommaient du quota en parallèle
     sans coordination entre elles.
+
+    CORRIGÉ (3e fois) suite à une vague d'échecs "Internal error" (-32603)
+    et de timeouts observés en conditions réelles : cette fonction n'avait
+    AUCUN nouvel essai — chaque échec, même transitoire (un simple hoquet
+    passager côté Helius sous forte charge), était traité comme définitif et
+    abandonné immédiatement, causant des trous de données évitables ("données
+    indisponibles" en cascade). Réessaie maintenant jusqu'à 2 fois de plus
+    (max_retries=3 au total), avec un court délai croissant entre chaque
+    tentative — mais UNIQUEMENT pour les erreurs qui ont une chance réelle
+    d'être temporaires (timeout, erreur serveur -32603/HTTP 5xx) ; les
+    erreurs de paramètres invalides (ex: -32602) ne sont PAS réessayées,
+    puisque réessayer ne changerait rien à un mauvais paramètre.
     """
     if not url:
         return None
 
-    await _rate_limiter.wait_if_needed()
-
     method = payload.get("method", "?")
-    try:
-        async with aiohttp.ClientSession(connector=get_http_connector(), connector_owner=False) as session:
-            async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
-                if resp.status != 200:
-                    body = await resp.text()
-                    print(f"⚠️  RPC '{method}' -> statut HTTP {resp.status} : {body[:300]}")
-                    return None
-                data = await resp.json()
-                if "error" in data:
-                    print(f"⚠️  RPC '{method}' -> erreur JSON-RPC : {data['error']}")
-                    return None
-                return data.get("result")
-    except asyncio.TimeoutError:
-        print(f"⚠️  RPC '{method}' -> timeout après {timeout}s")
-        return None
-    except Exception as e:
-        print(f"⚠️  RPC '{method}' -> exception : {type(e).__name__}: {e}")
-        return None
+    last_error_was_transient = True
+
+    for attempt in range(max_retries):
+        await _rate_limiter.wait_if_needed()
+        try:
+            async with aiohttp.ClientSession(connector=get_http_connector(), connector_owner=False) as session:
+                async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
+                    if resp.status >= 500:
+                        body = await resp.text()
+                        print(f"⚠️  RPC '{method}' -> statut HTTP {resp.status} (essai {attempt + 1}/{max_retries}) : {body[:200]}")
+                        last_error_was_transient = True
+                    elif resp.status != 200:
+                        body = await resp.text()
+                        print(f"⚠️  RPC '{method}' -> statut HTTP {resp.status} : {body[:300]}")
+                        return None  # erreur non-serveur (4xx) — pas la peine de réessayer
+                    else:
+                        data = await resp.json()
+                        if "error" in data:
+                            error_code = data["error"].get("code") if isinstance(data["error"], dict) else None
+                            # -32603 (Internal error) et "timeout" dans le message sont
+                            # traités comme transitoires ; le reste (ex: -32602 Invalid
+                            # param) est définitif, pas la peine de réessayer.
+                            is_transient = error_code == -32603 or "timeout" in str(data["error"]).lower()
+                            print(f"⚠️  RPC '{method}' -> erreur JSON-RPC (essai {attempt + 1}/{max_retries}) : {data['error']}")
+                            if not is_transient:
+                                return None
+                            last_error_was_transient = True
+                        else:
+                            return data.get("result")
+        except asyncio.TimeoutError:
+            print(f"⚠️  RPC '{method}' -> timeout après {timeout}s (essai {attempt + 1}/{max_retries})")
+            last_error_was_transient = True
+        except Exception as e:
+            print(f"⚠️  RPC '{method}' -> exception : {type(e).__name__}: {e}")
+            return None  # exception inattendue — pas la peine de réessayer à l'aveugle
+
+        if attempt < max_retries - 1:
+            await asyncio.sleep(0.5 * (attempt + 1))  # 0.5s, puis 1s
+
+    return None

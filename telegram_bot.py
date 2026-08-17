@@ -995,6 +995,18 @@ class SniperTelegramBot:
                 symbol = (pair_data.get("baseToken") or {}).get("symbol")
                 url = pair_data.get("url")
                 mc = pair_data.get("marketCap") or pair_data.get("fdv")
+                # CORRIGÉ suite à un vrai signalement : cette liste n'utilisait
+                # QUE DexScreener pour le nom/MC — qui n'a aucune donnée pour
+                # un token encore sur la bonding curve (jamais migré), càd la
+                # quasi-totalité des tokens créés par un dev ordinaire. Repli
+                # sur la lecture bonding curve on-chain (même méthode que
+                # paper_trader.py pour le prix d'achat) quand DexScreener est
+                # vide — au moins le market cap redevient disponible, même
+                # sans nom de token (pas dans la bonding curve elle-même).
+                if not mc:
+                    onchain = await backtest.get_bonding_curve_price(pt["token_mint"])
+                    if onchain and not onchain.get("complete"):
+                        mc = onchain.get("market_cap_usd")
                 if symbol and url:
                     name_display = f"[{symbol}]({url})"
                 elif symbol:
@@ -1062,8 +1074,46 @@ class SniperTelegramBot:
                 f"Financeur commun : `{cluster_info['funder'][:12]}...`\n"
                 f"Adresses ⭐ trouvées (ont déjà créé un token) : `{len(starred)}`\n"
             )
-            for s in starred[:12]:
-                text += f"   ⭐ `{s['address'][:10]}...` → `{s['mint'][:10]}...`\n"
+            # CORRIGÉ suite à une demande explicite : n'affichait que les
+            # adresses brutes tronquées (ex: "⭐ 5gWrKGAQ... → HA2q9y6r..."),
+            # illisible. Calcule maintenant le vrai résultat de CHAQUE token
+            # créé par chaque adresse ⭐ (même méthode "MC max après entrée"
+            # que partout ailleurs dans le bot), avec nom cliquable vers
+            # DexScreener au lieu de l'adresse du mint.
+            # RÉDUIT suite à une vraie surcharge Helius observée en
+            # conditions réelles (vague d'erreurs "Internal error"/timeout
+            # juste après l'ajout de cette fonctionnalité) : 12 adresses ×
+            # 5 tokens chacune pouvait déclencher des dizaines d'appels
+            # getTransaction supplémentaires d'un coup. Réduit à 6 adresses
+            # × 3 tokens — toujours utile, beaucoup moins agressif.
+            for i, s in enumerate(starred[:6]):
+                if len(starred) > 1:
+                    try:
+                        await msg.edit_text(
+                            f"🔍 Analyse de `{token_mint[:12]}...` en cours...\n\n"
+                            f"🔗 Calcul des résultats du cluster : `{i + 1}/{min(len(starred), 6)}`...",
+                            parse_mode="Markdown",
+                        )
+                    except Exception:
+                        pass
+                addr_tokens = await wallet_history.get_created_tokens(s["address"], max_results=3)
+                text += f"   ⭐ `{s['address'][:10]}...`\n"
+                if not addr_tokens:
+                    text += f"      _(token {s['mint'][:10]}... — détails indisponibles)_\n"
+                    continue
+                for ct in addr_tokens:
+                    detail = await backtest.get_detailed_trade_info(
+                        ct["token_mint"], purchase_block_time=ct.get("block_time"),
+                    )
+                    status_icon = "✅" if detail["hit_tp"] else ("❌" if detail["hit_sl"] else "➖")
+                    if detail.get("symbol") and detail.get("dexscreener_url"):
+                        name_display = f"[{detail['symbol']}]({detail['dexscreener_url']})"
+                    elif detail.get("symbol"):
+                        name_display = f"{detail['symbol']} — `{ct['token_mint'][:8]}...`"
+                    else:
+                        name_display = f"`{ct['token_mint'][:8]}...`"
+                    mc_display = f", MC entrée: ${detail['entry_market_cap_usd']:,.0f}" if detail.get("entry_market_cap_usd") else ""
+                    text += f"      {status_icon} {name_display} → `{detail['result_pct']:+.1f}%` ({detail['purchase_date']}{mc_display})\n"
             if cluster_info.get("neutral"):
                 text += f"_+ {len(cluster_info['neutral'])} adresse(s) matchées sans création connue (ignorées)_\n"
 
@@ -1128,7 +1178,28 @@ class SniperTelegramBot:
                 )])
         keyboard_rows.append([InlineKeyboardButton("← Back", callback_data="menu_main")])
         keyboard = InlineKeyboardMarkup(keyboard_rows)
-        await msg.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
+        # CORRIGÉ suite à un vrai bug signalé plusieurs fois ("rien ne vient
+        # depuis") : cet edit_text final n'avait AUCUN filet de sécurité. Si
+        # Telegram refusait le Markdown (caractère spécial dans un nom de
+        # token, ex: un underscore non échappé) ou appliquait une limite de
+        # fréquence (après les nombreux messages de progression envoyés
+        # pendant la recherche de cluster), l'exception partait sans être
+        # rattrapée — le handler s'arrêtait en silence, sans jamais rien
+        # afficher à l'utilisateur, alors que tout le calcul avait pourtant
+        # bien fini de tourner côté serveur.
+        try:
+            await msg.edit_text(text, parse_mode="Markdown", reply_markup=keyboard, disable_web_page_preview=True)
+        except Exception as e:
+            log.warning(f"Erreur d'affichage Markdown pour l'analyse de {token_mint}: {e}")
+            try:
+                # Repli : même contenu, sans aucun formatage Markdown — ne
+                # peut plus jamais échouer pour une histoire de caractère
+                # spécial mal échappé.
+                plain_text = text.replace("*", "").replace("`", "").replace("_", "")
+                await msg.edit_text(plain_text, reply_markup=keyboard, disable_web_page_preview=True)
+            except Exception as e2:
+                log.error(f"Échec du repli texte brut pour {token_mint}: {e2}")
+                await msg.edit_text("❌ Erreur d'affichage — relance l'analyse.")
 
     async def show_pnl_journal(self, query, page: int = 0):
         """Journal P&L — historique navigable des positions clôturées."""
@@ -1190,7 +1261,16 @@ class SniperTelegramBot:
             text += f"{icon} {flag_name}\n"
 
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("← Back", callback_data="menu_main")]])
-        await msg.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
+        # CORRIGÉ — même filet de sécurité qu'ailleurs : flag_name vient de
+        # l'API GoPlus et contient souvent des underscores (ex:
+        # "is_honeypot") non échappés, qui cassent le Markdown Telegram
+        # sans prévenir si jamais rencontrés.
+        try:
+            await msg.edit_text(text, parse_mode="Markdown", reply_markup=keyboard, disable_web_page_preview=True)
+        except Exception as e:
+            log.warning(f"Erreur d'affichage Markdown pour la sécurité de {token_mint}: {e}")
+            plain_text = text.replace("*", "").replace("`", "").replace("_", "")
+            await msg.edit_text(plain_text, reply_markup=keyboard, disable_web_page_preview=True)
 
     async def analyze_wallet_inline(self, update: Update, wallet_address: str):
         """
@@ -1228,11 +1308,45 @@ class SniperTelegramBot:
         text += f"🆕 Fresh wallet : {'✅ Oui' if is_fresh else '❌ Non (déjà actif avant)'}\n\n"
 
         # ── Statut DEV (a-t-il créé des tokens ?) ────────────────────────
+        # CORRIGÉ suite à une demande explicite : cette section n'affichait
+        # qu'un résumé compact en une ligne (ratio + résultat cumulé, via
+        # backtest_wallet — l'ancienne approximation h24), alors que la
+        # section trader juste en dessous liste chaque token individuellement
+        # avec la vraie reconstruction on-chain (get_detailed_trade_info).
+        # Même traitement ici pour les deux catégories.
         created_tokens = await wallet_history.get_created_tokens(wallet_address, max_results=10)
         text += f"🛠️ *Statut développeur* : `{len(created_tokens)}` token(s) créé(s) (sur les 10 derniers scannés)\n"
-        if len(created_tokens) >= 3:
-            dev_result = await backtest.backtest_wallet(created_tokens)
-            text += f"   Ratio en tant que créateur : `{dev_result['ratio']:.2f}` (résultat cumulé : {dev_result['total_result_pct']:+.1f}%)\n"
+
+        dev_results = []
+        for i, ct in enumerate(created_tokens):
+            if len(created_tokens) > 1:
+                try:
+                    await msg.edit_text(
+                        f"🔎 Analyse du wallet `{wallet_address[:12]}...`\n\n"
+                        f"🛠️ Analyse des créations : `{i + 1}/{len(created_tokens)}` en cours...",
+                        parse_mode="Markdown",
+                    )
+                except Exception:
+                    pass
+            detail = await backtest.get_detailed_trade_info(
+                ct["token_mint"], purchase_block_time=ct.get("block_time"),
+            )
+            dev_results.append(detail)
+            status_icon = "✅" if detail["hit_tp"] else ("❌" if detail["hit_sl"] else "➖")
+            if detail.get("symbol") and detail.get("dexscreener_url"):
+                name_display = f"[{detail['symbol']}]({detail['dexscreener_url']})"
+            elif detail.get("symbol"):
+                name_display = f"{detail['symbol']} — `{ct['token_mint'][:8]}...`"
+            else:
+                name_display = f"`{ct['token_mint'][:8]}...`"
+            mc_display = f", MC entrée: ${detail['entry_market_cap_usd']:,.0f}" if detail.get("entry_market_cap_usd") else ""
+            text += f"   {status_icon} {name_display} → `{detail['result_pct']:+.1f}%` ({detail['purchase_date']}{mc_display})\n"
+
+        if len(dev_results) >= 3:
+            avg_dev = sum(r["result_pct"] for r in dev_results) / len(dev_results)
+            wins_dev = [r for r in dev_results if r["result_pct"] > 0]
+            win_rate_dev = len(wins_dev) / len(dev_results) * 100
+            text += f"   *Résultat moyen* : `{avg_dev:+.1f}%` par token | *Win rate* : `{win_rate_dev:.0f}%`\n"
 
         # ── Statut TRADER (a-t-il acheté des tokens ?) ───────────────────
         # Détail token par token, comme analyze_copytrade_candidate.py dans
@@ -1247,13 +1361,18 @@ class SniperTelegramBot:
         # approximation) + nom du token en LIEN CLIQUABLE vers DexScreener.
         recent_buys = await wallet_history.get_recent_buys(wallet_address, max_results=10)
         text += f"\n📈 *Statut trader* : `{len(recent_buys)}` achat(s) Pump.fun trouvé(s) (sur les 10 derniers scannés)\n"
+        # CORRIGÉ suite à un vrai crash signalé (UnboundLocalError) :
+        # trader_results n'était initialisé qu'À L'INTÉRIEUR du bloc
+        # "if len(recent_buys) >= 1:", mais utilisé plus bas SANS cette
+        # condition (ligne "if len(trader_results) >= 3:") — un wallet sans
+        # AUCUN achat trouvé faisait planter toute la fonction en silence.
+        trader_results = []
         if len(recent_buys) >= 1:
             # CORRIGÉ : affichait rien du tout en dessous de 3 achats trouvés
             # — trop strict, un wallet avec juste 1-2 achats mérite quand
             # même de voir le détail. Seule la moyenne/win rate (qui n'a de
             # sens statistique qu'avec un minimum d'échantillon) garde le
             # seuil de 3.
-            trader_results = []
             for i, t in enumerate(recent_buys):
                 # AJOUTÉ suite à un vrai signalement : la reconstruction
                 # on-chain (backtest.py, méthode "MC max après entrée") peut
@@ -1316,6 +1435,36 @@ class SniperTelegramBot:
             win_rate = len(wins) / len(trader_results) * 100
             text += f"\n   *Résultat moyen* : `{avg:+.1f}%` par trade | *Win rate* : `{win_rate:.0f}%`\n"
             text += f"   _Pour tous les détails (market cap, liquidité, volume...) : `python analyze_wallet_detailed.py --wallet {wallet_address}`_\n"
+
+            # AJOUTÉ suite à une demande explicite : intègre les étapes D,
+            # E, F, G de la checklist copy trading A-H (copytrade_checklist.py)
+            # directement dans "Analyse de wallet". B, C1, C2 ne sont PAS
+            # incluses ici — elles ont besoin d'un TOKEN de référence précis
+            # (ex: "sur ce rug précis, cet achat était-il bundlé ?"), ce qui
+            # ne correspond pas à une vue d'ensemble du wallet comme celle-ci.
+            try:
+                import copytrade_checklist
+                await msg.edit_text(
+                    f"🔎 Analyse du wallet `{wallet_address[:12]}...`\n\n📋 Checklist copy trading en cours (D, E, F, G)...",
+                    parse_mode="Markdown",
+                )
+                freq = await copytrade_checklist.check_buy_frequency(wallet_address)
+                balance = await copytrade_checklist.check_continuous_balance(wallet_address)
+                win_7d = await copytrade_checklist.get_win_rate_7d(wallet_address)
+                consistency = await copytrade_checklist.check_entry_consistency(wallet_address)
+
+                text += "\n📋 *Checklist copy trading (D, E, F, G)*\n"
+                text += f"   D — Fréquence : {freq['reason']}\n"
+                text += f"   E — Wallet établi : {balance['reason']}\n"
+                if win_7d.get("win_rate") is not None:
+                    text += f"   F — Win rate 7j : `{win_7d['win_rate']:.0f}%` ({win_7d['reason']})\n"
+                else:
+                    text += f"   F — Win rate 7j : {win_7d['reason']}\n"
+                text += f"   G — Cohérence d'entrée : {consistency['reason']}\n"
+                text += "   _B, C1, C2 nécessitent un token de référence précis — non inclus ici._\n"
+            except Exception as e:
+                log.warning(f"Erreur checklist copy trading pour {wallet_address}: {e}")
+                text += "\n📋 _Checklist copy trading indisponible (erreur pendant le calcul)._\n"
 
         # CORRIGÉ suite à un vrai bug signalé : le seul bouton disponible
         # ("Ajouter en Ruggeur") ajoutait TOUJOURS le wallet en mode
@@ -1408,7 +1557,15 @@ class SniperTelegramBot:
             f"{funding_details}"
         )
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("← Back", callback_data="menu_main")]])
-        await msg.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
+        # CORRIGÉ — même filet de sécurité qu'ailleurs (voir analyze_coin_inline
+        # et check_security_inline) : évite un échec silencieux si un
+        # caractère spécial casse le Markdown.
+        try:
+            await msg.edit_text(text, parse_mode="Markdown", reply_markup=keyboard, disable_web_page_preview=True)
+        except Exception as e:
+            log.warning(f"Erreur d'affichage Markdown pour le score IA de {dev_address}: {e}")
+            plain_text = text.replace("*", "").replace("`", "").replace("_", "")
+            await msg.edit_text(plain_text, reply_markup=keyboard, disable_web_page_preview=True)
 
     async def show_position_calculator(self, query):
         """💰 Calcul position — calculateur simple de taille de position."""
