@@ -108,7 +108,36 @@ async def find_cluster_addresses(dev_address: str, max_starred: int = 12, on_pro
         # source (moins précis si "simple", mais on tente quand même).
         recipients = await pattern_detector.find_all_outgoing_recipients(funder, max_results=50)
 
-    unique_recipients = {r["recipient"] for r in recipients} - {dev_address}
+    # CORRIGÉ suite à une vérification explicite : AUCUN filtre fresh
+    # wallet n'existait réellement dans le code, malgré ce qui était décrit
+    # dans la documentation d'origine du projet ("n'analyse que les wallets
+    # vraiment neufs au moment du dépôt"). L'ancienne ligne se contentait de
+    # dédupliquer les adresses, sans jamais vérifier leur activité passée —
+    # un wallet déjà utilisé pour autre chose (donc pas vraiment lié au
+    # pattern rug) pouvait se retrouver dans le cluster comme n'importe quel
+    # autre. On garde maintenant la signature du dépôt pour CHAQUE
+    # destinataire (nécessaire pour vérifier ce qui existait avant), puis on
+    # filtre.
+    recipients_map = {}
+    for r in recipients:
+        if r["recipient"] == dev_address:
+            continue
+        recipients_map.setdefault(r["recipient"], r["signature"])  # garde la 1ère occurrence
+
+    _report(f"\n   🧹 Filtre fresh wallet : vérification qu'aucune activité n'existait avant "
+            f"le dépôt, pour {len(recipients_map)} adresse(s)...")
+    fresh_semaphore = asyncio.Semaphore(5)
+
+    async def _check_fresh(addr, sig):
+        async with fresh_semaphore:
+            is_fresh = await wallet_history.is_wallet_fresh_before(addr, sig)
+            return addr if is_fresh else None
+
+    fresh_results = await asyncio.gather(*[_check_fresh(a, s) for a, s in recipients_map.items()])
+    unique_recipients = {a for a in fresh_results if a is not None}
+    excluded_count = len(recipients_map) - len(unique_recipients)
+    _report(f"   → {len(unique_recipients)}/{len(recipients_map)} wallet(s) confirmé(s) fresh "
+            f"({excluded_count} exclu(s) — activité antérieure au dépôt trouvée, probablement pas lié au pattern rug).")
 
     # ── Tri étoile/neutre (comme les "petites étoiles" du transcript) ──
     # Vérification LÉGÈRE (has_created_any_token, s'arrête tôt) sur chaque

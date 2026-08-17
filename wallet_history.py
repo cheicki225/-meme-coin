@@ -69,6 +69,32 @@ _CREATOR_INDEX_BY_DISCRIMINATOR = {
 }
 
 
+async def is_wallet_fresh_before(address: str, reference_signature: str) -> bool:
+    """
+    AJOUTÉ pour le filtre "fresh wallet" du cluster (find_dev_cluster.py) —
+    n'existait nulle part avant malgré ce que décrivait la documentation
+    d'origine du projet. Vérifie qu'AUCUNE activité n'existait pour `address`
+    AVANT `reference_signature` (typiquement la transaction de dépôt exchange
+    qu'on analyse) — càd que ce wallet a été créé/utilisé pour la première
+    fois précisément à ce moment-là, pas un wallet déjà actif pour autre
+    chose.
+
+    Un seul appel RPC efficace, plutôt que de paginer tout l'historique du
+    wallet : demande à Helius juste 1 signature plus ANCIENNE que
+    reference_signature (paramètre standard "before" de
+    getSignaturesForAddress). Si rien n'est retourné, reference_signature
+    est bien la toute première transaction connue de ce wallet.
+    """
+    payload = {
+        "jsonrpc": "2.0", "id": 1,
+        "method": "getSignaturesForAddress",
+        "params": [address, {"before": reference_signature, "limit": 1}],
+    }
+    result = await rpc_client.rpc_post(payload)
+    prior_activity = result if isinstance(result, list) else []
+    return len(prior_activity) == 0
+
+
 async def has_created_any_token(address: str, max_signatures_checked: int = 200) -> dict:
     """
     Vérification LÉGÈRE et rapide — contrairement à get_created_tokens() ou
