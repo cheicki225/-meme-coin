@@ -10,11 +10,19 @@ achats/ventes — méthode 2 des vidéos ("copy trade de rugger").
 Fonctionnement :
 1. Une souscription WebSocket par wallet suivi (logsSubscribe avec
    mentions:[wallet]) — les wallets sont ajoutés/retirés dynamiquement
-   en fonction de monitored_dev_wallets (poll toutes les 30s)
+   en fonction de monitored_dev_wallets (poll toutes les
+   config.COPYTRADE_SYNC_INTERVAL_S secondes, 10s par défaut)
 2. Dès qu'une transaction du wallet arrive, on récupère sa version parsée
    (API Enhanced Transactions Helius) et on détermine si c'est un ACHAT
    ou une VENTE via les tokenTransfers/nativeTransfers
 3. On déclenche le callback approprié (on_buy / on_sell)
+
+AJOUTÉ suite à une demande explicite : surveille maintenant AUSSI les
+wallets en mode "track_creation" (Ruggeur), pas juste track_buy/track_sell/
+buy_on_dev_sell — pour détecter un TRANSFERT SOL important (≥
+config.DEV_SOL_TRANSFER_ALERT_PCT % du solde) vers une autre adresse,
+signal fort qu'un dev encaisse et se prépare à disparaître. Voir
+_check_large_sol_transfer().
 
 LIMITE CONNUE : la classification achat/vente est une heuristique basée
 sur le sens des transferts (le wallet reçoit un token + envoie du SOL =
@@ -31,36 +39,49 @@ import websockets
 
 import config
 import rpc_client
+import wallet
 
 log = logging.getLogger("copytrade")
 
 
 class CopyTradeListener:
-    def __init__(self, data_store, on_buy, on_sell):
+    def __init__(self, data_store, on_buy, on_sell, on_large_sol_transfer=None):
         """
         data_store: instance de monitoring_list.DataStore
         on_buy: async(wallet_address: str, token_mint: str, signature: str)
         on_sell: async(wallet_address: str, token_mint: str, signature: str)
+        on_large_sol_transfer: async(wallet_address: str, destination: str,
+            amount_sol: float, pct_of_balance: float) — AJOUTÉ, optionnel
+            (None = fonctionnalité silencieusement désactivée si non fourni).
         """
         self.data_store = data_store
         self.on_buy = on_buy
         self.on_sell = on_sell
+        self.on_large_sol_transfer = on_large_sol_transfer
         self._running = False
         self._ws = None
         self._subscribed_wallets = set()
         self._sub_id_to_wallet = {}
+        self._creation_mode_wallets = set()  # sous-ensemble surveillé pour les transferts SOL
 
     def _get_tracked_wallets(self) -> set:
         """
         Retourne l'ensemble des wallets à surveiller en temps réel : mode
-        track_buy/track_sell (copy trading classique) ET buy_on_dev_sell
+        track_buy/track_sell (copy trading classique), buy_on_dev_sell
         (on doit détecter la VENTE du dev sur son propre token pour racheter
-        juste après — voir main.py on_copytrade_sell).
+        juste après — voir main.py on_copytrade_sell), ET track_creation
+        (Ruggeur — AJOUTÉ pour la détection de transfert SOL important,
+        indépendante de la logique achat/vente).
         """
         wallets = set()
+        self._creation_mode_wallets = set()
         for address, entry in self.data_store.state.get("monitored_dev_wallets", {}).items():
-            if entry.get("mode") in ("track_buy", "track_sell", "buy_on_dev_sell"):
+            mode = entry.get("mode", "track_creation")
+            if mode in ("track_buy", "track_sell", "buy_on_dev_sell"):
                 wallets.add(address)
+            elif mode == "track_creation":
+                wallets.add(address)
+                self._creation_mode_wallets.add(address)
         return wallets
 
     async def start(self):
@@ -86,7 +107,7 @@ class CopyTradeListener:
             self._sub_id_to_wallet = {}
 
             await self._sync_subscriptions()
-            log.info("✅ Copytrade listener connecté — synchronisation des wallets suivis toutes les 30s.")
+            log.info(f"✅ Copytrade listener connecté — synchronisation des wallets suivis toutes les {config.COPYTRADE_SYNC_INTERVAL_S}s.")
 
             sync_task = asyncio.create_task(self._periodic_sync())
             try:
@@ -97,7 +118,7 @@ class CopyTradeListener:
 
     async def _periodic_sync(self):
         while True:
-            await asyncio.sleep(30)
+            await asyncio.sleep(config.COPYTRADE_SYNC_INTERVAL_S)
             try:
                 await self._sync_subscriptions()
             except Exception as e:
@@ -140,8 +161,17 @@ class CopyTradeListener:
             if not signature:
                 return
 
-            # On ne traite que les swaps (achat/vente), pas les autres tx du wallet
-            if not any("swap" in l.lower() or "Instruction: Buy" in l or "Instruction: Sell" in l for l in logs):
+            # CORRIGÉ suite à l'ajout de la détection de transfert SOL : un
+            # simple transfert SOL natif (System Program) n'émet PAS les
+            # mots-clés "swap"/"Buy"/"Sell" dans ses logs — l'ancien filtre
+            # l'aurait ignoré silencieusement. Si des wallets en mode
+            # track_creation sont surveillés, on traite TOUT (pas de filtre
+            # par mots-clés), puisqu'on ne peut pas deviner à l'avance si
+            # c'est un transfert pertinent sans décoder la transaction.
+            is_swap_related = any(
+                "swap" in l.lower() or "Instruction: Buy" in l or "Instruction: Sell" in l for l in logs
+            )
+            if not is_swap_related and not self._creation_mode_wallets:
                 return
 
             await self._process_transaction(signature)
@@ -152,6 +182,12 @@ class CopyTradeListener:
         parsed = await self._fetch_parsed_transaction(signature)
         if not parsed:
             return
+
+        # AJOUTÉ : vérification du transfert SOL important, indépendante de
+        # la classification achat/vente ci-dessous — un dev peut très bien
+        # transférer son SOL SANS que ce soit un swap.
+        if self._creation_mode_wallets:
+            await self._check_large_sol_transfer(parsed, signature)
 
         action_info = self._classify_transaction(parsed)
         if not action_info:
@@ -165,6 +201,46 @@ class CopyTradeListener:
             await self.on_buy(wallet, action_info["token_mint"], signature)
         elif action_info["action"] == "sell" and self.on_sell:
             await self.on_sell(wallet, action_info["token_mint"], signature)
+
+    async def _check_large_sol_transfer(self, parsed: dict, signature: str):
+        """
+        AJOUTÉ suite à une demande explicite : détecte un transfert SOL
+        sortant représentant ≥ config.DEV_SOL_TRANSFER_ALERT_PCT % du solde
+        du wallet, pour un dev surveillé en mode track_creation. Le solde
+        AVANT le transfert est reconstruit par approximation (solde actuel
+        + montant transféré) — précis à l'exception mineure des frais de
+        transaction, négligeables pour ce calcul.
+        """
+        if not self.on_large_sol_transfer:
+            return
+
+        native_transfers = parsed.get("nativeTransfers", []) or []
+        for nt in native_transfers:
+            from_account = nt.get("fromUserAccount")
+            to_account = nt.get("toUserAccount")
+            amount_lamports = nt.get("amount", 0)
+
+            if from_account not in self._creation_mode_wallets or not amount_lamports:
+                continue
+
+            amount_sol = amount_lamports / 1_000_000_000
+            try:
+                current_balance = await wallet.get_sol_balance_of(from_account)
+            except Exception as e:
+                log.debug(f"Erreur lecture solde pour {from_account}: {e}")
+                continue
+
+            prior_balance_estimate = current_balance + amount_sol
+            if prior_balance_estimate <= 0:
+                continue
+
+            pct_transferred = (amount_sol / prior_balance_estimate) * 100
+            if pct_transferred >= config.DEV_SOL_TRANSFER_ALERT_PCT:
+                log.info(
+                    f"💸 Transfert SOL important détecté : {from_account[:8]}... a envoyé "
+                    f"{amount_sol:.4f} SOL ({pct_transferred:.0f}% de son solde) vers {to_account[:8]}..."
+                )
+                await self.on_large_sol_transfer(from_account, to_account, amount_sol, pct_transferred)
 
     async def _fetch_parsed_transaction(self, signature: str) -> dict:
         """CORRIGÉ : même fix que websocket_listener.py — session isolée sans

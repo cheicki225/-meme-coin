@@ -47,12 +47,21 @@ def get_public_key() -> str:
 
 
 async def get_sol_balance() -> float:
-    """Retourne le solde SOL actuel du wallet d'exécution."""
+    """Retourne le solde SOL actuel du wallet d'exécution (celui du bot lui-même)."""
     pubkey = get_public_key()
+    return await get_sol_balance_of(pubkey)
+
+
+async def get_sol_balance_of(address: str) -> float:
+    """
+    AJOUTÉ pour la détection de transfert SOL important d'un dev surveillé
+    (copytrade_listener.py) — version générique de get_sol_balance(), qui
+    elle est câblée en dur sur le wallet du bot lui-même (SOLANA_PRIVATE_KEY).
+    """
     payload = {
         "jsonrpc": "2.0", "id": 1,
         "method": "getBalance",
-        "params": [pubkey],
+        "params": [address],
     }
     result = await rpc_client.rpc_post(payload, timeout=10)
     lamports = result.get("value", 0) if isinstance(result, dict) else 0

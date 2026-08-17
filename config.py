@@ -321,6 +321,18 @@ RUG_SCAN_MAX_DEV_CREATIONS = int(os.getenv("RUG_SCAN_MAX_DEV_CREATIONS", "3"))
 RUG_SCAN_MAX_AGE_HOURS = float(os.getenv("RUG_SCAN_MAX_AGE_HOURS", "24"))
 RUG_SCAN_MIN_TX_COUNT = int(os.getenv("RUG_SCAN_MIN_TX_COUNT", "250"))
 
+# ── Copy Trading — fréquence de synchronisation des wallets suivis ──
+# CORRIGÉ : était codé en dur à 30s dans copytrade_listener.py, pas
+# configurable comme le reste des intervalles du projet.
+COPYTRADE_SYNC_INTERVAL_S = int(os.getenv("COPYTRADE_SYNC_INTERVAL_S", "10"))  # 10s par défaut (demande explicite — était 30s fixe)
+
+# ── Détection de transfert SOL important d'un dev surveillé ──
+# AJOUTÉ suite à une demande explicite : détecte quand un dev en mode
+# Ruggeur (track_creation) transfère une grosse partie de son solde SOL
+# vers une autre adresse — signal fort qu'il encaisse et se prépare à
+# disparaître, distinct d'une simple vente de token sur la bonding curve.
+DEV_SOL_TRANSFER_ALERT_PCT = float(os.getenv("DEV_SOL_TRANSFER_ALERT_PCT", "90"))  # % du solde transféré qui déclenche l'alerte
+
 # ── Buy on Dev Sell — délai max d'attente de la vente du dev après création ─
 BUY_ON_DEV_SELL_TIMEOUT_MIN = float(os.getenv("BUY_ON_DEV_SELL_TIMEOUT_MIN", "30"))
 

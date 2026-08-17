@@ -15,6 +15,7 @@ Mode PAPER par défaut — voir config.py.
 
 import asyncio
 import logging
+import os
 import sys
 
 import config
@@ -32,6 +33,17 @@ from rug_scanner import RugScanner
 from notifier import Notifier
 from telegram_bot import SniperTelegramBot
 import wallet
+
+# CORRIGÉ suite à un vrai crash en boucle signalé : logging.FileHandler()
+# ne crée JAMAIS le dossier parent de LOG_FILE tout seul — si config.LOG_FILE
+# pointe vers un chemin de volume (ex: /app/data/sniper_bot.log) et que ce
+# dossier n'existe pas encore au démarrage du conteneur, FileHandler lève
+# une FileNotFoundError qui plante le bot AVANT même que le code métier ne
+# démarre. railway.json relance alors le conteneur (restartPolicyMaxRetries),
+# qui replante exactement pareil à chaque fois — boucle infinie de crash.
+_log_dir = os.path.dirname(config.LOG_FILE)
+if _log_dir:
+    os.makedirs(_log_dir, exist_ok=True)
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -65,6 +77,7 @@ class SniperBot:
         self.listener = NewTokenListener(on_new_token=self.on_new_token)
         self.copytrade_listener = CopyTradeListener(
             self.data_store, on_buy=self.on_copytrade_buy, on_sell=self.on_copytrade_sell,
+            on_large_sol_transfer=self.on_dev_large_sol_transfer,
         )
         self.protection_scanner = ProtectionScanner(self.data_store, notifier=self.notifier)
         self.rug_scanner = RugScanner(self.data_store, notifier=self.notifier)
@@ -192,6 +205,41 @@ class SniperBot:
             token_mint, wallet_address,
             reason=f"Copy trade — achat détecté chez {label}"
         )
+
+    async def on_dev_large_sol_transfer(self, dev_address: str, destination: str, amount_sol: float, pct_of_balance: float):
+        """
+        Callback du copytrade_listener : un dev surveillé (mode
+        track_creation) vient de transférer une grosse partie de son solde
+        SOL vers une autre adresse — signal fort qu'il encaisse et se
+        prépare à disparaître. AJOUTÉ suite à une demande explicite.
+
+        Deux actions : (1) alerte Telegram immédiate, (2) ajout automatique
+        de l'adresse DESTINATAIRE au monitoring — elle pourrait être un
+        autre wallet contrôlé par la même personne, ou une piste utile pour
+        la méthode "adresse intermédiaire".
+        """
+        entry = self.data_store.state["monitored_dev_wallets"].get(dev_address, {})
+        label = entry.get("label", dev_address[:8] + "...")
+
+        log.warning(
+            f"💸 ALERTE : {label} a transféré {amount_sol:.4f} SOL ({pct_of_balance:.0f}% de son solde) "
+            f"vers {destination[:8]}..."
+        )
+        await self.notifier.notify(
+            "rugger_alert",
+            f"💸 *Transfert SOL important détecté*\n\n"
+            f"Dev : `{dev_address}` ({label})\n"
+            f"Montant : `{amount_sol:.4f}` SOL (`{pct_of_balance:.0f}%` de son solde)\n"
+            f"Destination : `{destination}`\n\n"
+            f"_Ce dev encaisse peut-être et se prépare à disparaître. "
+            f"L'adresse destinataire a été ajoutée au monitoring._",
+        )
+
+        if not self.data_store.is_dev_monitored(destination) and self.data_store.has_free_slot():
+            self.data_store.add_dev_wallet(
+                destination, label=f"transfert_{dev_address[:8]}", scheme="sol_transfer", backtest_ratio=0.0,
+            )
+            log.info(f"➕ Adresse destinataire ajoutée au monitoring suite au transfert : {destination[:8]}...")
 
     async def on_copytrade_sell(self, wallet_address: str, token_mint: str, signature: str):
         """
