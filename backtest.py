@@ -76,7 +76,7 @@ async def get_bonding_curve_price(token_mint: str) -> dict:
     try:
         bonding_curve_address = _get_bonding_curve_address(token_mint)
     except Exception as e:
-        log.debug(f"Erreur dérivation PDA bonding curve pour {token_mint}: {e}")
+        log.warning(f"⚠️ Bonding curve — erreur dérivation PDA pour {token_mint}: {e}")
         return {}
 
     payload = {
@@ -85,16 +85,31 @@ async def get_bonding_curve_price(token_mint: str) -> dict:
     }
     result = await rpc_client.rpc_post(payload)
 
+    # CORRIGÉ — bug trouvé en repassant sur ce code suite à un échec
+    # persistant : rpc_client.rpc_post() retourne DÉJÀ le champ "result"
+    # déballé (voir son docstring : "Retourne le champ 'result' de la
+    # réponse"), pas l'enveloppe JSON-RPC complète. Le code cherchait donc
+    # result["result"]["value"] — une clé "result" qui n'existe plus à ce
+    # niveau, puisqu'elle a déjà été retirée par rpc_post(). "value" était
+    # donc TOUJOURS vide, silencieusement, depuis le début — la vraie cause
+    # de "Buy Failed - prix d'entrée indisponible" qui persistait malgré la
+    # lecture on-chain censée le corriger.
+    if not result:
+        log.warning(f"⚠️ Bonding curve — échec RPC pour {token_mint} (getAccountInfo n'a rien retourné)")
+        return {}
+
     try:
-        value = (result or {}).get("result", {}).get("value")
+        value = result.get("value")
         if not value or not value.get("data"):
+            log.warning(f"⚠️ Bonding curve — compte introuvable pour {token_mint} "
+                        f"(adresse {bonding_curve_address}) : réponse RPC = {result}")
             return {}
         raw = base64.b64decode(value["data"][0])
         virtual_token_reserves = struct.unpack_from("<Q", raw, 8)[0]
         virtual_sol_reserves = struct.unpack_from("<Q", raw, 16)[0]
         complete = raw[48] != 0
     except (KeyError, IndexError, TypeError, struct.error) as e:
-        log.debug(f"Erreur décodage bonding curve {token_mint}: {e}")
+        log.warning(f"⚠️ Bonding curve — erreur décodage pour {token_mint}: {e}")
         return {}
 
     if virtual_token_reserves <= 0 or virtual_sol_reserves <= 0:

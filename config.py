@@ -296,6 +296,7 @@ DEFAULT_NOTIFICATION_PREFS = {
     "rugger_alert": True,
     "buy_skipped": False,
     "processing_buy": False,
+    "rug_scan_alert": True,  # AJOUTÉ avec le scanner de rugs complet (rug_scanner.py)
 }
 
 # ── Filtre de backtest : rejette les tokens dont la 1ère bougie/bundle est trop haute ─
@@ -305,7 +306,20 @@ MAX_FIRST_CANDLE_MARKET_CAP = float(os.getenv("MAX_FIRST_CANDLE_MARKET_CAP", "15
 # ── Surveillance proactive des schémas de transfert (menu "Protection" de F Project) ─
 # Intervalle de scan des adresses "mère" ou "exchange" surveillées pour repérer
 # automatiquement les nouveaux wallets financés, AVANT qu'ils créent un token.
-PROTECTION_SCAN_INTERVAL_S = int(os.getenv("PROTECTION_SCAN_INTERVAL_S", "60"))
+PROTECTION_SCAN_INTERVAL_S = int(os.getenv("PROTECTION_SCAN_INTERVAL_S", "10"))  # 10s par défaut (demande explicite — était 60s ; augmente la charge RPC, voir avertissement dans le code)
+
+# ── Scanner de rugs — TOUS les nouveaux tokens Pump.fun (demande explicite) ──
+# Contrairement au pipeline d'évaluation existant (historique, ratio backtest,
+# régularité), ce scanner filtre TOUS les tokens détectés selon 4 critères
+# simples. Dépend du MÊME listener WebSocket que le pipeline principal —
+# donc nécessite DETECTION_ENABLED=true pour recevoir des tokens à évaluer
+# (pas de deuxième connexion WebSocket dédiée, pour ne pas doubler la charge).
+RUG_SCAN_ENABLED = os.getenv("RUG_SCAN_ENABLED", "false").lower() == "true"
+RUG_SCAN_INTERVAL_S = int(os.getenv("RUG_SCAN_INTERVAL_S", "60"))          # fréquence de re-vérification des candidats
+RUG_SCAN_MIN_VOLUME_USD = float(os.getenv("RUG_SCAN_MIN_VOLUME_USD", "20000"))
+RUG_SCAN_MAX_DEV_CREATIONS = int(os.getenv("RUG_SCAN_MAX_DEV_CREATIONS", "3"))
+RUG_SCAN_MAX_AGE_HOURS = float(os.getenv("RUG_SCAN_MAX_AGE_HOURS", "24"))
+RUG_SCAN_MIN_TX_COUNT = int(os.getenv("RUG_SCAN_MIN_TX_COUNT", "250"))
 
 # ── Buy on Dev Sell — délai max d'attente de la vente du dev après création ─
 BUY_ON_DEV_SELL_TIMEOUT_MIN = float(os.getenv("BUY_ON_DEV_SELL_TIMEOUT_MIN", "30"))

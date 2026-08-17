@@ -1377,10 +1377,26 @@ class SniperTelegramBot:
 
         ai_verdict = await ai_advisor.get_ai_verdict(dev_address, result, regularity, scheme)
         if not ai_verdict:
-            await msg.edit_text("❌ Aucun avis IA disponible (pas de clé Claude/Grok configurée).")
+            await msg.edit_text("❌ Avis IA désactivé (fonctionnalité coupée manuellement — voir ai_advisor.py).")
             return
 
         verdict_icon = "✅" if ai_verdict["verdict"] == "GOOD" else ("⚠️" if ai_verdict["verdict"] == "AVOID" else "➖")
+        # AJOUTÉ suite à une demande explicite : cette fonction n'affichait
+        # que le SCHÉMA de financement (ex: "exchange"), sans jamais montrer
+        # le montant, l'adresse du financeur, ni le statut fresh wallet —
+        # ces infos étaient pourtant déjà calculées via trace, juste jamais
+        # affichées. Mise en cohérence avec analyze_coin_inline
+        # ("Analyse du token") et analyze_wallet_inline ("Analyse de
+        # wallet"), qui affichaient déjà tout ça.
+        is_fresh = await fund_tracer.is_fresh_wallet(dev_address)
+        funding_details = ""
+        if trace.get("funder_address"):
+            funding_details = (
+                f"Financé par : `{trace['funder_address'][:12]}...`\n"
+                f"Montant : `{trace.get('amount_sol', 0):.4f}` SOL\n"
+                f"Fresh wallet : {'✅ Oui' if is_fresh else '❌ Non (déjà actif avant)'}\n"
+            )
+
         text = (
             f"📈 *Score IA complet*\n`{dev_address}`\n\n"
             f"{verdict_icon} Verdict ({ai_verdict['provider']}) : *{ai_verdict['verdict']}*\n\n"
@@ -1388,7 +1404,8 @@ class SniperTelegramBot:
             f"── Données utilisées ──\n"
             f"Ratio gain/perte : `{result['ratio']:.2f}`\n"
             f"Score de régularité : `{regularity['regularity_score']:.2f}`\n"
-            f"Schéma de financement : `{scheme}`"
+            f"Schéma de financement : `{scheme}`\n"
+            f"{funding_details}"
         )
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("← Back", callback_data="menu_main")]])
         await msg.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)

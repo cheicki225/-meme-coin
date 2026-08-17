@@ -28,6 +28,7 @@ from monitoring_list import DataStore
 from paper_trader import PaperTrader
 from live_trader import LiveTrader
 from protection_scanner import ProtectionScanner
+from rug_scanner import RugScanner
 from notifier import Notifier
 from telegram_bot import SniperTelegramBot
 import wallet
@@ -66,6 +67,7 @@ class SniperBot:
             self.data_store, on_buy=self.on_copytrade_buy, on_sell=self.on_copytrade_sell,
         )
         self.protection_scanner = ProtectionScanner(self.data_store, notifier=self.notifier)
+        self.rug_scanner = RugScanner(self.data_store, notifier=self.notifier)
         self.telegram_bot = SniperTelegramBot(self.data_store, self.notifier, self.trader)
 
     async def run(self):
@@ -95,7 +97,7 @@ class SniperBot:
         # Scan permanent Pump.fun (détection + évaluation) — désactivable
         # temporairement via config.DETECTION_ENABLED (voir config.py).
         # Le reste (Telegram, Protection, Copy Trading) continue de tourner.
-        tasks = [self.protection_scanner.start(), self.copytrade_listener.start()]
+        tasks = [self.protection_scanner.start(), self.copytrade_listener.start(), self.rug_scanner.start()]
         if config.DETECTION_ENABLED:
             tasks.append(self.listener.start())
         else:
@@ -120,6 +122,12 @@ class SniperBot:
         creation_slot = info.get("creation_slot")
 
         log.info(f"🆕 Nouveau token {token_mint[:8]}... par dev {dev_address[:8]}...")
+
+        # AJOUTÉ avec le scanner de rugs complet (rug_scanner.py) — enregistre
+        # CE token pour un suivi indépendant, peu importe s'il est déjà géré
+        # ci-dessous par le pipeline d'évaluation existant. Ne fait rien si
+        # RUG_SCAN_ENABLED=false (voir la garde dans register_candidate()).
+        self.rug_scanner.register_candidate(token_mint, dev_address, created_at=info.get("created_at"))
 
         # Cas 1 : ce dev est déjà validé et surveillé.
         if self.data_store.is_dev_monitored(dev_address):
