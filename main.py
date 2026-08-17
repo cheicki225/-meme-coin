@@ -30,6 +30,7 @@ from paper_trader import PaperTrader
 from live_trader import LiveTrader
 from protection_scanner import ProtectionScanner
 from rug_scanner import RugScanner
+from wallet_cleanup import WalletCleanup
 from notifier import Notifier
 from telegram_bot import SniperTelegramBot
 import wallet
@@ -81,6 +82,7 @@ class SniperBot:
         )
         self.protection_scanner = ProtectionScanner(self.data_store, notifier=self.notifier)
         self.rug_scanner = RugScanner(self.data_store, notifier=self.notifier)
+        self.wallet_cleanup = WalletCleanup(self.data_store, notifier=self.notifier)
         self.telegram_bot = SniperTelegramBot(self.data_store, self.notifier, self.trader)
 
     async def run(self):
@@ -110,7 +112,7 @@ class SniperBot:
         # Scan permanent Pump.fun (détection + évaluation) — désactivable
         # temporairement via config.DETECTION_ENABLED (voir config.py).
         # Le reste (Telegram, Protection, Copy Trading) continue de tourner.
-        tasks = [self.protection_scanner.start(), self.copytrade_listener.start(), self.rug_scanner.start()]
+        tasks = [self.protection_scanner.start(), self.copytrade_listener.start(), self.rug_scanner.start(), self.wallet_cleanup.start()]
         if config.DETECTION_ENABLED:
             tasks.append(self.listener.start())
         else:
@@ -146,6 +148,11 @@ class SniperBot:
         if self.data_store.is_dev_monitored(dev_address):
             wallet_info = self.data_store.state["monitored_dev_wallets"][dev_address]
             mode = wallet_info.get("mode", "track_creation")
+
+            # AJOUTÉ pour le nettoyage automatique (wallet_cleanup.py) :
+            # toute activité connue repousse le délai d'inactivité, peu
+            # importe le mode.
+            self.data_store.update_wallet_activity(dev_address)
 
             if mode == "track_creation":
                 await self.trader.open_position(
@@ -183,6 +190,10 @@ class SniperBot:
         entry = self.data_store.state["monitored_dev_wallets"].get(wallet_address)
         if not entry or entry.get("mode") != "track_buy":
             return
+
+        # AJOUTÉ pour le nettoyage automatique — voir on_new_token pour le
+        # même ajout côté track_creation.
+        self.data_store.update_wallet_activity(wallet_address)
 
         settings = entry["settings"]
         label = entry.get("label", wallet_address[:8] + "...")
@@ -253,6 +264,9 @@ class SniperBot:
         entry = self.data_store.state["monitored_dev_wallets"].get(wallet_address)
         if not entry:
             return
+
+        # AJOUTÉ pour le nettoyage automatique.
+        self.data_store.update_wallet_activity(wallet_address)
 
         mode = entry.get("mode")
         label = entry.get("label", wallet_address[:8] + "...")

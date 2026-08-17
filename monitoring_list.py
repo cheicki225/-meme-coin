@@ -105,7 +105,18 @@ class DataStore:
         }
 
     def save(self):
+        # CORRIGÉ suite à une question explicite sur la persistance des
+        # données : cette fonction n'a jamais créé le dossier parent de
+        # self.path avant d'écrire. Si DATA_FILE pointe vers un chemin de
+        # volume (ex: /app/data/sniper_data.json) et que ce dossier n'existe
+        # pas encore, l'écriture échouait SILENCIEUSEMENT (juste une ligne
+        # de log, aucun plantage visible) — les données n'étaient alors
+        # JAMAIS réellement sauvegardées, sans que rien ne le signale
+        # clairement dans l'usage normal du bot.
         try:
+            parent_dir = os.path.dirname(self.path)
+            if parent_dir:
+                os.makedirs(parent_dir, exist_ok=True)
             with open(self.path, "w", encoding="utf-8") as f:
                 json.dump(self.state, f, indent=2, ensure_ascii=False)
         except OSError as e:
@@ -182,6 +193,12 @@ class DataStore:
         if settings:
             final_settings.update(settings)
 
+        # AJOUTÉ pour le nettoyage automatique (wallet_cleanup.py) : horodatage
+        # de l'ajout ET de la dernière activité connue — nécessaire pour
+        # détecter l'inactivité. Initialisé à "maintenant" pour ne pas
+        # supprimer un wallet fraîchement ajouté avant même de lui laisser
+        # une chance.
+        now = time.time()
         self.state["monitored_dev_wallets"][address] = {
             "label": label,
             "scheme": scheme,
@@ -189,9 +206,39 @@ class DataStore:
             "backtest_ratio": backtest_ratio,
             "settings": final_settings,
             "already_bought": False,  # pour buy_only_once
+            "added_at": now,
+            "last_activity_at": now,
         }
         self.save()
         log.info(f"➕ Wallet dev ajouté au monitoring : {address[:8]}... ({label}, mode={mode})")
+
+    def update_wallet_activity(self, address: str):
+        """AJOUTÉ pour le nettoyage automatique — appelé à chaque activité
+        détectée (création de token, achat, vente) pour repousser le délai
+        d'inactivité. Ne fait rien si le wallet n'est pas/plus monitoré."""
+        entry = self.state["monitored_dev_wallets"].get(address)
+        if entry:
+            entry["last_activity_at"] = time.time()
+            self.save()
+
+    def get_cleanup_settings(self) -> dict:
+        """AJOUTÉ pour le nettoyage automatique — réglages modifiables
+        depuis Telegram, avec repli sur les valeurs par défaut de config.py
+        si jamais explicitement changés."""
+        defaults = {
+            "enabled": config.WALLET_CLEANUP_ENABLED,
+            "inactive_days": config.WALLET_CLEANUP_INACTIVE_DAYS,
+            "max_consecutive_losses": config.WALLET_CLEANUP_MAX_CONSECUTIVE_LOSSES,
+        }
+        stored = self.state.get("wallet_cleanup_settings", {})
+        return {**defaults, **stored}
+
+    def set_cleanup_settings(self, **kwargs):
+        """AJOUTÉ pour le nettoyage automatique — met à jour un ou plusieurs
+        réglages (enabled, inactive_days, max_consecutive_losses)."""
+        settings = self.state.setdefault("wallet_cleanup_settings", {})
+        settings.update({k: v for k, v in kwargs.items() if v is not None})
+        self.save()
 
     def remove_dev_wallet(self, address: str):
         self.state["monitored_dev_wallets"].pop(address, None)

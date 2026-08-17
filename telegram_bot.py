@@ -870,7 +870,31 @@ class SniperTelegramBot:
             [InlineKeyboardButton(t("btn_gas_fees", lang), callback_data="gas_fees")],
             [InlineKeyboardButton(t("btn_notifications", lang), callback_data="notif_settings")],
             [InlineKeyboardButton(f"{t('global_ai_label', lang)}: {ai_status}", callback_data="toggleglobalai")],
+            [InlineKeyboardButton("🧹 Nettoyage automatique", callback_data="cleanup_settings")],
             [InlineKeyboardButton(t("btn_back", lang), callback_data="menu_main")],
+        ]
+        await self._send_or_edit(query, text, InlineKeyboardMarkup(keyboard), edit=True)
+
+    async def show_cleanup_settings(self, query):
+        """
+        AJOUTÉ suite à une demande explicite : réglages du nettoyage
+        automatique (wallet_cleanup.py) — inactivité max et pertes
+        consécutives max, modifiables ici sans toucher au code.
+        """
+        settings = self.data_store.get_cleanup_settings()
+        status_icon = "🟢 ON" if settings["enabled"] else "🔴 OFF"
+        text = (
+            f"🧹 *Nettoyage automatique*\n\n"
+            f"Retire automatiquement du monitoring les wallets inactifs ou en série de pertes.\n\n"
+            f"Statut : {status_icon}\n"
+            f"Inactivité max : `{settings['inactive_days']:.0f}` jour(s)\n"
+            f"Pertes consécutives max : `{settings['max_consecutive_losses']}`"
+        )
+        keyboard = [
+            [InlineKeyboardButton(f"Activé/Désactivé : {status_icon}", callback_data="cleanup_toggle")],
+            [InlineKeyboardButton("✏️ Modifier l'inactivité max (jours)", callback_data="cleanup_edit_inactive_days")],
+            [InlineKeyboardButton("✏️ Modifier les pertes consécutives max", callback_data="cleanup_edit_max_losses")],
+            [InlineKeyboardButton(t("btn_back", self.data_store.state.get("language", "fr")), callback_data="menu_settings")],
         ]
         await self._send_or_edit(query, text, InlineKeyboardMarkup(keyboard), edit=True)
 
@@ -2090,6 +2114,18 @@ class SniperTelegramBot:
         elif data == "toggleglobalai":
             self.data_store.toggle_global_ai()
             await self.show_settings_menu(query)
+        elif data == "cleanup_settings":
+            await self.show_cleanup_settings(query)
+        elif data == "cleanup_toggle":
+            current = self.data_store.get_cleanup_settings()["enabled"]
+            self.data_store.set_cleanup_settings(enabled=not current)
+            await self.show_cleanup_settings(query)
+        elif data == "cleanup_edit_inactive_days":
+            user_states[chat_id] = {"awaiting": "cleanup_inactive_days"}
+            await query.edit_message_text("Envoie le nombre de jours d'inactivité max avant suppression (ex: 30).")
+        elif data == "cleanup_edit_max_losses":
+            user_states[chat_id] = {"awaiting": "cleanup_max_losses"}
+            await query.edit_message_text("Envoie le nombre de pertes consécutives max avant suppression (ex: 7).")
         elif data == "add_rugger":
             user_states[chat_id] = {"awaiting": "add_rugger_address"}
             await query.edit_message_text("Colle l'adresse du wallet à ajouter au monitoring.")
@@ -2478,6 +2514,30 @@ class SniperTelegramBot:
                 return
             user_states.pop(chat_id, None)
             await self.check_ai_score_inline(update, text)
+
+        elif awaiting == "cleanup_inactive_days":
+            try:
+                days = float(text.strip())
+                if days <= 0:
+                    raise ValueError
+            except ValueError:
+                await update.message.reply_text("Nombre invalide, envoie un nombre de jours positif (ex: 30).")
+                return
+            self.data_store.set_cleanup_settings(inactive_days=days)
+            await update.message.reply_text(f"✅ Inactivité max réglée à `{days:.0f}` jour(s).", parse_mode="Markdown")
+            user_states.pop(chat_id, None)
+
+        elif awaiting == "cleanup_max_losses":
+            try:
+                n = int(text.strip())
+                if n <= 0:
+                    raise ValueError
+            except ValueError:
+                await update.message.reply_text("Nombre invalide, envoie un entier positif (ex: 7).")
+                return
+            self.data_store.set_cleanup_settings(max_consecutive_losses=n)
+            await update.message.reply_text(f"✅ Pertes consécutives max réglées à `{n}`.", parse_mode="Markdown")
+            user_states.pop(chat_id, None)
 
         elif awaiting == "position_calc_input":
             parts = text.strip().split()
