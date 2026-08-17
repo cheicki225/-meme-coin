@@ -57,6 +57,23 @@ def _is_solana_address(text: str) -> bool:
     return all(c in allowed for c in text)
 
 
+def _looks_like_token_mint(text: str) -> bool:
+    """
+    AJOUTÉ suite à un vrai signalement : une adresse de TOKEN collée dans
+    un flux attendant une adresse de WALLET (ex: "Analyse de wallet")
+    produisait un résultat vide et trompeur ("0 créations, 0 achats") sans
+    aucun avertissement — le bot ne faisait aucune différence entre les
+    deux types d'adresses. Pump.fun applique systématiquement un suffixe
+    vanity "pump" à CHAQUE mint de token qu'il génère (confirmé sur tous
+    les exemples réels rencontrés) — un vrai wallet (paire de clés
+    normale) n'a quasiment aucune chance de se terminer par ce suffixe
+    précis par hasard. Signal fiable, pas parfait à 100%, mais largement
+    suffisant pour avertir plutôt que de laisser un résultat vide et
+    trompeur sans explication.
+    """
+    return text.strip().endswith("pump")
+
+
 class SniperTelegramBot:
     def __init__(self, data_store, notifier, paper_trader):
         self.data_store = data_store
@@ -2386,6 +2403,14 @@ class SniperTelegramBot:
             if not _is_solana_address(text):
                 await update.message.reply_text("Adresse invalide, réessaie.")
                 return
+            if _looks_like_token_mint(text):
+                await update.message.reply_text(
+                    "⚠️ Cette adresse ressemble à un TOKEN (se termine par 'pump'), pas à un wallet dev. "
+                    "Utilise plutôt '🔍 Analyser un coin' pour obtenir l'adresse du VRAI dev à partir de ce token, "
+                    "puis ajoute cette adresse-là en Ruggeur."
+                )
+                user_states.pop(chat_id, None)
+                return
             if not self.data_store.has_free_slot():
                 await update.message.reply_text(f"Limite de {config.MAX_MONITORED_WALLETS} wallets atteinte.")
                 user_states.pop(chat_id, None)
@@ -2397,6 +2422,14 @@ class SniperTelegramBot:
         elif awaiting == "add_copytrade_address":
             if not _is_solana_address(text):
                 await update.message.reply_text("Adresse invalide, réessaie.")
+                return
+            if _looks_like_token_mint(text):
+                await update.message.reply_text(
+                    "⚠️ Cette adresse ressemble à un TOKEN (se termine par 'pump'), pas à un wallet trader. "
+                    "Utilise plutôt '🔍 Analyser un coin' pour trouver de vrais acheteurs de ce token, "
+                    "puis ajoute LEUR adresse en Copy Trading."
+                )
+                user_states.pop(chat_id, None)
                 return
             if not self.data_store.has_free_slot():
                 await update.message.reply_text(f"Limite de {config.MAX_MONITORED_WALLETS} wallets atteinte.")
@@ -2420,6 +2453,14 @@ class SniperTelegramBot:
         elif awaiting == "analyze_wallet_address":
             if not _is_solana_address(text):
                 await update.message.reply_text("Adresse invalide, réessaie.")
+                return
+            if _looks_like_token_mint(text):
+                await update.message.reply_text(
+                    "⚠️ Cette adresse ressemble à un TOKEN (se termine par 'pump'), pas à un wallet — "
+                    "d'où le résultat vide que tu obtiendrais (0 créations, 0 achats). "
+                    "Utilise plutôt '🔍 Analyser un coin' pour ce genre d'adresse."
+                )
+                user_states.pop(chat_id, None)
                 return
             user_states.pop(chat_id, None)
             await self.analyze_wallet_inline(update, text)
