@@ -54,8 +54,17 @@ def get_stats() -> dict:
 _CREATE_DISCRIMINATOR = hashlib.sha256(b"global:create").digest()[:8]
 _CREATE_V2_DISCRIMINATOR = hashlib.sha256(b"global:create_v2").digest()[:8]
 
+# CORRIGÉ suite à un vrai diagnostic (debug_wallet_history.py) sur un dev
+# réel : l'index 6 pour "create" (legacy) était faux — l'adresse créateur
+# attendue apparaissait bien dans la liste des comptes, mais à l'index 7,
+# pas 6. Décalage d'un cran qui faisait échouer la comparaison à chaque
+# fois, donc get_created_tokens() ne trouvait JAMAIS aucune création
+# "legacy" (seul create_v2, index 5, fonctionnait). Structure de comptes
+# confirmée sur ce test : [0]=mint [1]=mint_authority [2]=bonding_curve
+# [3]=associated_bonding_curve [4]=global [5]=mpl_token_metadata_program
+# [6]=metadata_pda [7]=creator/user [8]=system_program ...
 _CREATOR_INDEX_BY_DISCRIMINATOR = {
-    bytes(_CREATE_DISCRIMINATOR): 6,
+    bytes(_CREATE_DISCRIMINATOR): 7,
     bytes(_CREATE_V2_DISCRIMINATOR): 5,
 }
 
@@ -476,7 +485,7 @@ def _find_pump_fun_create(tx: dict, expected_creator: str) -> dict:
     {"mint": str, "block_time": int | None} ou None si non trouvé.
 
     Le mint est TOUJOURS à l'index 0 des comptes, dans les deux versions.
-    L'index du créateur diffère : 6 pour "create" (legacy, SPL standard),
+    L'index du créateur diffère : 7 pour "create" (legacy, SPL standard),
     5 pour "create_v2" (Token-2022 — confirmé par test réel : la grande
     majorité des devs actifs utilisent maintenant cette version, "create"
     seul retournait 0 résultat systématiquement sur 2 tests indépendants).

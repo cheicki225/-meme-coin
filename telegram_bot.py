@@ -1047,6 +1047,11 @@ class SniperTelegramBot:
             cluster_info = await find_dev_cluster.find_cluster_addresses(dev, max_starred=12, on_progress=_cluster_progress)
             if cluster_info and len(cluster_info.get("cluster", [])) > 1:
                 self.data_store.state.setdefault("cluster_cache", {})[dev] = cluster_info["cluster"]
+                if cluster_info.get("funder"):
+                    self.data_store.state.setdefault("protection_target_cache", {})[cluster_info["funder"]] = {
+                        "amount_sol": trace.get("amount_sol"),
+                        "label": f"exchange_{cluster_info['funder'][:8]}",
+                    }
                 self.data_store.save()
 
         if cluster_info and len(cluster_info.get("cluster", [])) > 1:
@@ -1106,6 +1111,21 @@ class SniperTelegramBot:
                 f"➕ Ajouter tout le cluster ({len(cluster_info['cluster'])}) en Ruggeur",
                 callback_data=f"quickaddcluster_{dev}",
             )])
+            # AJOUTÉ suite à une question explicite : le scanner de
+            # protection (protection_scanner.py) surveille en continu les
+            # adresses exchange enregistrées, pour détecter automatiquement
+            # les FUTURS wallets financés par le même montant — exactement
+            # la méthode "adresse intermédiaire". Mais rien nulle part dans
+            # ce fichier n'appelait jamais add_dev_wallet... add_protection_target()
+            # pour remplir cette liste — le scanner tournait, mais surveillait
+            # une liste toujours vide. Ce bouton ferme cette boucle : le
+            # financeur trouvé ici devient une cible surveillée en
+            # permanence, pas juste un cluster figé au moment du scan.
+            if cluster_info.get("funder"):
+                keyboard_rows.append([InlineKeyboardButton(
+                    "🛡️ Surveiller cet exchange en continu (nouveaux wallets)",
+                    callback_data=f"quickaddprotection_{cluster_info['funder']}",
+                )])
         keyboard_rows.append([InlineKeyboardButton("← Back", callback_data="menu_main")])
         keyboard = InlineKeyboardMarkup(keyboard_rows)
         await msg.edit_text(text, parse_mode="Markdown", reply_markup=keyboard)
@@ -1834,6 +1854,34 @@ class SniperTelegramBot:
                     self.data_store.add_dev_wallet(addr, label=addr[:8] + "...", scheme="cluster", backtest_ratio=0.0)
                     added += 1
                 await query.answer(f"✅ {added} adresse(s) ajoutée(s) ({skipped} déjà présente(s)).", show_alert=True)
+        elif data.startswith("quickaddprotection_"):
+            # AJOUTÉ suite à une question explicite : le scanner de
+            # protection (protection_scanner.py) tourne en tâche de fond
+            # mais surveillait une liste TOUJOURS VIDE — rien n'appelait
+            # jamais add_protection_target() nulle part dans le bot
+            # Telegram. Ce handler ferme cette boucle : enregistre
+            # l'adresse exchange trouvée pendant l'analyse comme cible
+            # surveillée EN PERMANENCE — le scanner détectera désormais
+            # automatiquement tout NOUVEAU wallet financé par le même
+            # montant depuis cette même adresse, sans avoir à relancer une
+            # analyse manuelle à chaque fois.
+            funder_address = data[len("quickaddprotection_"):]
+            cached = self.data_store.state.get("protection_target_cache", {}).get(funder_address)
+            already_watched = any(
+                t.get("address") == funder_address for t in self.data_store.state.get("protection_targets", {}).values()
+            )
+            if not cached:
+                await query.answer("Infos introuvables (relance l'analyse du token).", show_alert=True)
+            elif already_watched:
+                await query.answer("Déjà surveillé.", show_alert=True)
+            else:
+                self.data_store.add_protection_target(
+                    label=cached["label"],
+                    target_type="exchange",
+                    address=funder_address,
+                    amount_sol=cached.get("amount_sol"),
+                )
+                await query.answer("🛡️ Exchange ajouté à la surveillance permanente !", show_alert=True)
         elif data == "gas_fees":
             await self.show_gas_fees(query)
         elif data == "notif_settings":

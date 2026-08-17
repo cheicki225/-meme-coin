@@ -65,6 +65,7 @@ async def main(dev_address: str):
     }
 
     first_pumpfun_ix_shown = False
+    first_create_shown = False
     first_create_v2_shown = False
 
     for i, sig_info in enumerate(signatures):
@@ -110,6 +111,15 @@ async def main(dev_address: str):
 
             if data_bytes[:8] == CREATE_DISCRIMINATOR:
                 stats["avec_discriminant_create"] += 1
+                if not first_create_shown:
+                    print(f"\n🎯 EXEMPLE CREATE (legacy) trouvé (signature {sig_info['signature']}) :")
+                    print(f"   Nombre de comptes : {len(ix.get('accounts', []))}")
+                    print(f"   Tous les comptes, avec leur index :")
+                    for idx, acc in enumerate(ix.get('accounts', [])):
+                        marker = " ← dev_address recherché !" if acc == dev_address else ""
+                        print(f"     [{idx}] {acc}{marker}")
+                    print()
+                    first_create_shown = True
             elif data_bytes[:8] == CREATE_V2_DISCRIMINATOR:
                 stats["avec_discriminant_create_v2"] += 1
                 if not first_create_v2_shown:
