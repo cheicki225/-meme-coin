@@ -333,6 +333,17 @@ COPYTRADE_SYNC_INTERVAL_S = int(os.getenv("COPYTRADE_SYNC_INTERVAL_S", "10"))  #
 # disparaître, distinct d'une simple vente de token sur la bonding curve.
 DEV_SOL_TRANSFER_ALERT_PCT = float(os.getenv("DEV_SOL_TRANSFER_ALERT_PCT", "90"))  # % du solde transféré qui déclenche l'alerte
 
+# ── Nettoyage automatique des wallets surveillés ──
+# AJOUTÉ suite à une demande explicite : retire du monitoring les wallets
+# inactifs depuis trop longtemps, ou ayant enchaîné trop de pertes
+# consécutives. Réglable directement depuis Telegram (voir
+# monitoring_list.get_cleanup_settings/set_cleanup_settings) — ces valeurs
+# ne servent que de défaut initial.
+WALLET_CLEANUP_ENABLED = os.getenv("WALLET_CLEANUP_ENABLED", "true").lower() == "true"
+WALLET_CLEANUP_INTERVAL_S = int(os.getenv("WALLET_CLEANUP_INTERVAL_S", "3600"))  # 1h entre 2 passages
+WALLET_CLEANUP_INACTIVE_DAYS = float(os.getenv("WALLET_CLEANUP_INACTIVE_DAYS", "30"))
+WALLET_CLEANUP_MAX_CONSECUTIVE_LOSSES = int(os.getenv("WALLET_CLEANUP_MAX_CONSECUTIVE_LOSSES", "7"))
+
 # ── Buy on Dev Sell — délai max d'attente de la vente du dev après création ─
 BUY_ON_DEV_SELL_TIMEOUT_MIN = float(os.getenv("BUY_ON_DEV_SELL_TIMEOUT_MIN", "30"))
 
