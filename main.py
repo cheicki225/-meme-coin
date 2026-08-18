@@ -218,7 +218,7 @@ class SniperBot:
             reason=f"Copy trade — achat détecté chez {label}"
         )
 
-    async def on_wallet_withdrawal(self, wallet_address: str, destination: str, amount_sol: float):
+    async def on_wallet_withdrawal(self, wallet_address: str, destination: str, amount_sol: float, signature: str = None):
         """
         Callback du copytrade_listener : un wallet surveillé (Ruggeur OU
         Copy Trading, sans distinction) vient d'envoyer du SOL vers une
@@ -233,6 +233,9 @@ class SniperBot:
         personnels...). Assumé suite à la demande explicite, mais à
         surveiller : réduire WITHDRAWAL_ALERT_MIN_SOL trop bas multipliera
         les ajouts automatiques.
+
+        AJOUTÉ (2e fois) suite à une demande explicite : bouton "Voir sur
+        Solscan" pointant directement vers la transaction concernée.
         """
         entry = self.data_store.state["monitored_dev_wallets"].get(wallet_address, {})
         label = entry.get("label", wallet_address[:8] + "...")
@@ -249,15 +252,23 @@ class SniperBot:
         elif not self.data_store.has_free_slot():
             added_note = "\n\n⚠️ _Limite de wallets atteinte — adresse destinataire NON ajoutée._"
 
+        reply_markup = None
+        if signature:
+            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+            reply_markup = InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔍 Voir sur Solscan", url=f"https://solscan.io/tx/{signature}")
+            ]])
+
         await self.notifier.notify(
             "rugger_alert",
             f"📤 *Retrait SOL détecté*\n\n"
             f"Wallet : `{wallet_address}` ({label})\n"
             f"Montant : `{amount_sol:.4f}` SOL\n"
             f"Destination : `{destination}`{added_note}",
+            reply_markup=reply_markup,
         )
 
-    async def on_dev_large_sol_transfer(self, dev_address: str, destination: str, amount_sol: float, pct_of_balance: float):
+    async def on_dev_large_sol_transfer(self, dev_address: str, destination: str, amount_sol: float, pct_of_balance: float, signature: str = None):
         """
         Callback du copytrade_listener : un dev surveillé (mode
         track_creation) vient de transférer une grosse partie de son solde
@@ -268,6 +279,9 @@ class SniperBot:
         de l'adresse DESTINATAIRE au monitoring — elle pourrait être un
         autre wallet contrôlé par la même personne, ou une piste utile pour
         la méthode "adresse intermédiaire".
+
+        AJOUTÉ (2e fois) suite à une demande explicite : bouton "Voir sur
+        Solscan" pointant directement vers la transaction concernée.
         """
         entry = self.data_store.state["monitored_dev_wallets"].get(dev_address, {})
         label = entry.get("label", dev_address[:8] + "...")
@@ -276,6 +290,14 @@ class SniperBot:
             f"💸 ALERTE : {label} a transféré {amount_sol:.4f} SOL ({pct_of_balance:.0f}% de son solde) "
             f"vers {destination[:8]}..."
         )
+
+        reply_markup = None
+        if signature:
+            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+            reply_markup = InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔍 Voir sur Solscan", url=f"https://solscan.io/tx/{signature}")
+            ]])
+
         await self.notifier.notify(
             "rugger_alert",
             f"💸 *Transfert SOL important détecté*\n\n"
@@ -284,6 +306,7 @@ class SniperBot:
             f"Destination : `{destination}`\n\n"
             f"_Ce dev encaisse peut-être et se prépare à disparaître. "
             f"L'adresse destinataire a été ajoutée au monitoring._",
+            reply_markup=reply_markup,
         )
 
         if not self.data_store.is_dev_monitored(destination) and self.data_store.has_free_slot():

@@ -60,11 +60,18 @@ def _get_bonding_curve_address(mint: str) -> str:
     return str(pda)
 
 
-async def get_bonding_curve_price(token_mint: str) -> dict:
+async def get_bonding_curve_price(token_mint: str, retries: int = 2, retry_delay_s: float = 1.5) -> dict:
     """
     Lit le prix EN DIRECT depuis le compte bonding curve on-chain.
     Contrairement à _get_pair_data (DexScreener), fonctionne dès la
     création du token — aucun délai d'indexation.
+
+    CORRIGÉ suite à un vrai échec observé en conditions réelles : un achat
+    en copytrade détecté 37ms après la création du compte bonding curve
+    échouait avec "value: None" — pas une erreur RPC, le compte n'avait
+    simplement pas encore eu le temps de se propager sur le nœud RPC
+    interrogé (latence de réplication normale, pas un bug). Réessaie
+    maintenant une fois de plus avant d'abandonner, avec un court délai.
 
     Retourne {"price_sol": float, "market_cap_usd": float, "complete": bool}
     ou {} si le compte n'existe pas (adresse invalide, RPC en échec) ou si
@@ -83,27 +90,37 @@ async def get_bonding_curve_price(token_mint: str) -> dict:
         "jsonrpc": "2.0", "id": 1, "method": "getAccountInfo",
         "params": [bonding_curve_address, {"encoding": "base64"}],
     }
-    result = await rpc_client.rpc_post(payload)
 
-    # CORRIGÉ — bug trouvé en repassant sur ce code suite à un échec
-    # persistant : rpc_client.rpc_post() retourne DÉJÀ le champ "result"
-    # déballé (voir son docstring : "Retourne le champ 'result' de la
-    # réponse"), pas l'enveloppe JSON-RPC complète. Le code cherchait donc
-    # result["result"]["value"] — une clé "result" qui n'existe plus à ce
-    # niveau, puisqu'elle a déjà été retirée par rpc_post(). "value" était
-    # donc TOUJOURS vide, silencieusement, depuis le début — la vraie cause
-    # de "Buy Failed - prix d'entrée indisponible" qui persistait malgré la
-    # lecture on-chain censée le corriger.
-    if not result:
-        log.warning(f"⚠️ Bonding curve — échec RPC pour {token_mint} (getAccountInfo n'a rien retourné)")
+    value = None
+    for attempt in range(retries + 1):
+        result = await rpc_client.rpc_post(payload)
+
+        # CORRIGÉ — bug trouvé en repassant sur ce code suite à un échec
+        # persistant : rpc_client.rpc_post() retourne DÉJÀ le champ "result"
+        # déballé (voir son docstring : "Retourne le champ 'result' de la
+        # réponse"), pas l'enveloppe JSON-RPC complète. Le code cherchait donc
+        # result["result"]["value"] — une clé "result" qui n'existe plus à ce
+        # niveau, puisqu'elle a déjà été retirée par rpc_post(). "value" était
+        # donc TOUJOURS vide, silencieusement, depuis le début — la vraie cause
+        # de "Buy Failed - prix d'entrée indisponible" qui persistait malgré la
+        # lecture on-chain censée le corriger.
+        if not result:
+            log.warning(f"⚠️ Bonding curve — échec RPC pour {token_mint} (essai {attempt + 1}/{retries + 1})")
+        else:
+            value = result.get("value")
+            if value and value.get("data"):
+                break  # trouvé, pas besoin de réessayer
+            log.warning(f"⚠️ Bonding curve — compte introuvable pour {token_mint} "
+                        f"(essai {attempt + 1}/{retries + 1}, adresse {bonding_curve_address})")
+            value = None
+
+        if attempt < retries:
+            await asyncio.sleep(retry_delay_s)
+
+    if not value:
         return {}
 
     try:
-        value = result.get("value")
-        if not value or not value.get("data"):
-            log.warning(f"⚠️ Bonding curve — compte introuvable pour {token_mint} "
-                        f"(adresse {bonding_curve_address}) : réponse RPC = {result}")
-            return {}
         raw = base64.b64decode(value["data"][0])
         virtual_token_reserves = struct.unpack_from("<Q", raw, 8)[0]
         virtual_sol_reserves = struct.unpack_from("<Q", raw, 16)[0]
@@ -471,18 +488,28 @@ async def backtest_token_onchain_pathaware(token_mint: str, entry_price_sol: flo
     savoir si ça s'est produit avant ou après le plus haut — limite acceptée
     explicitement pour cette méthode plus simple.
 
-    entry_price_sol doit venir du VRAI prix d'entrée (sol_spent /
-    tokens_received de la transaction d'achat elle-même) — pas d'une
-    approximation — pour que la comparaison TP/SL soit fiable.
+    entry_price_sol doit idéalement venir du VRAI prix d'entrée (sol_spent /
+    tokens_received de la transaction d'achat elle-même). Si non fourni
+    (entry_price_sol=None) — AJOUTÉ pour les tokens CRÉÉS (pas achetés,
+    donc sans notion de "prix payé") — dérive le prix d'entrée depuis le
+    tout premier trade reconstruit après la création, comme le fait déjà
+    backtest_token_pathaware() (GeckoTerminal) avec la clôture de la 1ère
+    bougie. Permet d'analyser un dev-créateur avec la même méthode fiable
+    que pour un trader, sans avoir besoin d'un montant "acheté".
     """
     tp_pct = tp_pct if tp_pct is not None else config.TP_PCT
     sl_pct = sl_pct if sl_pct is not None else config.SL_PCT
 
-    if not entry_price_sol or not entry_block_time:
+    if not entry_block_time:
         return None
 
     points = await _get_price_points_after(token_mint, entry_block_time)
     if not points:
+        return None
+
+    if not entry_price_sol:
+        entry_price_sol = points[0][1]  # prix du tout premier trade reconstruit
+    if not entry_price_sol or entry_price_sol <= 0:
         return None
 
     prices = [p for _, p in points]
@@ -763,8 +790,12 @@ async def get_detailed_trade_info(token_mint: str, purchase_block_time: int = No
     # plus fiable pour la quasi-totalité des tokens analysés ici (dev-sniping
     # et copy trading juste après création = quasiment toujours en bonding
     # curve, jamais migré vers un vrai pool AMM).
+    # AJOUTÉ : ne dépend plus de entry_price_sol (utile pour un token CRÉÉ,
+    # pas acheté — sans sol_spent/tokens_received, entry_price_sol reste
+    # vide, mais backtest_token_onchain_pathaware sait maintenant dériver
+    # le prix d'entrée depuis le tout premier trade si besoin).
     onchain_result = None
-    if entry_price_sol and purchase_block_time:
+    if purchase_block_time:
         onchain_result = await backtest_token_onchain_pathaware(
             token_mint, entry_price_sol, purchase_block_time, tp_pct=tp_pct, sl_pct=sl_pct
         )

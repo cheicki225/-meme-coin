@@ -53,11 +53,11 @@ class CopyTradeListener:
         on_buy: async(wallet_address: str, token_mint: str, signature: str)
         on_sell: async(wallet_address: str, token_mint: str, signature: str)
         on_large_sol_transfer: async(wallet_address: str, destination: str,
-            amount_sol: float, pct_of_balance: float) — devs uniquement,
-            seuil en % du solde (config.DEV_SOL_TRANSFER_ALERT_PCT).
+            amount_sol: float, pct_of_balance: float, signature: str) —
+            devs uniquement, seuil en % du solde (config.DEV_SOL_TRANSFER_ALERT_PCT).
         on_withdrawal: async(wallet_address: str, destination: str,
-            amount_sol: float) — AJOUTÉ, TOUS les wallets surveillés,
-            seuil en montant SOL absolu (config.WITHDRAWAL_ALERT_MIN_SOL),
+            amount_sol: float, signature: str) — AJOUTÉ, TOUS les wallets
+            surveillés, seuil en montant SOL absolu (config.WITHDRAWAL_ALERT_MIN_SOL),
             optionnel (None = désactivé silencieusement).
         """
         self.data_store = data_store
@@ -261,7 +261,7 @@ class CopyTradeListener:
                     f"💸 Transfert SOL important détecté : {from_account[:8]}... a envoyé "
                     f"{amount_sol:.4f} SOL ({pct_transferred:.0f}% de son solde) vers {to_account[:8]}..."
                 )
-                await self.on_large_sol_transfer(from_account, to_account, amount_sol, pct_transferred)
+                await self.on_large_sol_transfer(from_account, to_account, amount_sol, pct_transferred, signature)
 
     async def _check_withdrawal(self, parsed: dict, signature: str):
         """
@@ -294,7 +294,7 @@ class CopyTradeListener:
                 continue
 
             log.info(f"📤 Retrait SOL détecté : {from_account[:8]}... a envoyé {amount_sol:.4f} SOL vers {to_account[:8]}...")
-            await self.on_withdrawal(from_account, to_account, amount_sol)
+            await self.on_withdrawal(from_account, to_account, amount_sol, signature)
 
     async def _fetch_parsed_transaction(self, signature: str) -> dict:
         """CORRIGÉ : même fix que websocket_listener.py — session isolée sans
