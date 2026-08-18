@@ -242,6 +242,17 @@ class SniperBot:
 
         log.info(f"📤 Retrait SOL : {label} a envoyé {amount_sol:.4f} SOL vers {destination[:8]}...")
 
+        # AJOUTÉ suite à une demande explicite : affiche le solde restant
+        # sur le wallet APRÈS le retrait (lu en direct via RPC, pas
+        # recalculé à partir du montant transféré — plus fiable si
+        # d'autres mouvements ont eu lieu entre-temps).
+        try:
+            remaining_balance = await wallet.get_sol_balance_of(wallet_address)
+            balance_line = f"Solde restant : `{remaining_balance:.4f}` SOL\n"
+        except Exception as e:
+            log.debug(f"Erreur lecture solde restant pour {wallet_address}: {e}")
+            balance_line = ""
+
         added_note = ""
         if not self.data_store.is_dev_monitored(destination) and self.data_store.has_free_slot():
             self.data_store.add_dev_wallet(
@@ -264,6 +275,7 @@ class SniperBot:
             f"📤 *Retrait SOL détecté*\n\n"
             f"Wallet : `{wallet_address}` ({label})\n"
             f"Montant : `{amount_sol:.4f}` SOL\n"
+            f"{balance_line}"
             f"Destination : `{destination}`{added_note}",
             reply_markup=reply_markup,
         )
