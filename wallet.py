@@ -20,6 +20,11 @@ log = logging.getLogger("wallet")
 
 _keypair_cache = None
 
+# AJOUTÉ suite à une demande explicite : adresse officielle du mint USDC
+# sur Solana — nécessaire pour détecter des transferts USDC (un token SPL,
+# pas du SOL natif) et pour calculer la valeur d'un wallet en USDC.
+USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+
 
 def load_keypair() -> Keypair:
     """Charge le keypair depuis config.SOLANA_PRIVATE_KEY (base58). Levée
@@ -66,3 +71,53 @@ async def get_sol_balance_of(address: str) -> float:
     result = await rpc_client.rpc_post(payload, timeout=10)
     lamports = result.get("value", 0) if isinstance(result, dict) else 0
     return lamports / 1_000_000_000
+
+
+async def get_usdc_balance_of(address: str) -> float:
+    """
+    AJOUTÉ suite à une demande explicite : solde USDC d'une adresse
+    (nécessite getTokenAccountsByOwner filtré par mint, contrairement au
+    SOL natif qui utilise getBalance). Additionne tous les comptes de
+    token USDC trouvés (normalement un seul, mais pas garanti).
+    """
+    payload = {
+        "jsonrpc": "2.0", "id": 1,
+        "method": "getTokenAccountsByOwner",
+        "params": [address, {"mint": USDC_MINT}, {"encoding": "jsonParsed"}],
+    }
+    result = await rpc_client.rpc_post(payload, timeout=10)
+    accounts = result.get("value", []) if isinstance(result, dict) else []
+
+    total = 0.0
+    for acc in accounts:
+        try:
+            ui_amount = acc["account"]["data"]["parsed"]["info"]["tokenAmount"]["uiAmount"]
+            total += float(ui_amount or 0)
+        except (KeyError, TypeError):
+            continue
+    return total
+
+
+async def get_wallet_value_summary(address: str) -> dict:
+    """
+    AJOUTÉ suite à une demande explicite : valeur totale d'un wallet, en
+    SOL + USDC UNIQUEMENT — pas tous les tokens détenus. Volontairement
+    limité à ces 2 actifs : calculer la valeur de CHAQUE token détenu
+    nécessiterait un appel de prix (DexScreener ou équivalent) par token,
+    trop coûteux à faire en temps réel à chaque alerte. Cohérent avec la
+    portée des alertes de retrait elles-mêmes, limitées à SOL + USDC.
+
+    Retourne {"sol_balance": float, "sol_value_usd": float,
+    "usdc_balance": float, "total_value_usd": float}.
+    """
+    sol_balance = await get_sol_balance_of(address)
+    usdc_balance = await get_usdc_balance_of(address)
+    sol_value_usd = sol_balance * config.SOL_USD_RATE
+    total_value_usd = sol_value_usd + usdc_balance  # 1 USDC ≈ 1$
+
+    return {
+        "sol_balance": sol_balance,
+        "sol_value_usd": sol_value_usd,
+        "usdc_balance": usdc_balance,
+        "total_value_usd": total_value_usd,
+    }

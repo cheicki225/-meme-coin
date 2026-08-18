@@ -921,23 +921,27 @@ class SniperTelegramBot:
         """AJOUTÉ suite à une demande explicite : réglages de l'alerte
         retrait SOL (montant absolu, tous wallets surveillés).
         ÉTENDU (2e fois) avec auto_add et allow_cascade — voir main.py
-        on_wallet_withdrawal pour la logique anti-cascade."""
+        on_wallet_withdrawal pour la logique anti-cascade.
+        ÉTENDU (3e fois) avec le seuil USDC — voir copytrade_listener.py
+        _check_withdrawal, désormais aussi actif sur les transferts USDC."""
         settings = self.data_store.get_withdrawal_alert_settings()
         status_icon = "🟢 ON" if settings["enabled"] else "🔴 OFF"
         auto_add_icon = "🟢 ON" if settings.get("auto_add", True) else "🔴 OFF"
         cascade_icon = "🟢 ON" if settings.get("allow_cascade", False) else "🔴 OFF"
         text = (
-            f"📤 *Alerte retrait SOL*\n\n"
+            f"📤 *Alerte retrait SOL + USDC*\n\n"
             f"Alerte quand N'IMPORTE QUEL wallet surveillé (Ruggeur ou Copy Trading) "
-            f"envoie du SOL vers une autre adresse.\n\n"
+            f"envoie du SOL ou de l'USDC vers une autre adresse.\n\n"
             f"Statut : {status_icon}\n"
-            f"Montant minimum : `{settings['min_sol']:.4f}` SOL\n"
+            f"Montant minimum SOL : `{settings['min_sol']:.4f}` SOL\n"
+            f"Montant minimum USDC : `{settings.get('min_usdc', 20):.2f}` USDC\n"
             f"Ajout automatique de l'adresse destinataire : {auto_add_icon}\n"
             f"Autoriser la cascade (adresse ajoutée → peut elle-même déclencher un ajout) : {cascade_icon}"
         )
         keyboard = [
             [InlineKeyboardButton(f"Activé/Désactivé : {status_icon}", callback_data="withdrawal_toggle")],
             [InlineKeyboardButton("✏️ Modifier le montant minimum (SOL)", callback_data="withdrawal_edit_min_sol")],
+            [InlineKeyboardButton("✏️ Modifier le montant minimum (USDC)", callback_data="withdrawal_edit_min_usdc")],
             [InlineKeyboardButton(f"Ajout auto destinataire : {auto_add_icon}", callback_data="withdrawal_toggle_autoadd")],
             [InlineKeyboardButton(f"Autoriser la cascade : {cascade_icon}", callback_data="withdrawal_toggle_cascade")],
             [InlineKeyboardButton(t("btn_back", self.data_store.state.get("language", "fr")), callback_data="menu_settings")],
@@ -2253,6 +2257,9 @@ class SniperTelegramBot:
         elif data == "withdrawal_edit_min_sol":
             user_states[chat_id] = {"awaiting": "withdrawal_min_sol"}
             await query.edit_message_text("Envoie le montant minimum en SOL qui déclenche l'alerte (ex: 0.1).")
+        elif data == "withdrawal_edit_min_usdc":
+            user_states[chat_id] = {"awaiting": "withdrawal_min_usdc"}
+            await query.edit_message_text("Envoie le montant minimum en USDC qui déclenche l'alerte (ex: 20).")
         elif data == "withdrawal_toggle_autoadd":
             current = self.data_store.get_withdrawal_alert_settings().get("auto_add", True)
             self.data_store.set_withdrawal_alert_settings(auto_add=not current)
@@ -2696,7 +2703,19 @@ class SniperTelegramBot:
                 await update.message.reply_text("Montant invalide, envoie un nombre positif (ex: 0.1).")
                 return
             self.data_store.set_withdrawal_alert_settings(min_sol=amount)
-            await update.message.reply_text(f"✅ Seuil d'alerte retrait réglé à `{amount:.4f}` SOL.", parse_mode="Markdown")
+            await update.message.reply_text(f"✅ Seuil d'alerte retrait SOL réglé à `{amount:.4f}` SOL.", parse_mode="Markdown")
+            user_states.pop(chat_id, None)
+
+        elif awaiting == "withdrawal_min_usdc":
+            try:
+                amount = float(text.strip())
+                if amount <= 0:
+                    raise ValueError
+            except ValueError:
+                await update.message.reply_text("Montant invalide, envoie un nombre positif (ex: 20).")
+                return
+            self.data_store.set_withdrawal_alert_settings(min_usdc=amount)
+            await update.message.reply_text(f"✅ Seuil d'alerte retrait USDC réglé à `{amount:.2f}` USDC.", parse_mode="Markdown")
             user_states.pop(chat_id, None)
 
         elif awaiting == "devtransfer_pct":

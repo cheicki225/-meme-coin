@@ -56,9 +56,9 @@ class CopyTradeListener:
             amount_sol: float, pct_of_balance: float, signature: str) —
             devs uniquement, seuil en % du solde (config.DEV_SOL_TRANSFER_ALERT_PCT).
         on_withdrawal: async(wallet_address: str, destination: str,
-            amount_sol: float, signature: str) — AJOUTÉ, TOUS les wallets
-            surveillés, seuil en montant SOL absolu (config.WITHDRAWAL_ALERT_MIN_SOL),
-            optionnel (None = désactivé silencieusement).
+            amount: float, asset: str, signature: str) — AJOUTÉ, TOUS les
+            wallets surveillés, seuil en montant absolu (SOL ou USDC selon
+            "asset"), optionnel (None = désactivé silencieusement).
         """
         self.data_store = data_store
         self.on_buy = on_buy
@@ -279,14 +279,21 @@ class CopyTradeListener:
         Aucune vérification de solde ici, juste "a-t-il envoyé au moins
         X SOL ?" — plus simple, et volontairement indépendant du système à
         90% déjà en place.
+
+        ÉTENDU suite à une demande explicite : détecte maintenant AUSSI les
+        retraits en USDC — un token SPL, donc lu depuis tokenTransfers, pas
+        nativeTransfers (SOL uniquement). Volontairement limité à SOL +
+        USDC, pas tous les tokens — cohérent avec get_wallet_value_summary
+        dans wallet.py.
         """
         settings = self.data_store.get_withdrawal_alert_settings()
         if not settings.get("enabled", True):
             return
 
         min_sol = settings.get("min_sol", config.WITHDRAWAL_ALERT_MIN_SOL)
-        native_transfers = parsed.get("nativeTransfers", []) or []
+        min_usdc = settings.get("min_usdc", config.WITHDRAWAL_ALERT_MIN_USDC)
 
+        native_transfers = parsed.get("nativeTransfers", []) or []
         for nt in native_transfers:
             from_account = nt.get("fromUserAccount")
             to_account = nt.get("toUserAccount")
@@ -300,7 +307,25 @@ class CopyTradeListener:
                 continue
 
             log.info(f"📤 Retrait SOL détecté : {from_account[:8]}... a envoyé {amount_sol:.4f} SOL vers {to_account[:8]}...")
-            await self.on_withdrawal(from_account, to_account, amount_sol, signature)
+            await self.on_withdrawal(from_account, to_account, amount_sol, "SOL", signature)
+
+        token_transfers = parsed.get("tokenTransfers", []) or []
+        for tt in token_transfers:
+            if tt.get("mint") != wallet.USDC_MINT:
+                continue
+
+            from_account = tt.get("fromUserAccount")
+            to_account = tt.get("toUserAccount")
+            try:
+                amount_usdc = float(tt.get("tokenAmount", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+
+            if from_account not in self._subscribed_wallets or amount_usdc < min_usdc:
+                continue
+
+            log.info(f"📤 Retrait USDC détecté : {from_account[:8]}... a envoyé {amount_usdc:.2f} USDC vers {to_account[:8]}...")
+            await self.on_withdrawal(from_account, to_account, amount_usdc, "USDC", signature)
 
     async def _fetch_parsed_transaction(self, signature: str) -> dict:
         """CORRIGÉ : même fix que websocket_listener.py — session isolée sans

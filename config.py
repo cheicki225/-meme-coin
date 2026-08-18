@@ -341,6 +341,10 @@ DEV_SOL_TRANSFER_ALERT_PCT = float(os.getenv("DEV_SOL_TRANSFER_ALERT_PCT", "90")
 # de solde, juste "a-t-il envoyé au moins X SOL ?".
 WITHDRAWAL_ALERT_ENABLED = os.getenv("WITHDRAWAL_ALERT_ENABLED", "true").lower() == "true"
 WITHDRAWAL_ALERT_MIN_SOL = float(os.getenv("WITHDRAWAL_ALERT_MIN_SOL", "0.1"))
+# AJOUTÉ suite à une demande explicite : détection étendue à l'USDC (un
+# token SPL, pas du SOL natif — nécessite un seuil séparé, en dollars
+# puisque 1 USDC ≈ 1$).
+WITHDRAWAL_ALERT_MIN_USDC = float(os.getenv("WITHDRAWAL_ALERT_MIN_USDC", "20"))
 # AJOUTÉ suite à un vrai effet en cascade observé : une adresse ajoutée
 # automatiquement (via cette alerte) pouvait elle-même déclencher un
 # nouvel ajout automatique si ELLE faisait aussi un retrait, sans limite —

@@ -246,6 +246,7 @@ class DataStore:
         defaults = {
             "enabled": config.WITHDRAWAL_ALERT_ENABLED,
             "min_sol": config.WITHDRAWAL_ALERT_MIN_SOL,
+            "min_usdc": config.WITHDRAWAL_ALERT_MIN_USDC,
             "auto_add": config.WITHDRAWAL_ALERT_AUTO_ADD,
             "allow_cascade": config.WITHDRAWAL_ALERT_ALLOW_CASCADE,
         }

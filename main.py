@@ -218,11 +218,12 @@ class SniperBot:
             reason=f"Copy trade — achat détecté chez {label}"
         )
 
-    async def on_wallet_withdrawal(self, wallet_address: str, destination: str, amount_sol: float, signature: str = None):
+    async def on_wallet_withdrawal(self, wallet_address: str, destination: str, amount: float, asset: str = "SOL", signature: str = None):
         """
         Callback du copytrade_listener : un wallet surveillé (Ruggeur OU
-        Copy Trading, sans distinction) vient d'envoyer du SOL vers une
-        autre adresse, au-delà du montant minimum configuré.
+        Copy Trading, sans distinction) vient d'envoyer du SOL OU DE
+        L'USDC vers une autre adresse, au-delà du montant minimum configuré
+        pour cet actif.
 
         MODIFIÉ suite à une demande explicite : ajoute maintenant AUSSI
         l'adresse destinataire au monitoring, comme le fait déjà
@@ -236,21 +237,32 @@ class SniperBot:
 
         AJOUTÉ (2e fois) suite à une demande explicite : bouton "Voir sur
         Solscan" pointant directement vers la transaction concernée.
+
+        ÉTENDU (3e fois) suite à une demande explicite : accepte maintenant
+        aussi les retraits USDC (paramètre "asset"), et affiche la valeur
+        totale du wallet (SOL + USDC, voir wallet.get_wallet_value_summary)
+        en plus du solde restant dans l'actif transféré.
         """
         entry = self.data_store.state["monitored_dev_wallets"].get(wallet_address, {})
         label = entry.get("label", wallet_address[:8] + "...")
+        unit = "SOL" if asset == "SOL" else "USDC"
 
-        log.info(f"📤 Retrait SOL : {label} a envoyé {amount_sol:.4f} SOL vers {destination[:8]}...")
+        log.info(f"📤 Retrait {unit} : {label} a envoyé {amount:.4f} {unit} vers {destination[:8]}...")
 
         # AJOUTÉ suite à une demande explicite : affiche le solde restant
-        # sur le wallet APRÈS le retrait (lu en direct via RPC, pas
-        # recalculé à partir du montant transféré — plus fiable si
-        # d'autres mouvements ont eu lieu entre-temps).
+        # DANS L'ACTIF TRANSFÉRÉ, PLUS la valeur totale du wallet (SOL +
+        # USDC combinés) — lus en direct via RPC, pas recalculés à partir
+        # du montant transféré, plus fiable si d'autres mouvements ont eu
+        # lieu entre-temps.
         try:
-            remaining_balance = await wallet.get_sol_balance_of(wallet_address)
-            balance_line = f"Solde restant : `{remaining_balance:.4f}` SOL\n"
+            summary = await wallet.get_wallet_value_summary(wallet_address)
+            if asset == "SOL":
+                balance_line = f"Solde SOL restant : `{summary['sol_balance']:.4f}` SOL\n"
+            else:
+                balance_line = f"Solde USDC restant : `{summary['usdc_balance']:.2f}` USDC\n"
+            balance_line += f"Valeur totale du wallet (SOL + USDC) : `${summary['total_value_usd']:,.2f}`\n"
         except Exception as e:
-            log.debug(f"Erreur lecture solde restant pour {wallet_address}: {e}")
+            log.debug(f"Erreur lecture valeur totale pour {wallet_address}: {e}")
             balance_line = ""
 
         # CORRIGÉ suite à un vrai effet en cascade observé : une adresse
@@ -305,9 +317,9 @@ class SniperBot:
 
         await self.notifier.notify(
             "rugger_alert",
-            f"📤 *Retrait SOL détecté*\n\n"
+            f"📤 *Retrait {unit} détecté*\n\n"
             f"Wallet : `{wallet_address}` ({label})\n"
-            f"Montant : `{amount_sol:.4f}` SOL\n"
+            f"Montant : `{amount:.4f}` {unit}\n"
             f"{balance_line}"
             f"Destination : `{destination}`{added_note}",
             reply_markup=reply_markup,
