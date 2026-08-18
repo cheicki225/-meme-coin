@@ -88,7 +88,17 @@ async def get_bonding_curve_price(token_mint: str, retries: int = 2, retry_delay
 
     payload = {
         "jsonrpc": "2.0", "id": 1, "method": "getAccountInfo",
-        "params": [bonding_curve_address, {"encoding": "base64"}],
+        # CORRIGÉ suite à un vrai échec persistant, diagnostiqué précisément
+        # via les logs : aucun niveau de "commitment" n'était précisé, donc
+        # l'appel utilisait le défaut du nœud RPC — presque toujours
+        # "finalized", le plus LENT (attend la finalisation complète du
+        # bloc, souvent plusieurs secondes). Sur un token détecté quasiment
+        # au même instant que sa création (17ms d'écart observé en
+        # conditions réelles), c'était structurellement impossible à voir
+        # même après plusieurs tentatives. "confirmed" est un bon compromis
+        # vitesse/fiabilité pour un bot de sniping — visible en général en
+        # moins d'une seconde, contrairement à "finalized".
+        "params": [bonding_curve_address, {"encoding": "base64", "commitment": "confirmed"}],
     }
 
     value = None

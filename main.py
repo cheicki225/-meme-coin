@@ -268,12 +268,25 @@ class SniperBot:
         wd_settings = self.data_store.get_withdrawal_alert_settings()
         was_auto_added = entry.get("scheme") in ("sol_withdrawal", "sol_transfer")
         cascade_blocked = was_auto_added and not wd_settings.get("allow_cascade", False)
+        # AJOUTÉ suite à un vrai cas observé : un wallet source très actif
+        # (bot/service) déclenchait plusieurs ajouts DIFFÉRENTS en quelques
+        # secondes — pas couvert par le blocage de cascade ci-dessus,
+        # puisque ce n'est pas une adresse auto-ajoutée qui recascade,
+        # c'est la source d'origine qui spamme. Cooldown appliqué
+        # SEULEMENT si on s'apprête réellement à ajouter (pas la peine de
+        # consommer le cooldown pour rien si auto_add est déjà désactivé
+        # ou la cascade déjà bloquée).
+        cooldown_blocked = False
+        if wd_settings.get("auto_add", True) and not cascade_blocked:
+            cooldown_blocked = not self.data_store.check_and_update_auto_add_cooldown(wallet_address)
 
         added_note = ""
         if not wd_settings.get("auto_add", True):
             added_note = ""  # ajout auto désactivé — juste la notification, rien à signaler de plus
         elif cascade_blocked:
             added_note = "\n\n⏭️ _Adresse destinataire NON ajoutée (cascade bloquée — ce wallet a lui-même été ajouté automatiquement)._"
+        elif cooldown_blocked:
+            added_note = "\n\n⏳ _Adresse destinataire NON ajoutée (cooldown — ce wallet source a déjà déclenché un ajout automatique récemment)._"
         elif not self.data_store.is_dev_monitored(destination) and self.data_store.has_free_slot():
             self.data_store.add_dev_wallet(
                 destination, label=f"retrait_{wallet_address[:6]}_{destination[:6]}", scheme="sol_withdrawal", backtest_ratio=0.0,
@@ -332,12 +345,18 @@ class SniperBot:
         dt_settings = self.data_store.get_dev_transfer_settings()
         was_auto_added = entry.get("scheme") in ("sol_withdrawal", "sol_transfer")
         cascade_blocked = was_auto_added and not dt_settings.get("allow_cascade", False)
+        # AJOUTÉ — même cooldown par wallet source que on_wallet_withdrawal.
+        cooldown_blocked = False
+        if dt_settings.get("auto_add", True) and not cascade_blocked:
+            cooldown_blocked = not self.data_store.check_and_update_auto_add_cooldown(dev_address)
 
         added_note = ""
         if not dt_settings.get("auto_add", True):
             added_note = ""
         elif cascade_blocked:
             added_note = "\n\n⏭️ _Adresse destinataire NON ajoutée (cascade bloquée — ce wallet a lui-même été ajouté automatiquement)._"
+        elif cooldown_blocked:
+            added_note = "\n\n⏳ _Adresse destinataire NON ajoutée (cooldown — ce wallet source a déjà déclenché un ajout automatique récemment)._"
         elif not self.data_store.is_dev_monitored(destination) and self.data_store.has_free_slot():
             self.data_store.add_dev_wallet(
                 destination, label=f"transfert_{dev_address[:6]}_{destination[:6]}", scheme="sol_transfer", backtest_ratio=0.0,

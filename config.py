@@ -348,6 +348,14 @@ WITHDRAWAL_ALERT_MIN_SOL = float(os.getenv("WITHDRAWAL_ALERT_MIN_SOL", "0.1"))
 # plus éloignées du signal de départ.
 WITHDRAWAL_ALERT_AUTO_ADD = os.getenv("WITHDRAWAL_ALERT_AUTO_ADD", "true").lower() == "true"  # ajout auto ON/OFF (sinon juste notifier)
 WITHDRAWAL_ALERT_ALLOW_CASCADE = os.getenv("WITHDRAWAL_ALERT_ALLOW_CASCADE", "false").lower() == "true"  # False = stoppe la chaîne à 1 niveau
+# AJOUTÉ suite à un vrai cas observé : un SEUL wallet source très actif
+# (visiblement un bot/service, ~84 SOL, 9 tokens, plusieurs retraits par
+# minute) déclenchait plusieurs ajouts automatiques DIFFÉRENTS en quelques
+# secondes — un scénario que le blocage de cascade ne couvre pas (ce n'est
+# pas une adresse déjà auto-ajoutée qui recascade, c'est la MÊME source
+# d'origine qui spamme). Limite à 1 ajout automatique par heure et par
+# wallet SOURCE, peu importe combien de retraits il fait entre-temps.
+AUTO_ADD_COOLDOWN_S = int(os.getenv("AUTO_ADD_COOLDOWN_S", "3600"))
 
 DEV_TRANSFER_AUTO_ADD = os.getenv("DEV_TRANSFER_AUTO_ADD", "true").lower() == "true"
 DEV_TRANSFER_ALLOW_CASCADE = os.getenv("DEV_TRANSFER_ALLOW_CASCADE", "false").lower() == "true"

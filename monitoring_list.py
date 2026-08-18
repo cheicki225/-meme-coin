@@ -277,6 +277,27 @@ class DataStore:
         settings.update({k: v for k, v in kwargs.items() if v is not None})
         self.save()
 
+    def check_and_update_auto_add_cooldown(self, source_wallet: str) -> bool:
+        """
+        AJOUTÉ suite à un vrai cas observé : un wallet source très actif
+        (bot/service) pouvait déclencher plusieurs ajouts automatiques
+        différents en quelques secondes. Limite à 1 ajout automatique par
+        wallet SOURCE toutes les config.AUTO_ADD_COOLDOWN_S secondes
+        (1h par défaut), peu importe combien de retraits/transferts il
+        fait entre-temps.
+
+        Retourne True si l'ajout est autorisé (et enregistre l'horodatage),
+        False si le wallet source est encore en cooldown.
+        """
+        cooldowns = self.state.setdefault("auto_add_cooldowns", {})
+        last_add = cooldowns.get(source_wallet, 0)
+        now = time.time()
+        if now - last_add < config.AUTO_ADD_COOLDOWN_S:
+            return False
+        cooldowns[source_wallet] = now
+        self.save()
+        return True
+
     def remove_dev_wallet(self, address: str):
         self.state["monitored_dev_wallets"].pop(address, None)
         self.save()
