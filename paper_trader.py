@@ -363,9 +363,38 @@ class PaperTrader:
         if self.notifier:
             sig_line = f"\nTx: `{buy_signature[:16]}...`" if buy_signature else ""
             keyboard = _build_position_keyboard(token_mint)
+
+            # AJOUTÉ suite à une demande explicite : identifie si cet achat
+            # vient d'un DEV suivi (mode track_creation, "sniper") ou d'un
+            # TRADER copié (mode track_buy, "copy trading"), et affiche
+            # l'adresse complète du wallet déclencheur + du token — plus
+            # juste des adresses tronquées à 8 caractères.
+            source_entry = self.data_store.state["monitored_dev_wallets"].get(source_wallet, {})
+            source_mode = source_entry.get("mode", "track_creation")
+            if source_mode == "track_creation":
+                source_line = f"🎯 Source: *Sniper Dev*\nWallet dev: `{source_wallet}`\n"
+            elif source_mode in ("track_buy", "track_sell", "buy_on_dev_sell"):
+                source_line = f"📋 Source: *Copy Trading*\nWallet copié: `{source_wallet}`\n"
+            else:
+                source_line = f"Wallet source: `{source_wallet}`\n"
+
+            # Nom du token si disponible — souvent indisponible pour un
+            # token tout juste sniped (pas encore indexé sur DexScreener,
+            # voir les nombreux cas déjà rencontrés). Repli honnête plutôt
+            # que d'inventer un nom.
+            try:
+                pair_data = await _get_pair_data(token_mint)
+                token_symbol = (pair_data.get("baseToken") or {}).get("symbol")
+            except Exception:
+                token_symbol = None
+            token_line = f"Token: *{token_symbol}*\n" if token_symbol else "Token: _nom indisponible (token trop récent)_\n"
+
             await self.notifier.notify(
                 "buy_confirmed",
-                f"✅ *Buy Confirmed* ({buy_mode}, {config.TRADING_MODE})\nToken: `{token_mint[:8]}...`\n"
+                f"✅ *Buy Confirmed* ({buy_mode}, {config.TRADING_MODE})\n"
+                f"{source_line}"
+                f"{token_line}"
+                f"`{token_mint}`\n"
                 f"Montant: {cost_basis_usd:.2f}$ (~{settings.get('buy_amount_sol')} SOL)\nMarket cap: {market_cap:.0f}$"
                 f"{sig_line}{speed_line}\nRaison: {reason}",
                 reply_markup=keyboard,
