@@ -871,7 +871,27 @@ class SniperTelegramBot:
             [InlineKeyboardButton(t("btn_notifications", lang), callback_data="notif_settings")],
             [InlineKeyboardButton(f"{t('global_ai_label', lang)}: {ai_status}", callback_data="toggleglobalai")],
             [InlineKeyboardButton("🧹 Nettoyage automatique", callback_data="cleanup_settings")],
+            [InlineKeyboardButton("📤 Alerte retrait SOL", callback_data="withdrawal_settings")],
             [InlineKeyboardButton(t("btn_back", lang), callback_data="menu_main")],
+        ]
+        await self._send_or_edit(query, text, InlineKeyboardMarkup(keyboard), edit=True)
+
+    async def show_withdrawal_settings(self, query):
+        """AJOUTÉ suite à une demande explicite : réglages de l'alerte
+        retrait SOL (montant absolu, tous wallets surveillés)."""
+        settings = self.data_store.get_withdrawal_alert_settings()
+        status_icon = "🟢 ON" if settings["enabled"] else "🔴 OFF"
+        text = (
+            f"📤 *Alerte retrait SOL*\n\n"
+            f"Alerte quand N'IMPORTE QUEL wallet surveillé (Ruggeur ou Copy Trading) "
+            f"envoie du SOL vers une autre adresse.\n\n"
+            f"Statut : {status_icon}\n"
+            f"Montant minimum : `{settings['min_sol']:.4f}` SOL"
+        )
+        keyboard = [
+            [InlineKeyboardButton(f"Activé/Désactivé : {status_icon}", callback_data="withdrawal_toggle")],
+            [InlineKeyboardButton("✏️ Modifier le montant minimum (SOL)", callback_data="withdrawal_edit_min_sol")],
+            [InlineKeyboardButton(t("btn_back", self.data_store.state.get("language", "fr")), callback_data="menu_settings")],
         ]
         await self._send_or_edit(query, text, InlineKeyboardMarkup(keyboard), edit=True)
 
@@ -2126,6 +2146,15 @@ class SniperTelegramBot:
         elif data == "cleanup_edit_max_losses":
             user_states[chat_id] = {"awaiting": "cleanup_max_losses"}
             await query.edit_message_text("Envoie le nombre de pertes consécutives max avant suppression (ex: 7).")
+        elif data == "withdrawal_settings":
+            await self.show_withdrawal_settings(query)
+        elif data == "withdrawal_toggle":
+            current = self.data_store.get_withdrawal_alert_settings()["enabled"]
+            self.data_store.set_withdrawal_alert_settings(enabled=not current)
+            await self.show_withdrawal_settings(query)
+        elif data == "withdrawal_edit_min_sol":
+            user_states[chat_id] = {"awaiting": "withdrawal_min_sol"}
+            await query.edit_message_text("Envoie le montant minimum en SOL qui déclenche l'alerte (ex: 0.1).")
         elif data == "add_rugger":
             user_states[chat_id] = {"awaiting": "add_rugger_address"}
             await query.edit_message_text("Colle l'adresse du wallet à ajouter au monitoring.")
@@ -2537,6 +2566,18 @@ class SniperTelegramBot:
                 return
             self.data_store.set_cleanup_settings(max_consecutive_losses=n)
             await update.message.reply_text(f"✅ Pertes consécutives max réglées à `{n}`.", parse_mode="Markdown")
+            user_states.pop(chat_id, None)
+
+        elif awaiting == "withdrawal_min_sol":
+            try:
+                amount = float(text.strip())
+                if amount <= 0:
+                    raise ValueError
+            except ValueError:
+                await update.message.reply_text("Montant invalide, envoie un nombre positif (ex: 0.1).")
+                return
+            self.data_store.set_withdrawal_alert_settings(min_sol=amount)
+            await update.message.reply_text(f"✅ Seuil d'alerte retrait réglé à `{amount:.4f}` SOL.", parse_mode="Markdown")
             user_states.pop(chat_id, None)
 
         elif awaiting == "position_calc_input":

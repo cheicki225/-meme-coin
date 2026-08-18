@@ -24,11 +24,13 @@ config.DEV_SOL_TRANSFER_ALERT_PCT % du solde) vers une autre adresse,
 signal fort qu'un dev encaisse et se prépare à disparaître. Voir
 _check_large_sol_transfer().
 
-LIMITE CONNUE : la classification achat/vente est une heuristique basée
-sur le sens des transferts (le wallet reçoit un token + envoie du SOL =
-achat ; l'inverse = vente). Ça couvre le cas standard d'un swap Pump.fun/
-Raydium mais peut se tromper sur des transactions plus exotiques
-(transferts groupés, wrap/unwrap SOL isolé, etc.).
+LIMITE CONNUE : la classification achat/vente vérifie qu'un mouvement SOL
+correspondant accompagne le token dans la même transaction (voir
+_classify_transaction, corrigé suite à un vrai signalement — un simple
+dépôt/retrait de token sans échange SOL n'est plus compté comme achat/
+vente). Reste néanmoins une heuristique : ne couvre pas les cas où le SOL
+transite par un compte intermédiaire (wrap/unwrap isolé, certains routeurs
+d'agrégation) plutôt qu'un nativeTransfer direct sur le wallet lui-même.
 """
 
 import asyncio
@@ -45,24 +47,29 @@ log = logging.getLogger("copytrade")
 
 
 class CopyTradeListener:
-    def __init__(self, data_store, on_buy, on_sell, on_large_sol_transfer=None):
+    def __init__(self, data_store, on_buy, on_sell, on_large_sol_transfer=None, on_withdrawal=None):
         """
         data_store: instance de monitoring_list.DataStore
         on_buy: async(wallet_address: str, token_mint: str, signature: str)
         on_sell: async(wallet_address: str, token_mint: str, signature: str)
         on_large_sol_transfer: async(wallet_address: str, destination: str,
-            amount_sol: float, pct_of_balance: float) — AJOUTÉ, optionnel
-            (None = fonctionnalité silencieusement désactivée si non fourni).
+            amount_sol: float, pct_of_balance: float) — devs uniquement,
+            seuil en % du solde (config.DEV_SOL_TRANSFER_ALERT_PCT).
+        on_withdrawal: async(wallet_address: str, destination: str,
+            amount_sol: float) — AJOUTÉ, TOUS les wallets surveillés,
+            seuil en montant SOL absolu (config.WITHDRAWAL_ALERT_MIN_SOL),
+            optionnel (None = désactivé silencieusement).
         """
         self.data_store = data_store
         self.on_buy = on_buy
         self.on_sell = on_sell
         self.on_large_sol_transfer = on_large_sol_transfer
+        self.on_withdrawal = on_withdrawal
         self._running = False
         self._ws = None
         self._subscribed_wallets = set()
         self._sub_id_to_wallet = {}
-        self._creation_mode_wallets = set()  # sous-ensemble surveillé pour les transferts SOL
+        self._creation_mode_wallets = set()  # sous-ensemble surveillé pour les transferts SOL (seuil %)
 
     def _get_tracked_wallets(self) -> set:
         """
@@ -171,7 +178,15 @@ class CopyTradeListener:
             is_swap_related = any(
                 "swap" in l.lower() or "Instruction: Buy" in l or "Instruction: Sell" in l for l in logs
             )
-            if not is_swap_related and not self._creation_mode_wallets:
+            # AJOUTÉ : l'alerte retrait concerne TOUS les wallets surveillés,
+            # pas seulement ceux en mode track_creation — donc on traite tout
+            # dès que la fonctionnalité est active et qu'on a des wallets
+            # souscrits, pas juste _creation_mode_wallets.
+            needs_full_scan = bool(self._creation_mode_wallets) or (
+                self.on_withdrawal and self._subscribed_wallets
+                and self.data_store.get_withdrawal_alert_settings().get("enabled", True)
+            )
+            if not is_swap_related and not needs_full_scan:
                 return
 
             await self._process_transaction(signature)
@@ -188,6 +203,12 @@ class CopyTradeListener:
         # transférer son SOL SANS que ce soit un swap.
         if self._creation_mode_wallets:
             await self._check_large_sol_transfer(parsed, signature)
+
+        # AJOUTÉ suite à une demande explicite : alerte retrait SOL, TOUS
+        # wallets surveillés (pas juste track_creation), seuil en montant
+        # absolu plutôt qu'en % du solde.
+        if self.on_withdrawal:
+            await self._check_withdrawal(parsed, signature)
 
         action_info = self._classify_transaction(parsed)
         if not action_info:
@@ -242,6 +263,39 @@ class CopyTradeListener:
                 )
                 await self.on_large_sol_transfer(from_account, to_account, amount_sol, pct_transferred)
 
+    async def _check_withdrawal(self, parsed: dict, signature: str):
+        """
+        AJOUTÉ suite à une demande explicite : alerte sur TOUT retrait SOL
+        (wallet surveillé qui envoie du SOL vers une autre adresse) dépassant
+        un montant ABSOLU minimum — pour TOUS les wallets surveillés
+        (Ruggeur et Copy Trading confondus), pas seulement les devs comme
+        _check_large_sol_transfer (qui lui raisonne en % du solde).
+        Aucune vérification de solde ici, juste "a-t-il envoyé au moins
+        X SOL ?" — plus simple, et volontairement indépendant du système à
+        90% déjà en place.
+        """
+        settings = self.data_store.get_withdrawal_alert_settings()
+        if not settings.get("enabled", True):
+            return
+
+        min_sol = settings.get("min_sol", config.WITHDRAWAL_ALERT_MIN_SOL)
+        native_transfers = parsed.get("nativeTransfers", []) or []
+
+        for nt in native_transfers:
+            from_account = nt.get("fromUserAccount")
+            to_account = nt.get("toUserAccount")
+            amount_lamports = nt.get("amount", 0)
+
+            if from_account not in self._subscribed_wallets or not amount_lamports:
+                continue
+
+            amount_sol = amount_lamports / 1_000_000_000
+            if amount_sol < min_sol:
+                continue
+
+            log.info(f"📤 Retrait SOL détecté : {from_account[:8]}... a envoyé {amount_sol:.4f} SOL vers {to_account[:8]}...")
+            await self.on_withdrawal(from_account, to_account, amount_sol)
+
     async def _fetch_parsed_transaction(self, signature: str) -> dict:
         """CORRIGÉ : même fix que websocket_listener.py — session isolée sans
         fix DNS ni limiteur de débit, remplacée par le connecteur/limiteur
@@ -267,10 +321,22 @@ class CopyTradeListener:
     def _classify_transaction(self, parsed: dict) -> dict:
         """
         Détermine si la transaction est un achat ou une vente pour l'un des
-        wallets suivis, et quel token est concerné. Voir la limite documentée
-        en tête de fichier.
+        wallets suivis, et quel token est concerné.
+
+        CORRIGÉ suite à une question explicite ("dépôt/retrait ou achat/
+        vente ?") : l'ancienne version se basait UNIQUEMENT sur le sens du
+        token (reçu = achat, envoyé = vente), sans jamais vérifier qu'un
+        vrai échange contre du SOL avait eu lieu. Un simple DÉPÔT de token
+        (transfert reçu, cadeau, airdrop, mouvement entre les propres
+        wallets du trader — pas un vrai trade) aurait été classé "achat" à
+        tort, et pareil pour un simple RETRAIT classé "vente" à tort.
+        Vérifie maintenant qu'un mouvement SOL correspondant (dans le sens
+        opposé, sur le MÊME wallet, dans la MÊME transaction) existe bien
+        avant de conclure à un vrai achat/vente — sinon la transaction est
+        ignorée (ni achat, ni vente, ni dépôt/retrait suivi séparément).
         """
-        token_transfers = parsed.get("tokenTransfers", [])
+        token_transfers = parsed.get("tokenTransfers", []) or []
+        native_transfers = parsed.get("nativeTransfers", []) or []
 
         for tt in token_transfers:
             mint = tt.get("mint")
@@ -281,8 +347,22 @@ class CopyTradeListener:
             from_account = tt.get("fromUserAccount")
 
             if to_account in self._subscribed_wallets:
-                return {"wallet": to_account, "action": "buy", "token_mint": mint}
+                # Achat potentiel — confirme qu'un mouvement SOL SORTANT de
+                # ce wallet existe bien dans la même transaction.
+                has_sol_out = any(
+                    nt.get("fromUserAccount") == to_account and nt.get("amount", 0) > 0
+                    for nt in native_transfers
+                )
+                if has_sol_out:
+                    return {"wallet": to_account, "action": "buy", "token_mint": mint}
             if from_account in self._subscribed_wallets:
-                return {"wallet": from_account, "action": "sell", "token_mint": mint}
+                # Vente potentielle — confirme qu'un mouvement SOL ENTRANT
+                # vers ce wallet existe bien dans la même transaction.
+                has_sol_in = any(
+                    nt.get("toUserAccount") == from_account and nt.get("amount", 0) > 0
+                    for nt in native_transfers
+                )
+                if has_sol_in:
+                    return {"wallet": from_account, "action": "sell", "token_mint": mint}
 
         return None

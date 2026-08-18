@@ -333,6 +333,15 @@ COPYTRADE_SYNC_INTERVAL_S = int(os.getenv("COPYTRADE_SYNC_INTERVAL_S", "10"))  #
 # disparaître, distinct d'une simple vente de token sur la bonding curve.
 DEV_SOL_TRANSFER_ALERT_PCT = float(os.getenv("DEV_SOL_TRANSFER_ALERT_PCT", "90"))  # % du solde transféré qui déclenche l'alerte
 
+# ── Alerte retrait SOL (montant absolu, tous wallets surveillés) ──
+# AJOUTÉ suite à une demande explicite — DIFFÉRENT du seuil DEV_SOL_TRANSFER_ALERT_PCT
+# ci-dessus (qui ne concerne que les devs, en % du solde). Ici : n'importe
+# quel wallet surveillé (Ruggeur OU Copy Trading) qui envoie du SOL vers une
+# autre adresse, au-delà d'un montant ABSOLU minimum — pas de vérification
+# de solde, juste "a-t-il envoyé au moins X SOL ?".
+WITHDRAWAL_ALERT_ENABLED = os.getenv("WITHDRAWAL_ALERT_ENABLED", "true").lower() == "true"
+WITHDRAWAL_ALERT_MIN_SOL = float(os.getenv("WITHDRAWAL_ALERT_MIN_SOL", "0.1"))
+
 # ── Nettoyage automatique des wallets surveillés ──
 # AJOUTÉ suite à une demande explicite : retire du monitoring les wallets
 # inactifs depuis trop longtemps, ou ayant enchaîné trop de pertes

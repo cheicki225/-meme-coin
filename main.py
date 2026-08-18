@@ -79,6 +79,7 @@ class SniperBot:
         self.copytrade_listener = CopyTradeListener(
             self.data_store, on_buy=self.on_copytrade_buy, on_sell=self.on_copytrade_sell,
             on_large_sol_transfer=self.on_dev_large_sol_transfer,
+            on_withdrawal=self.on_wallet_withdrawal,
         )
         self.protection_scanner = ProtectionScanner(self.data_store, notifier=self.notifier)
         self.rug_scanner = RugScanner(self.data_store, notifier=self.notifier)
@@ -217,6 +218,45 @@ class SniperBot:
             reason=f"Copy trade — achat détecté chez {label}"
         )
 
+    async def on_wallet_withdrawal(self, wallet_address: str, destination: str, amount_sol: float):
+        """
+        Callback du copytrade_listener : un wallet surveillé (Ruggeur OU
+        Copy Trading, sans distinction) vient d'envoyer du SOL vers une
+        autre adresse, au-delà du montant minimum configuré.
+
+        MODIFIÉ suite à une demande explicite : ajoute maintenant AUSSI
+        l'adresse destinataire au monitoring, comme le fait déjà
+        on_dev_large_sol_transfer (seuil %). Contrairement à ce dernier,
+        le seuil ici est bas et générique (0.1 SOL par défaut) — donc
+        chaque petit retrait déclenchera un ajout, ce qui peut remplir la
+        liste de 30 wallets plus vite avec du bruit (exchanges, transferts
+        personnels...). Assumé suite à la demande explicite, mais à
+        surveiller : réduire WITHDRAWAL_ALERT_MIN_SOL trop bas multipliera
+        les ajouts automatiques.
+        """
+        entry = self.data_store.state["monitored_dev_wallets"].get(wallet_address, {})
+        label = entry.get("label", wallet_address[:8] + "...")
+
+        log.info(f"📤 Retrait SOL : {label} a envoyé {amount_sol:.4f} SOL vers {destination[:8]}...")
+
+        added_note = ""
+        if not self.data_store.is_dev_monitored(destination) and self.data_store.has_free_slot():
+            self.data_store.add_dev_wallet(
+                destination, label=f"retrait_{wallet_address[:8]}", scheme="sol_withdrawal", backtest_ratio=0.0,
+            )
+            log.info(f"➕ Adresse destinataire ajoutée au monitoring suite au retrait : {destination[:8]}...")
+            added_note = "\n\n_Adresse destinataire ajoutée au monitoring._"
+        elif not self.data_store.has_free_slot():
+            added_note = "\n\n⚠️ _Limite de wallets atteinte — adresse destinataire NON ajoutée._"
+
+        await self.notifier.notify(
+            "rugger_alert",
+            f"📤 *Retrait SOL détecté*\n\n"
+            f"Wallet : `{wallet_address}` ({label})\n"
+            f"Montant : `{amount_sol:.4f}` SOL\n"
+            f"Destination : `{destination}`{added_note}",
+        )
+
     async def on_dev_large_sol_transfer(self, dev_address: str, destination: str, amount_sol: float, pct_of_balance: float):
         """
         Callback du copytrade_listener : un dev surveillé (mode
@@ -260,6 +300,16 @@ class SniperBot:
         - buy_on_dev_sell : le dev vient de vendre SON PROPRE token qu'on
           surveillait → on achète maintenant (potentiellement meilleur point
           d'entrée que le bloc zéro, juste après le dump du dev)
+
+        AJOUTÉ suite à une demande explicite : les wallets en mode
+        track_creation (Ruggeur) sont maintenant AUSSI souscrits par
+        copytrade_listener.py (pour la détection de transfert SOL), donc
+        cette fonction reçoit désormais aussi leurs ventes de TOKEN. Rendu
+        explicite ici — un dev qui vend son propre token ne doit JAMAIS
+        déclencher une clôture de position ni aucune autre action de copy
+        trading : sa position ouverte (achetée au bloc zéro) reste gérée
+        UNIQUEMENT par son propre TP/SL, indépendamment de ce que fait le
+        dev sur son wallet.
         """
         entry = self.data_store.state["monitored_dev_wallets"].get(wallet_address)
         if not entry:
@@ -270,6 +320,12 @@ class SniperBot:
 
         mode = entry.get("mode")
         label = entry.get("label", wallet_address[:8] + "...")
+
+        if mode == "track_creation":
+            # Vente du dev sur son propre token — jamais copiée, jamais
+            # utilisée pour clôturer quoi que ce soit. Le TP/SL de la
+            # position gère ça tout seul, indépendamment.
+            return
 
         if mode == "track_sell":
             for position in list(self.data_store.state.get("open_positions", [])):

@@ -240,6 +240,22 @@ class DataStore:
         settings.update({k: v for k, v in kwargs.items() if v is not None})
         self.save()
 
+    def get_withdrawal_alert_settings(self) -> dict:
+        """AJOUTÉ pour l'alerte retrait SOL — même principe que
+        get_cleanup_settings, réglable depuis Telegram sans redéployer."""
+        defaults = {
+            "enabled": config.WITHDRAWAL_ALERT_ENABLED,
+            "min_sol": config.WITHDRAWAL_ALERT_MIN_SOL,
+        }
+        stored = self.state.get("withdrawal_alert_settings", {})
+        return {**defaults, **stored}
+
+    def set_withdrawal_alert_settings(self, **kwargs):
+        """AJOUTÉ pour l'alerte retrait SOL — met à jour enabled et/ou min_sol."""
+        settings = self.state.setdefault("withdrawal_alert_settings", {})
+        settings.update({k: v for k, v in kwargs.items() if v is not None})
+        self.save()
+
     def remove_dev_wallet(self, address: str):
         self.state["monitored_dev_wallets"].pop(address, None)
         self.save()
