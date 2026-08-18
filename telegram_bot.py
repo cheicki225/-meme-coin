@@ -74,6 +74,46 @@ def _looks_like_token_mint(text: str) -> bool:
     return text.strip().endswith("pump")
 
 
+def _compute_star_rating(results: list) -> dict:
+    """
+    AJOUTÉ suite à une demande explicite : note globale de 1 à 5 étoiles
+    pour "Analyse de wallet", combinant tous les trades connus (créations
+    ET achats confondus) en un seul score.
+
+    Formule TRANSPARENTE (pas de boîte noire) — combine 3 signaux déjà
+    calculés ailleurs dans cette même fonction, chacun ramené sur 100 :
+      - win rate (poids 50%) : proportion de trades gagnants
+      - ratio gain/perte (poids 30%), plafonné à 5 (au-delà, considéré
+        "excellent" sans distinction supplémentaire)
+      - résultat moyen par trade (poids 20%), plafonné entre 0% et 100%
+
+    Score combiné 0-100, converti en étoiles par tranches de 20 points
+    (0-20 = 1★, 20-40 = 2★, ... 80-100 = 5★).
+
+    Retourne {"stars": int, "score": float, "trade_count": int} ou None
+    si moins de 3 trades (échantillon jugé trop petit pour être fiable,
+    même seuil que le reste du bot).
+    """
+    if len(results) < 3:
+        return None
+
+    win_rate = len([r for r in results if r["result_pct"] > 0]) / len(results) * 100
+    avg_result_pct = sum(r["result_pct"] for r in results) / len(results)
+
+    gains = sum(r["result_pct"] for r in results if r["result_pct"] > 0)
+    losses = abs(sum(r["result_pct"] for r in results if r["result_pct"] < 0))
+    ratio = (gains / losses) if losses > 0 else 5.0  # aucune perte connue -> ratio plafonné, pas infini
+
+    win_rate_score = min(win_rate, 100)
+    ratio_score = min(ratio, 5) / 5 * 100
+    avg_result_score = min(max(avg_result_pct, 0), 100)
+
+    combined = win_rate_score * 0.5 + ratio_score * 0.3 + avg_result_score * 0.2
+    stars = max(1, min(5, int(combined // 20) + 1))
+
+    return {"stars": stars, "score": combined, "trade_count": len(results)}
+
+
 class SniperTelegramBot:
     def __init__(self, data_store, notifier, paper_trader):
         self.data_store = data_store
@@ -1526,6 +1566,18 @@ class SniperTelegramBot:
             except Exception as e:
                 log.warning(f"Erreur checklist copy trading pour {wallet_address}: {e}")
                 text += "\n📋 _Checklist copy trading indisponible (erreur pendant le calcul)._\n"
+
+        # AJOUTÉ suite à une demande explicite : note globale de 1 à 5
+        # étoiles, combinant TOUS les trades connus (créations ET achats
+        # confondus) — voir _compute_star_rating() pour la formule complète,
+        # transparente et documentée.
+        all_results = dev_results + trader_results
+        rating = _compute_star_rating(all_results)
+        if rating:
+            stars_display = "⭐" * rating["stars"] + "☆" * (5 - rating["stars"])
+            text += f"\n{stars_display} *Note globale* : `{rating['stars']}/5` (sur `{rating['trade_count']}` trade(s) connus, créations + achats)\n"
+        else:
+            text += f"\n☆☆☆☆☆ *Note globale* : _pas assez de trades connus (minimum 3) pour noter ce wallet_\n"
 
         # CORRIGÉ suite à un vrai bug signalé : le seul bouton disponible
         # ("Ajouter en Ruggeur") ajoutait TOUJOURS le wallet en mode
