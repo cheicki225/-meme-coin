@@ -189,11 +189,11 @@ class CopyTradeListener:
             if not is_swap_related and not needs_full_scan:
                 return
 
-            await self._process_transaction(signature)
+            await self._process_transaction(signature, is_swap_related)
         except Exception as e:
             log.debug(f"Erreur traitement message copytrade: {e}")
 
-    async def _process_transaction(self, signature: str):
+    async def _process_transaction(self, signature: str, is_swap_related: bool = False):
         parsed = await self._fetch_parsed_transaction(signature)
         if not parsed:
             return
@@ -202,13 +202,13 @@ class CopyTradeListener:
         # la classification achat/vente ci-dessous — un dev peut très bien
         # transférer son SOL SANS que ce soit un swap.
         if self._creation_mode_wallets:
-            await self._check_large_sol_transfer(parsed, signature)
+            await self._check_large_sol_transfer(parsed, signature, is_swap_related)
 
         # AJOUTÉ suite à une demande explicite : alerte retrait SOL, TOUS
         # wallets surveillés (pas juste track_creation), seuil en montant
         # absolu plutôt qu'en % du solde.
         if self.on_withdrawal:
-            await self._check_withdrawal(parsed, signature)
+            await self._check_withdrawal(parsed, signature, is_swap_related)
 
         action_info = self._classify_transaction(parsed)
         if not action_info:
@@ -223,7 +223,7 @@ class CopyTradeListener:
         elif action_info["action"] == "sell" and self.on_sell:
             await self.on_sell(wallet, action_info["token_mint"], signature)
 
-    async def _check_large_sol_transfer(self, parsed: dict, signature: str):
+    async def _check_large_sol_transfer(self, parsed: dict, signature: str, is_swap_related: bool = False):
         """
         AJOUTÉ suite à une demande explicite : détecte un transfert SOL
         sortant représentant ≥ config.DEV_SOL_TRANSFER_ALERT_PCT % du solde
@@ -231,7 +231,13 @@ class CopyTradeListener:
         AVANT le transfert est reconstruit par approximation (solde actuel
         + montant transféré) — précis à l'exception mineure des frais de
         transaction, négligeables pour ce calcul.
+
+        CORRIGÉ (par cohérence avec _check_withdrawal) : ignore les
+        transactions de swap — un mouvement de SOL interne à l'exécution
+        d'un trade n'est pas un vrai encaissement du dev.
         """
+        if is_swap_related:
+            return
         if not self.on_large_sol_transfer:
             return
 
@@ -269,7 +275,7 @@ class CopyTradeListener:
                 )
                 await self.on_large_sol_transfer(from_account, to_account, amount_sol, pct_transferred, signature)
 
-    async def _check_withdrawal(self, parsed: dict, signature: str):
+    async def _check_withdrawal(self, parsed: dict, signature: str, is_swap_related: bool = False):
         """
         AJOUTÉ suite à une demande explicite : alerte sur TOUT retrait SOL
         (wallet surveillé qui envoie du SOL vers une autre adresse) dépassant
@@ -285,7 +291,20 @@ class CopyTradeListener:
         nativeTransfers (SOL uniquement). Volontairement limité à SOL +
         USDC, pas tous les tokens — cohérent avec get_wallet_value_summary
         dans wallet.py.
+
+        CORRIGÉ (2e fois) suite à un vrai cas observé : un wallet à très
+        haute fréquence de trading (393 000+ activités "SWAP" sur Solscan)
+        déclenchait sans arrêt cette alerte — un SWAP (échanger du SOL
+        contre un token) déplace forcément du SOL EN INTERNE pour exécuter
+        l'échange, ce qui était compté à tort comme un "retrait" alors que
+        ce n'est qu'un mécanisme d'exécution de trade, pas un vrai transfert
+        vers un tiers. Ignore maintenant ENTIÈREMENT les transactions
+        identifiées comme des swaps — ne garde que les VRAIS transferts
+        entre comptes.
         """
+        if is_swap_related:
+            return  # mouvement de SOL/USDC interne à un swap — pas un vrai transfert entre comptes
+
         settings = self.data_store.get_withdrawal_alert_settings()
         if not settings.get("enabled", True):
             return
