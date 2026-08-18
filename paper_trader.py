@@ -28,7 +28,7 @@ import asyncio
 
 import config
 import rpc_client
-from backtest import _get_pair_data, get_bonding_curve_price
+from backtest import _get_pair_data, get_bonding_curve_price, get_sol_usd_rate
 import security as security_check
 
 log = logging.getLogger("paper_trader")
@@ -84,13 +84,14 @@ class PaperTrader:
         """
         Version PAPER : aucune vraie transaction, conversion directe au prix
         coté sans slippage simulé. buy_amount_sol de settings est converti en
-        USD via config.SOL_USD_RATE pour rester cohérent avec le dimensionnement
-        réellement configuré par wallet (plutôt que config.POSITION_SIZE_USD
-        seul, qui ne reflétait pas les réglages par rugger).
+        USD via backtest.get_sol_usd_rate() (taux en direct, voir ce module)
+        pour rester cohérent avec le dimensionnement réellement configuré
+        par wallet (plutôt que config.POSITION_SIZE_USD seul, qui ne
+        reflétait pas les réglages par rugger).
         Retourne None seulement si l'achat doit être annulé (jamais en PAPER).
         """
         buy_amount_sol = settings.get("buy_amount_sol", 0.1)
-        cost_basis_usd = buy_amount_sol * config.SOL_USD_RATE
+        cost_basis_usd = buy_amount_sol * await get_sol_usd_rate()
         units = cost_basis_usd / entry_price
         return {"units": units, "cost_basis_usd": cost_basis_usd, "actual_price": entry_price, "signature": None}
 
@@ -179,8 +180,8 @@ class PaperTrader:
             # reflète plus une fois "complete").
             onchain_price = await get_bonding_curve_price(token_mint)
             if onchain_price and not onchain_price.get("complete"):
-                entry_price = onchain_price["price_sol"] * config.SOL_USD_RATE  # normalise en $/token comme priceUsd DexScreener
-                market_cap = onchain_price["market_cap_usd"]
+                entry_price = onchain_price["price_sol"] * await get_sol_usd_rate()  # normalise en $/token comme priceUsd DexScreener (taux en direct, voir backtest.get_sol_usd_rate)
+                market_cap = onchain_price["market_cap_usd"]  # déjà calculé avec le taux en direct dans get_bonding_curve_price
             else:
                 entry_data = await _get_pair_data(token_mint)
                 entry_price = float(entry_data.get("priceUsd", 0) or 0)
@@ -574,8 +575,8 @@ class PaperTrader:
             if i in position["dip_levels_hit"]:
                 continue
             if drop_pct >= level["drop_pct"]:
-                # Conversion SOL→USD approximative — voir config.SOL_USD_RATE
-                dip_amount_usd = level["amount_sol"] * config.SOL_USD_RATE
+                # Conversion SOL→USD au taux en direct — voir backtest.get_sol_usd_rate
+                dip_amount_usd = level["amount_sol"] * await get_sol_usd_rate()
                 new_units = dip_amount_usd / price
                 position["units"] += new_units
                 position["cost_basis_usd"] += dip_amount_usd
@@ -897,7 +898,7 @@ class PaperTrader:
             return None
 
         dev_value_usd = dev_tokens * entry_price
-        dev_buy_sol = dev_value_usd / config.SOL_USD_RATE
+        dev_buy_sol = dev_value_usd / await get_sol_usd_rate()
         dev_holding_pct = (dev_tokens / total_supply) * 100
 
         return {"dev_buy_sol": dev_buy_sol, "dev_holding_pct": dev_holding_pct}
@@ -927,7 +928,7 @@ class PaperTrader:
 
         position["units"] -= units_sold
         position["cost_basis_usd"] -= cost_removed
-        position["total_sol_received"] = position.get("total_sol_received", 0) + (proceeds / config.SOL_USD_RATE)
+        position["total_sol_received"] = position.get("total_sol_received", 0) + (proceeds / await get_sol_usd_rate())
         if sell_signature:
             position.setdefault("tx_signatures", []).append(sell_signature)
         if tp_index is not None:
@@ -975,7 +976,7 @@ class PaperTrader:
         position["exit_time"] = time.time()
         position["result_pct"] = change_pct
         position["close_reason"] = close_reason
-        position["total_sol_received"] = position.get("total_sol_received", 0) + (proceeds / config.SOL_USD_RATE)
+        position["total_sol_received"] = position.get("total_sol_received", 0) + (proceeds / await get_sol_usd_rate())
         position["units"] = 0
         position["cost_basis_usd"] = 0
         if sell_signature:

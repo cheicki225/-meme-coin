@@ -27,6 +27,67 @@ log = logging.getLogger("backtest")
 DEXSCREENER_PAIRS_URL = "https://api.dexscreener.com/latest/dex/tokens/{address}"
 
 # ════════════════════════════════════════════════════════════════
+# TAUX DE CHANGE SOL/USD — EN DIRECT, PAS UNE CONSTANTE
+# ════════════════════════════════════════════════════════════════
+# CORRIGÉ suite à un vrai bug trouvé (repéré via une incohérence visible sur
+# Axiom : un "Market cap: 5221$" affiché au buy, alors que l'ATH réel du
+# token sur tout son historique n'a jamais dépassé 3.49K$). Cause :
+# config.SOL_USD_RATE était une CONSTANTE STATIQUE (150$ par défaut, jamais
+# mise à jour — déjà signalée comme TODO dans config.py), utilisée pour
+# convertir en $ tout prix/market cap calculé on-chain (bonding curve, voir
+# get_bonding_curve_price ci-dessous). Le SOL réel valait ~76$ au moment du
+# diagnostic (vérifié en direct) — un écart de ~2x qui gonflait le market
+# cap d'entrée ET le coût de base ($) de chaque position. Pire : le suivi
+# de la position ENSUITE (_monitor_position dans paper_trader.py, via
+# _get_pair_data) utilise lui un prix DexScreener réel — donc le calcul du
+# PnL comparait une base d'entrée gonflée à une valeur actuelle réelle,
+# rendant chaque perte affichée bien pire que la perte réelle (cas
+# concret : -58.7% affiché pour une perte réelle nettement plus faible).
+#
+# Fix : réutilise _get_pair_data (plus bas dans ce fichier) sur le mint
+# natif du SOL — même source DexScreener que tout le reste du bot, aucune
+# nouvelle dépendance externe — avec un cache court pour éviter un appel
+# réseau à chaque conversion. Repli en cascade sur la dernière valeur
+# connue puis sur config.SOL_USD_RATE uniquement si DexScreener est
+# injoignable et qu'aucune valeur n'a jamais été mise en cache (ex: tout
+# premier appel juste après un redémarrage, avant le premier succès).
+_sol_price_cache = {"rate": None, "ts": 0.0}
+SOL_PRICE_CACHE_TTL_S = 300  # 5 min — un taux SOL/USD ne bouge pas assez vite pour justifier plus fréquent
+
+
+async def get_sol_usd_rate() -> float:
+    """
+    Retourne le taux SOL/USD actuel, rafraîchi au maximum toutes les
+    SOL_PRICE_CACHE_TTL_S secondes via DexScreener (mint natif du SOL,
+    config.SOL_MINT). Ne lève jamais d'exception — voir le repli en
+    cascade documenté ci-dessus.
+    """
+    now = time.time()
+    if _sol_price_cache["rate"] is not None and (now - _sol_price_cache["ts"]) < SOL_PRICE_CACHE_TTL_S:
+        return _sol_price_cache["rate"]
+
+    try:
+        pair_data = await _get_pair_data(config.SOL_MINT)
+        price = float(pair_data.get("priceUsd", 0) or 0)
+        if price > 0:
+            _sol_price_cache["rate"] = price
+            _sol_price_cache["ts"] = now
+            log.info(f"💱 Taux SOL/USD rafraîchi : {price:.2f}$ (source DexScreener)")
+            return price
+        log.warning("⚠️ Taux SOL/USD — DexScreener n'a renvoyé aucun prix pour le mint SOL natif.")
+    except Exception as e:
+        log.warning(f"⚠️ Taux SOL/USD — échec de rafraîchissement DexScreener : {e}")
+
+    if _sol_price_cache["rate"] is not None:
+        return _sol_price_cache["rate"]  # dernière valeur connue, même périmée — mieux qu'une constante figée depuis des mois
+    log.warning(
+        f"⚠️ Taux SOL/USD — aucune valeur en cache, repli sur config.SOL_USD_RATE "
+        f"({config.SOL_USD_RATE}$, potentiellement obsolète)."
+    )
+    return config.SOL_USD_RATE
+
+
+# ════════════════════════════════════════════════════════════════
 # PRIX EN DIRECT DEPUIS LA BONDING CURVE ON-CHAIN
 # ════════════════════════════════════════════════════════════════
 # AJOUTÉ suite à un vrai échec d'achat signalé : "Buy Failed - prix
@@ -145,7 +206,8 @@ async def get_bonding_curve_price(token_mint: str, retries: int = 2, retry_delay
     # virtual_sol_reserves en lamports (9 décimales), virtual_token_reserves
     # en unités brutes du token (6 décimales, standard SPL/Pump.fun).
     price_sol = (virtual_sol_reserves / 1_000_000_000) / (virtual_token_reserves / 1_000_000)
-    market_cap_usd = price_sol * PUMPFUN_STANDARD_TOTAL_SUPPLY * config.SOL_USD_RATE
+    sol_usd_rate = await get_sol_usd_rate()
+    market_cap_usd = price_sol * PUMPFUN_STANDARD_TOTAL_SUPPLY * sol_usd_rate
 
     return {"price_sol": price_sol, "market_cap_usd": market_cap_usd, "complete": complete}
 

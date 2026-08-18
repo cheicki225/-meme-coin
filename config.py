@@ -386,9 +386,18 @@ BUY_ON_DEV_SELL_TIMEOUT_MIN = float(os.getenv("BUY_ON_DEV_SELL_TIMEOUT_MIN", "30
 # de supprimer le wallet reste manuelle.
 DETECTION_ALERT_TIME_THRESHOLD_S = int(os.getenv("DETECTION_ALERT_TIME_THRESHOLD_S", "20"))
 
-# ── Taux de change indicatif SOL/USD ──────────────────────────
-# Aucune API de prix temps réel n'est câblée : à remplacer par un vrai flux
-# (ex: prix SOL/USD de DexScreener/CoinGecko) pour des conversions précises.
+# ── Taux de change indicatif SOL/USD — REPLI DE DERNIER RECOURS UNIQUEMENT ──
+# CORRIGÉ suite à un vrai bug trouvé : cette constante statique était utilisée
+# PARTOUT comme source principale de conversion SOL→USD, alors qu'elle n'était
+# jamais mise à jour (150$ par défaut, pendant que le SOL réel valait ~76$ au
+# moment du diagnostic — un écart de ~2x qui faussait market caps, coûts de
+# base et PnL affichés). Toutes les conversions passent maintenant par
+# backtest.get_sol_usd_rate() (taux en direct via DexScreener, mis en cache
+# 5 min). Cette constante ne sert plus QUE de dernier repli si DexScreener est
+# injoignable ET qu'aucune valeur n'a jamais été mise en cache (ex: tout
+# premier appel juste après un redémarrage) — la garder à jour manuellement
+# de temps en temps reste utile pour ce cas limite, mais n'affecte plus le
+# fonctionnement normal du bot.
 SOL_USD_RATE = float(os.getenv("SOL_USD_RATE", "150"))
 
 # ── Logging ────────────────────────────────────────────────────

@@ -22,6 +22,7 @@ import rpc_client
 
 log = logging.getLogger("live_trader")
 
+from backtest import get_sol_usd_rate
 from paper_trader import PaperTrader
 
 
@@ -83,7 +84,7 @@ class LiveTrader(PaperTrader):
         decimals = await _get_token_decimals(token_mint)
         units_received = result["output_amount"] / (10 ** decimals)
         sol_spent = result["input_amount"] / 1_000_000_000
-        cost_basis_usd = sol_spent * config.SOL_USD_RATE
+        cost_basis_usd = sol_spent * await get_sol_usd_rate()
 
         if units_received <= 0:
             log.error(f"❌ Achat LIVE sur {token_mint[:8]}... a renvoyé 0 token reçu — anomalie.")
@@ -169,7 +170,7 @@ class LiveTrader(PaperTrader):
                 )
             return None
 
-        cost_basis_usd = total_sol_spent * config.SOL_USD_RATE
+        cost_basis_usd = total_sol_spent * await get_sol_usd_rate()
         actual_price = cost_basis_usd / total_units
 
         log.info(
@@ -207,7 +208,7 @@ class LiveTrader(PaperTrader):
             return None
 
         sol_received = result["output_amount"] / 1_000_000_000
-        proceeds_usd = sol_received * config.SOL_USD_RATE
+        proceeds_usd = sol_received * await get_sol_usd_rate()
 
         log.info(
             f"💰 [LIVE] Vente réelle confirmée : tokens -> {sol_received:.4f} SOL "

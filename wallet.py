@@ -15,6 +15,7 @@ from solders.pubkey import Pubkey
 
 import config
 import rpc_client
+from backtest import get_sol_usd_rate
 
 log = logging.getLogger("wallet")
 
@@ -112,7 +113,7 @@ async def get_wallet_value_summary(address: str) -> dict:
     """
     sol_balance = await get_sol_balance_of(address)
     usdc_balance = await get_usdc_balance_of(address)
-    sol_value_usd = sol_balance * config.SOL_USD_RATE
+    sol_value_usd = sol_balance * await get_sol_usd_rate()
     total_value_usd = sol_value_usd + usdc_balance  # 1 USDC ≈ 1$
 
     return {
