@@ -434,6 +434,17 @@ class PaperTrader:
             await asyncio.sleep(effective_poll_interval)
             elapsed += effective_poll_interval
 
+            # CORRIGÉ suite à un vrai bug trouvé : "Auto-Sell global" (menu
+            # principal, bouton à côté d'"Auto-Buy global") changeait bien
+            # l'état affiché et sauvegardait la valeur, mais
+            # is_auto_sell_active() — la fonction censée le vérifier —
+            # n'était appelée NULLE PART dans le fichier qui exécute les
+            # ventes. Le bouton était décoratif : ON ou OFF, rien ne
+            # changeait réellement. Contrairement à "Auto-Buy global", déjà
+            # bien branché (voir open_position ci-dessus).
+            if not self.data_store.is_auto_sell_active(position["source_wallet"]):
+                continue  # vente automatique désactivée — la position reste ouverte, on continue juste de suivre son prix
+
             data = await _get_pair_data(position["token_mint"])
             price = float(data.get("priceUsd", 0) or 0)
             market_cap = float(data.get("marketCap", data.get("fdv", 0)) or 0)
