@@ -300,10 +300,18 @@ class SniperBot:
         elif cooldown_blocked:
             added_note = "\n\n⏳ _Adresse destinataire NON ajoutée (cooldown — ce wallet source a déjà déclenché un ajout automatique récemment)._"
         elif not self.data_store.is_dev_monitored(destination) and self.data_store.has_free_slot():
+            # CORRIGÉ suite à un vrai bug trouvé : add_dev_wallet() ajoutait
+            # TOUJOURS le destinataire en mode "track_creation" (sa valeur
+            # par défaut), sans jamais regarder le mode réel de la source —
+            # un destinataire d'un wallet en Copy Trading (track_buy)
+            # atterrissait quand même dans les Ruggeurs, sans aucun lien
+            # logique. Hérite maintenant du mode de la source.
+            inherited_mode = entry.get("mode", "track_creation")
             self.data_store.add_dev_wallet(
-                destination, label=f"retrait_{wallet_address[:6]}_{destination[:6]}", scheme="sol_withdrawal", backtest_ratio=0.0,
+                destination, label=f"retrait_{wallet_address[:6]}_{destination[:6]}", scheme="sol_withdrawal",
+                backtest_ratio=0.0, mode=inherited_mode,
             )
-            log.info(f"➕ Adresse destinataire ajoutée au monitoring suite au retrait : {destination[:8]}...")
+            log.info(f"➕ Adresse destinataire ajoutée au monitoring suite au retrait : {destination[:8]}... (mode={inherited_mode})")
             added_note = "\n\n_Adresse destinataire ajoutée au monitoring._"
         elif not self.data_store.has_free_slot():
             added_note = "\n\n⚠️ _Limite de wallets atteinte — adresse destinataire NON ajoutée._"
