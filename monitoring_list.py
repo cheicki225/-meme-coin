@@ -246,13 +246,34 @@ class DataStore:
         defaults = {
             "enabled": config.WITHDRAWAL_ALERT_ENABLED,
             "min_sol": config.WITHDRAWAL_ALERT_MIN_SOL,
+            "auto_add": config.WITHDRAWAL_ALERT_AUTO_ADD,
+            "allow_cascade": config.WITHDRAWAL_ALERT_ALLOW_CASCADE,
         }
         stored = self.state.get("withdrawal_alert_settings", {})
         return {**defaults, **stored}
 
     def set_withdrawal_alert_settings(self, **kwargs):
-        """AJOUTÉ pour l'alerte retrait SOL — met à jour enabled et/ou min_sol."""
+        """AJOUTÉ pour l'alerte retrait SOL — met à jour enabled, min_sol,
+        auto_add et/ou allow_cascade."""
         settings = self.state.setdefault("withdrawal_alert_settings", {})
+        settings.update({k: v for k, v in kwargs.items() if v is not None})
+        self.save()
+
+    def get_dev_transfer_settings(self) -> dict:
+        """AJOUTÉ pour le système à 90% (transferts SOL importants d'un
+        dev) — même principe, réglable depuis Telegram."""
+        defaults = {
+            "pct_threshold": config.DEV_SOL_TRANSFER_ALERT_PCT,
+            "auto_add": config.DEV_TRANSFER_AUTO_ADD,
+            "allow_cascade": config.DEV_TRANSFER_ALLOW_CASCADE,
+        }
+        stored = self.state.get("dev_transfer_settings", {})
+        return {**defaults, **stored}
+
+    def set_dev_transfer_settings(self, **kwargs):
+        """AJOUTÉ pour le système à 90% — met à jour pct_threshold,
+        auto_add et/ou allow_cascade."""
+        settings = self.state.setdefault("dev_transfer_settings", {})
         settings.update({k: v for k, v in kwargs.items() if v is not None})
         self.save()
 

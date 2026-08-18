@@ -912,25 +912,57 @@ class SniperTelegramBot:
             [InlineKeyboardButton(f"{t('global_ai_label', lang)}: {ai_status}", callback_data="toggleglobalai")],
             [InlineKeyboardButton("🧹 Nettoyage automatique", callback_data="cleanup_settings")],
             [InlineKeyboardButton("📤 Alerte retrait SOL", callback_data="withdrawal_settings")],
+            [InlineKeyboardButton("💸 Alerte transfert dev (90%)", callback_data="devtransfer_settings")],
             [InlineKeyboardButton(t("btn_back", lang), callback_data="menu_main")],
         ]
         await self._send_or_edit(query, text, InlineKeyboardMarkup(keyboard), edit=True)
 
     async def show_withdrawal_settings(self, query):
         """AJOUTÉ suite à une demande explicite : réglages de l'alerte
-        retrait SOL (montant absolu, tous wallets surveillés)."""
+        retrait SOL (montant absolu, tous wallets surveillés).
+        ÉTENDU (2e fois) avec auto_add et allow_cascade — voir main.py
+        on_wallet_withdrawal pour la logique anti-cascade."""
         settings = self.data_store.get_withdrawal_alert_settings()
         status_icon = "🟢 ON" if settings["enabled"] else "🔴 OFF"
+        auto_add_icon = "🟢 ON" if settings.get("auto_add", True) else "🔴 OFF"
+        cascade_icon = "🟢 ON" if settings.get("allow_cascade", False) else "🔴 OFF"
         text = (
             f"📤 *Alerte retrait SOL*\n\n"
             f"Alerte quand N'IMPORTE QUEL wallet surveillé (Ruggeur ou Copy Trading) "
             f"envoie du SOL vers une autre adresse.\n\n"
             f"Statut : {status_icon}\n"
-            f"Montant minimum : `{settings['min_sol']:.4f}` SOL"
+            f"Montant minimum : `{settings['min_sol']:.4f}` SOL\n"
+            f"Ajout automatique de l'adresse destinataire : {auto_add_icon}\n"
+            f"Autoriser la cascade (adresse ajoutée → peut elle-même déclencher un ajout) : {cascade_icon}"
         )
         keyboard = [
             [InlineKeyboardButton(f"Activé/Désactivé : {status_icon}", callback_data="withdrawal_toggle")],
             [InlineKeyboardButton("✏️ Modifier le montant minimum (SOL)", callback_data="withdrawal_edit_min_sol")],
+            [InlineKeyboardButton(f"Ajout auto destinataire : {auto_add_icon}", callback_data="withdrawal_toggle_autoadd")],
+            [InlineKeyboardButton(f"Autoriser la cascade : {cascade_icon}", callback_data="withdrawal_toggle_cascade")],
+            [InlineKeyboardButton(t("btn_back", self.data_store.state.get("language", "fr")), callback_data="menu_settings")],
+        ]
+        await self._send_or_edit(query, text, InlineKeyboardMarkup(keyboard), edit=True)
+
+    async def show_dev_transfer_settings(self, query):
+        """AJOUTÉ suite à une demande explicite : réglages du système à
+        90% (transfert SOL important d'un DEV surveillé) — n'avait aucun
+        menu Telegram jusqu'ici, seulement des variables d'environnement."""
+        settings = self.data_store.get_dev_transfer_settings()
+        auto_add_icon = "🟢 ON" if settings.get("auto_add", True) else "🔴 OFF"
+        cascade_icon = "🟢 ON" if settings.get("allow_cascade", False) else "🔴 OFF"
+        text = (
+            f"💸 *Alerte transfert SOL important (devs)*\n\n"
+            f"Alerte quand un DEV surveillé (Ruggeur) transfère une grosse "
+            f"partie de son solde SOL — signal qu'il encaisse et se prépare à disparaître.\n\n"
+            f"Seuil : `{settings['pct_threshold']:.0f}%` du solde\n"
+            f"Ajout automatique de l'adresse destinataire : {auto_add_icon}\n"
+            f"Autoriser la cascade : {cascade_icon}"
+        )
+        keyboard = [
+            [InlineKeyboardButton("✏️ Modifier le seuil (%)", callback_data="devtransfer_edit_pct")],
+            [InlineKeyboardButton(f"Ajout auto destinataire : {auto_add_icon}", callback_data="devtransfer_toggle_autoadd")],
+            [InlineKeyboardButton(f"Autoriser la cascade : {cascade_icon}", callback_data="devtransfer_toggle_cascade")],
             [InlineKeyboardButton(t("btn_back", self.data_store.state.get("language", "fr")), callback_data="menu_settings")],
         ]
         await self._send_or_edit(query, text, InlineKeyboardMarkup(keyboard), edit=True)
@@ -2221,6 +2253,27 @@ class SniperTelegramBot:
         elif data == "withdrawal_edit_min_sol":
             user_states[chat_id] = {"awaiting": "withdrawal_min_sol"}
             await query.edit_message_text("Envoie le montant minimum en SOL qui déclenche l'alerte (ex: 0.1).")
+        elif data == "withdrawal_toggle_autoadd":
+            current = self.data_store.get_withdrawal_alert_settings().get("auto_add", True)
+            self.data_store.set_withdrawal_alert_settings(auto_add=not current)
+            await self.show_withdrawal_settings(query)
+        elif data == "withdrawal_toggle_cascade":
+            current = self.data_store.get_withdrawal_alert_settings().get("allow_cascade", False)
+            self.data_store.set_withdrawal_alert_settings(allow_cascade=not current)
+            await self.show_withdrawal_settings(query)
+        elif data == "devtransfer_settings":
+            await self.show_dev_transfer_settings(query)
+        elif data == "devtransfer_edit_pct":
+            user_states[chat_id] = {"awaiting": "devtransfer_pct"}
+            await query.edit_message_text("Envoie le seuil en % du solde qui déclenche l'alerte (ex: 90).")
+        elif data == "devtransfer_toggle_autoadd":
+            current = self.data_store.get_dev_transfer_settings().get("auto_add", True)
+            self.data_store.set_dev_transfer_settings(auto_add=not current)
+            await self.show_dev_transfer_settings(query)
+        elif data == "devtransfer_toggle_cascade":
+            current = self.data_store.get_dev_transfer_settings().get("allow_cascade", False)
+            self.data_store.set_dev_transfer_settings(allow_cascade=not current)
+            await self.show_dev_transfer_settings(query)
         elif data == "add_rugger":
             user_states[chat_id] = {"awaiting": "add_rugger_address"}
             await query.edit_message_text("Colle l'adresse du wallet à ajouter au monitoring.")
@@ -2644,6 +2697,18 @@ class SniperTelegramBot:
                 return
             self.data_store.set_withdrawal_alert_settings(min_sol=amount)
             await update.message.reply_text(f"✅ Seuil d'alerte retrait réglé à `{amount:.4f}` SOL.", parse_mode="Markdown")
+            user_states.pop(chat_id, None)
+
+        elif awaiting == "devtransfer_pct":
+            try:
+                pct = float(text.strip())
+                if not (0 < pct <= 100):
+                    raise ValueError
+            except ValueError:
+                await update.message.reply_text("Pourcentage invalide, envoie un nombre entre 0 et 100 (ex: 90).")
+                return
+            self.data_store.set_dev_transfer_settings(pct_threshold=pct)
+            await update.message.reply_text(f"✅ Seuil d'alerte transfert dev réglé à `{pct:.0f}%`.", parse_mode="Markdown")
             user_states.pop(chat_id, None)
 
         elif awaiting == "position_calc_input":

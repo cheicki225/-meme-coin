@@ -139,15 +139,15 @@ class CopyTradeListener:
         current = self._get_tracked_wallets()
         new_wallets = current - self._subscribed_wallets
 
-        for wallet in new_wallets:
+        for wallet_addr in new_wallets:
             sub_msg = {
                 "jsonrpc": "2.0",
                 "id": len(self._subscribed_wallets) + 1,
                 "method": "logsSubscribe",
-                "params": [{"mentions": [wallet]}, {"commitment": "processed"}],
+                "params": [{"mentions": [wallet_addr]}, {"commitment": "processed"}],
             }
             await self._ws.send(json.dumps(sub_msg))
-            self._subscribed_wallets.add(wallet)
+            self._subscribed_wallets.add(wallet_addr)
 
         if new_wallets:
             log.info(f"🔔 {len(new_wallets)} nouveau(x) wallet(s) souscrit(s) en copytrade.")
@@ -256,7 +256,13 @@ class CopyTradeListener:
                 continue
 
             pct_transferred = (amount_sol / prior_balance_estimate) * 100
-            if pct_transferred >= config.DEV_SOL_TRANSFER_ALERT_PCT:
+            # CORRIGÉ : utilisait config.DEV_SOL_TRANSFER_ALERT_PCT (valeur
+            # fixe) au lieu du réglage modifiable depuis Telegram — le
+            # bouton "✏️ Modifier le seuil" n'aurait eu aucun effet réel
+            # sans ce fix.
+            dt_settings = self.data_store.get_dev_transfer_settings()
+            threshold = dt_settings.get("pct_threshold", config.DEV_SOL_TRANSFER_ALERT_PCT)
+            if pct_transferred >= threshold:
                 log.info(
                     f"💸 Transfert SOL important détecté : {from_account[:8]}... a envoyé "
                     f"{amount_sol:.4f} SOL ({pct_transferred:.0f}% de son solde) vers {to_account[:8]}..."

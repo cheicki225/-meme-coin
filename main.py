@@ -253,10 +253,30 @@ class SniperBot:
             log.debug(f"Erreur lecture solde restant pour {wallet_address}: {e}")
             balance_line = ""
 
+        # CORRIGÉ suite à un vrai effet en cascade observé : une adresse
+        # ajoutée automatiquement par CETTE alerte pouvait elle-même
+        # déclencher un nouvel ajout automatique si elle faisait aussi un
+        # retrait — sans limite. Deux garde-fous, tous deux réglables
+        # depuis Telegram (menu "📤 Alerte retrait SOL") :
+        # 1. "auto_add" : coupe l'ajout automatique entièrement (garde
+        #    juste la notification) si désactivé.
+        # 2. "allow_cascade" : si désactivé (par défaut), une adresse dont
+        #    le schéma est déjà "sol_withdrawal"/"sol_transfer" (donc
+        #    elle-même ajoutée automatiquement par une alerte précédente)
+        #    ne peut plus déclencher de NOUVEL ajout — la chaîne s'arrête
+        #    au 1er niveau.
+        wd_settings = self.data_store.get_withdrawal_alert_settings()
+        was_auto_added = entry.get("scheme") in ("sol_withdrawal", "sol_transfer")
+        cascade_blocked = was_auto_added and not wd_settings.get("allow_cascade", False)
+
         added_note = ""
-        if not self.data_store.is_dev_monitored(destination) and self.data_store.has_free_slot():
+        if not wd_settings.get("auto_add", True):
+            added_note = ""  # ajout auto désactivé — juste la notification, rien à signaler de plus
+        elif cascade_blocked:
+            added_note = "\n\n⏭️ _Adresse destinataire NON ajoutée (cascade bloquée — ce wallet a lui-même été ajouté automatiquement)._"
+        elif not self.data_store.is_dev_monitored(destination) and self.data_store.has_free_slot():
             self.data_store.add_dev_wallet(
-                destination, label=f"retrait_{wallet_address[:8]}", scheme="sol_withdrawal", backtest_ratio=0.0,
+                destination, label=f"retrait_{wallet_address[:6]}_{destination[:6]}", scheme="sol_withdrawal", backtest_ratio=0.0,
             )
             log.info(f"➕ Adresse destinataire ajoutée au monitoring suite au retrait : {destination[:8]}...")
             added_note = "\n\n_Adresse destinataire ajoutée au monitoring._"
@@ -303,6 +323,30 @@ class SniperBot:
             f"vers {destination[:8]}..."
         )
 
+        # CORRIGÉ suite à un vrai effet en cascade observé (même correctif
+        # que on_wallet_withdrawal) : évite qu'une adresse déjà ajoutée
+        # automatiquement (scheme sol_transfer/sol_withdrawal) ne déclenche
+        # elle-même un nouvel ajout en chaîne. Corrige aussi une
+        # incohérence : le texte de la notification annonçait l'ajout
+        # AVANT même de vérifier s'il avait réussi.
+        dt_settings = self.data_store.get_dev_transfer_settings()
+        was_auto_added = entry.get("scheme") in ("sol_withdrawal", "sol_transfer")
+        cascade_blocked = was_auto_added and not dt_settings.get("allow_cascade", False)
+
+        added_note = ""
+        if not dt_settings.get("auto_add", True):
+            added_note = ""
+        elif cascade_blocked:
+            added_note = "\n\n⏭️ _Adresse destinataire NON ajoutée (cascade bloquée — ce wallet a lui-même été ajouté automatiquement)._"
+        elif not self.data_store.is_dev_monitored(destination) and self.data_store.has_free_slot():
+            self.data_store.add_dev_wallet(
+                destination, label=f"transfert_{dev_address[:6]}_{destination[:6]}", scheme="sol_transfer", backtest_ratio=0.0,
+            )
+            log.info(f"➕ Adresse destinataire ajoutée au monitoring suite au transfert : {destination[:8]}...")
+            added_note = "\n\n_Adresse destinataire ajoutée au monitoring._"
+        elif not self.data_store.has_free_slot():
+            added_note = "\n\n⚠️ _Limite de wallets atteinte — adresse destinataire NON ajoutée._"
+
         reply_markup = None
         if signature:
             from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -316,16 +360,9 @@ class SniperBot:
             f"Dev : `{dev_address}` ({label})\n"
             f"Montant : `{amount_sol:.4f}` SOL (`{pct_of_balance:.0f}%` de son solde)\n"
             f"Destination : `{destination}`\n\n"
-            f"_Ce dev encaisse peut-être et se prépare à disparaître. "
-            f"L'adresse destinataire a été ajoutée au monitoring._",
+            f"_Ce dev encaisse peut-être et se prépare à disparaître._{added_note}",
             reply_markup=reply_markup,
         )
-
-        if not self.data_store.is_dev_monitored(destination) and self.data_store.has_free_slot():
-            self.data_store.add_dev_wallet(
-                destination, label=f"transfert_{dev_address[:8]}", scheme="sol_transfer", backtest_ratio=0.0,
-            )
-            log.info(f"➕ Adresse destinataire ajoutée au monitoring suite au transfert : {destination[:8]}...")
 
     async def on_copytrade_sell(self, wallet_address: str, token_mint: str, signature: str):
         """

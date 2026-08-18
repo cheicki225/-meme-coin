@@ -341,6 +341,16 @@ DEV_SOL_TRANSFER_ALERT_PCT = float(os.getenv("DEV_SOL_TRANSFER_ALERT_PCT", "90")
 # de solde, juste "a-t-il envoyé au moins X SOL ?".
 WITHDRAWAL_ALERT_ENABLED = os.getenv("WITHDRAWAL_ALERT_ENABLED", "true").lower() == "true"
 WITHDRAWAL_ALERT_MIN_SOL = float(os.getenv("WITHDRAWAL_ALERT_MIN_SOL", "0.1"))
+# AJOUTÉ suite à un vrai effet en cascade observé : une adresse ajoutée
+# automatiquement (via cette alerte) pouvait elle-même déclencher un
+# nouvel ajout automatique si ELLE faisait aussi un retrait, sans limite —
+# risque de remplir les 30 wallets rapidement avec des adresses de plus en
+# plus éloignées du signal de départ.
+WITHDRAWAL_ALERT_AUTO_ADD = os.getenv("WITHDRAWAL_ALERT_AUTO_ADD", "true").lower() == "true"  # ajout auto ON/OFF (sinon juste notifier)
+WITHDRAWAL_ALERT_ALLOW_CASCADE = os.getenv("WITHDRAWAL_ALERT_ALLOW_CASCADE", "false").lower() == "true"  # False = stoppe la chaîne à 1 niveau
+
+DEV_TRANSFER_AUTO_ADD = os.getenv("DEV_TRANSFER_AUTO_ADD", "true").lower() == "true"
+DEV_TRANSFER_ALLOW_CASCADE = os.getenv("DEV_TRANSFER_ALLOW_CASCADE", "false").lower() == "true"
 
 # ── Nettoyage automatique des wallets surveillés ──
 # AJOUTÉ suite à une demande explicite : retire du monitoring les wallets
