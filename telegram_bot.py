@@ -1234,8 +1234,8 @@ class SniperTelegramBot:
             all_cluster_tokens = []
             for addr in cluster_info["cluster"]:
                 addr_tokens = await wallet_history.get_created_tokens(addr, max_results=10)
-                for t in addr_tokens:
-                    t["creator_address"] = addr
+                for ct in addr_tokens:
+                    ct["creator_address"] = addr
                 all_cluster_tokens.extend(addr_tokens)
 
             recent_cluster_tokens = sorted(
@@ -1474,7 +1474,7 @@ class SniperTelegramBot:
             # même de voir le détail. Seule la moyenne/win rate (qui n'a de
             # sens statistique qu'avec un minimum d'échantillon) garde le
             # seuil de 3.
-            for i, t in enumerate(recent_buys):
+            for i, buy in enumerate(recent_buys):
                 # AJOUTÉ suite à un vrai signalement : la reconstruction
                 # on-chain (backtest.py, méthode "MC max après entrée") peut
                 # décoder des dizaines/centaines de transactions PAR TOKEN
@@ -1495,8 +1495,8 @@ class SniperTelegramBot:
                     pass  # édition ratée (rate-limit Telegram, message identique...) — pas bloquant, on continue
 
                 detail = await backtest.get_detailed_trade_info(
-                    t["token_mint"], purchase_block_time=t.get("block_time"), tp_pct=100.0, sl_pct=config.SL_PCT,
-                    sol_spent=t.get("sol_spent"), tokens_received=t.get("tokens_received"),
+                    buy["token_mint"], purchase_block_time=buy.get("block_time"), tp_pct=100.0, sl_pct=config.SL_PCT,
+                    sol_spent=buy.get("sol_spent"), tokens_received=buy.get("tokens_received"),
                 )
 
                 # CORRIGÉ suite à un vrai signalement : cette analyse comptait
@@ -1522,9 +1522,9 @@ class SniperTelegramBot:
                 if detail.get("symbol") and detail.get("dexscreener_url"):
                     name_display = f"[{detail['symbol']}]({detail['dexscreener_url']})"
                 elif detail.get("symbol"):
-                    name_display = f"{detail['symbol']} — `{t['token_mint'][:8]}...`"
+                    name_display = f"{detail['symbol']} — `{buy['token_mint'][:8]}...`"
                 else:
-                    name_display = f"`{t['token_mint'][:8]}...`"
+                    name_display = f"`{buy['token_mint'][:8]}...`"
 
                 mc_display = f", MC entrée: ${detail['entry_market_cap_usd']:,.0f}" if detail.get("entry_market_cap_usd") else ""
                 filter_note = f" _(> filtre {max_mc_filter:,.0f}$, exclu)_" if excluded_by_filter else ""
@@ -1599,7 +1599,21 @@ class SniperTelegramBot:
             # proposer aucun bouton du tout.
             keyboard.append([InlineKeyboardButton("➕ Ajouter en Ruggeur", callback_data=f"quickadddev_{wallet_address}")])
         keyboard.append([InlineKeyboardButton("← Back", callback_data="menu_main")])
-        await msg.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard), disable_web_page_preview=True)
+        # CORRIGÉ suite à une recherche systématique de bugs — cette fonction
+        # (la plus utilisée et la plus complexe du bot) n'avait JAMAIS reçu
+        # le filet de sécurité déjà présent dans analyze_coin_inline,
+        # check_security_inline et check_ai_score_inline. Risque réel : les
+        # labels générés par l'alerte retrait SOL ("retrait_XXXX...") et le
+        # transfert important ("transfert_XXXX...") contiennent des
+        # underscores non échappés — exactement le genre de caractère qui
+        # casse le Markdown Telegram sans prévenir, provoquant le même
+        # silence total qu'on a déjà chassé plusieurs fois dans cette session.
+        try:
+            await msg.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard), disable_web_page_preview=True)
+        except Exception as e:
+            log.warning(f"Erreur d'affichage Markdown pour l'analyse de wallet {wallet_address}: {e}")
+            plain_text = text.replace("*", "").replace("`", "").replace("_", "")
+            await msg.edit_text(plain_text, reply_markup=InlineKeyboardMarkup(keyboard), disable_web_page_preview=True)
 
     async def check_ai_score_inline(self, update: Update, input_address: str):
         """📈 Score IA complet — avis IA direct sur un dev ou un token, sans l'ajouter au monitoring."""
