@@ -36,6 +36,7 @@ d'agrégation) plutôt qu'un nativeTransfer direct sur le wallet lui-même.
 import asyncio
 import json
 import logging
+import time
 import aiohttp
 import websockets
 
@@ -44,6 +45,22 @@ import rpc_client
 import wallet
 
 log = logging.getLogger("copytrade")
+
+# CORRIGÉ suite à un vrai cas observé : deux alertes de retrait strictement
+# identiques (même wallet, même montant, même destination, même minute)
+# reçues pour ce qui était un seul et même retrait réel. Cause : aucune
+# déduplication par signature avant traitement — si Helius livre deux fois
+# la même notification logsSubscribe pour une même transaction (documenté,
+# arrive réellement au commitment "processed"), _process_transaction()
+# exécutait tout le pipeline une deuxième fois (alerte retrait, alerte
+# transfert dev, ET classification achat/vente copy trading). Risque le
+# plus grave : un signal d'achat copy trading dupliqué de la même façon
+# déclencherait un double achat réel en LIVE, pas juste une notification en
+# trop. Fix : cache borné des signatures déjà traitées récemment, purgé
+# automatiquement pour ne jamais grossir sans limite sur une longue durée
+# de fonctionnement.
+_SIGNATURE_CACHE_MAX_SIZE = 500
+_SIGNATURE_CACHE_TTL_S = 120  # largement suffisant pour absorber un doublon réseau/RPC
 
 
 class CopyTradeListener:
@@ -70,6 +87,7 @@ class CopyTradeListener:
         self._subscribed_wallets = set()
         self._sub_id_to_wallet = {}
         self._creation_mode_wallets = set()  # sous-ensemble surveillé pour les transferts SOL (seuil %)
+        self._recent_signatures = {}  # signature -> timestamp du premier traitement, voir _already_processed
 
     def _get_tracked_wallets(self) -> set:
         """
@@ -193,7 +211,28 @@ class CopyTradeListener:
         except Exception as e:
             log.debug(f"Erreur traitement message copytrade: {e}")
 
+    def _already_processed(self, signature: str) -> bool:
+        """
+        Retourne True si cette signature a déjà été traitée récemment (doublon
+        à ignorer), False sinon — et l'enregistre dans ce cas pour la suite.
+        Purge occasionnelle des entrées trop anciennes pour ne jamais grossir
+        sans limite sur une longue durée de fonctionnement.
+        """
+        now = time.time()
+        if len(self._recent_signatures) > _SIGNATURE_CACHE_MAX_SIZE:
+            cutoff = now - _SIGNATURE_CACHE_TTL_S
+            self._recent_signatures = {s: t for s, t in self._recent_signatures.items() if t > cutoff}
+
+        if signature in self._recent_signatures:
+            return True
+        self._recent_signatures[signature] = now
+        return False
+
     async def _process_transaction(self, signature: str, is_swap_related: bool = False):
+        if self._already_processed(signature):
+            log.debug(f"Signature {signature[:8]}... déjà traitée récemment — doublon ignoré.")
+            return
+
         parsed = await self._fetch_parsed_transaction(signature)
         if not parsed:
             return
