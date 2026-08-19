@@ -3047,9 +3047,14 @@ class SniperTelegramBot:
             await query.answer("Position déjà clôturée ou introuvable.", show_alert=True)
             return
 
-        from backtest import _get_pair_data
-        data = await _get_pair_data(token_mint)
-        price = float(data.get("priceUsd", position["entry_price"]) or position["entry_price"])
+        # CORRIGÉ suite à un vrai bug trouvé : _get_pair_data seul
+        # (DexScreener) ne retourne jamais rien pour un token resté sur la
+        # bonding curve — le prix retombait alors silencieusement sur
+        # position["entry_price"] (0% affiché, PnL réel masqué). Voir le
+        # docstring de get_live_price_and_market_cap.
+        from backtest import get_live_price_and_market_cap
+        live = await get_live_price_and_market_cap(token_mint)
+        price = live["price"] or position["entry_price"]
         change_pct = self.trader._pnl_pct(position, price)
 
         ratio = min(pct / 100, 1.0)
@@ -3066,9 +3071,11 @@ class SniperTelegramBot:
             await query.answer("Position clôturée — plus de P&L à afficher.", show_alert=True)
             return
 
-        from backtest import _get_pair_data
-        data = await _get_pair_data(token_mint)
-        price = float(data.get("priceUsd", position["entry_price"]) or position["entry_price"])
+        # CORRIGÉ (même bug que _quick_sell_by_mint) : voir le docstring de
+        # get_live_price_and_market_cap.
+        from backtest import get_live_price_and_market_cap
+        live = await get_live_price_and_market_cap(token_mint)
+        price = live["price"] or position["entry_price"]
         change_pct = self.trader._pnl_pct(position, price)
         value_usd = position["units"] * price
 

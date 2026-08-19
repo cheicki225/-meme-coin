@@ -232,6 +232,61 @@ async def get_bonding_curve_price(token_mint: str, retries: int = 2, retry_delay
 
     return {"price_sol": price_sol, "market_cap_usd": market_cap_usd, "complete": complete}
 
+
+async def get_live_price_and_market_cap(token_mint: str, need_pair_data: bool = False) -> dict:
+    """
+    CORRIGÉ suite à un vrai bug trouvé (position jamais coupée automatiquement
+    ET boutons de vente manuelle/Refresh PnL montrant 0% de gain, sur un
+    token resté sur la bonding curve) : open_position() utilisait déjà la
+    priorité "bonding curve on-chain d'abord, DexScreener en repli" pour le
+    PRIX D'ACHAT, mais _monitor_position (surveillance continue),
+    _quick_sell_by_mint (vente manuelle) et _refresh_pnl (bouton Refresh)
+    utilisaient TOUS uniquement _get_pair_data (DexScreener) — qui
+    n'indexe JAMAIS un token Pump.fun tant qu'il reste sur la bonding
+    curve (voir le docstring de get_bonding_curve_price). Résultat concret :
+    une position sur un token qui ne migre jamais (la majorité des entrées
+    copy trade, largement sous le seuil de migration ~69K$) recevait
+    price=0 à CHAQUE sondage de _monitor_position, qui "continue"
+    immédiatement — sautant TOUTE la logique de sortie (TP, trailing SL,
+    mc trailing, profit trail, no-activity-sell) pendant toute la durée de
+    vie de la position, celle-ci restant ouverte indéfiniment sans aucune
+    protection réelle. La vente manuelle et le Refresh PnL retombaient eux
+    silencieusement sur position["entry_price"] (0% affiché) au lieu du
+    vrai prix, masquant un vrai gain ou une vraie perte — d'où l'impression
+    que ces boutons "ne fonctionnent pas".
+
+    Point d'entrée UNIQUE pour "quel est le prix/market cap actuel de ce
+    token", réutilisé par open_position, _monitor_position,
+    _quick_sell_by_mint et _refresh_pnl — même priorité partout : bonding
+    curve on-chain d'abord (tant que non "complete"), DexScreener sinon.
+
+    need_pair_data : si True, tente aussi un appel DexScreener même quand
+    le prix vient de la bonding curve — utile pour des champs auxiliaires
+    comme txns.m5 (no_activity_sell). Coûte un appel réseau de plus ; à
+    activer seulement si l'appelant en a vraiment besoin.
+
+    Retourne {"price": float, "market_cap": float, "pair_data": dict,
+    "source": "onchain"|"dexscreener"}. pair_data peut être {} même en
+    provenance "dexscreener" si DexScreener n'a rien retourné.
+    """
+    onchain = await get_bonding_curve_price(token_mint)
+    if onchain and not onchain.get("complete"):
+        pair_data = await _get_pair_data(token_mint) if need_pair_data else {}
+        return {
+            "price": onchain["price_sol"] * await get_sol_usd_rate(),
+            "market_cap": onchain["market_cap_usd"],
+            "pair_data": pair_data,
+            "source": "onchain",
+        }
+
+    pair_data = await _get_pair_data(token_mint)
+    return {
+        "price": float(pair_data.get("priceUsd", 0) or 0),
+        "market_cap": float(pair_data.get("marketCap", pair_data.get("fdv", 0)) or 0),
+        "pair_data": pair_data,
+        "source": "dexscreener",
+    }
+
 # ════════════════════════════════════════════════════════════════
 # GECKOTERMINAL — vraies bougies OHLC historiques (gratuit, sans clé)
 # ════════════════════════════════════════════════════════════════

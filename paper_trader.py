@@ -29,7 +29,7 @@ import asyncio
 import config
 import rpc_client
 import wallet_history
-from backtest import _get_pair_data, get_bonding_curve_price, get_sol_usd_rate
+from backtest import _get_pair_data, get_bonding_curve_price, get_sol_usd_rate, get_live_price_and_market_cap
 import security as security_check
 
 log = logging.getLogger("paper_trader")
@@ -512,9 +512,20 @@ class PaperTrader:
             if not self.data_store.is_auto_sell_active(position["source_wallet"]):
                 continue  # vente automatique désactivée — la position reste ouverte, on continue juste de suivre son prix
 
-            data = await _get_pair_data(position["token_mint"])
-            price = float(data.get("priceUsd", 0) or 0)
-            market_cap = float(data.get("marketCap", data.get("fdv", 0)) or 0)
+            # CORRIGÉ suite à un vrai bug trouvé : cette boucle utilisait
+            # SEULEMENT _get_pair_data (DexScreener), qui n'indexe jamais un
+            # token resté sur la bonding curve (voir le docstring de
+            # get_live_price_and_market_cap) — price=0 en continu, "continue"
+            # immédiat ci-dessous, donc AUCUNE logique de sortie ne
+            # s'exécutait jamais pour ces positions (la majorité des entrées
+            # copy trade). need_pair_data=True seulement si no_activity_sell
+            # est configuré pour ce wallet — c'est le seul bloc ci-dessous
+            # qui a besoin des champs DexScreener (txns.m5).
+            needs_pair_data = bool(settings.get("no_activity_sell_s"))
+            live = await get_live_price_and_market_cap(position["token_mint"], need_pair_data=needs_pair_data)
+            price = live["price"]
+            market_cap = live["market_cap"]
+            data = live["pair_data"]
             if price <= 0:
                 continue
 
@@ -533,8 +544,14 @@ class PaperTrader:
                     return
 
             # ── No activity sell ──────────────────────────────────
+            # CORRIGÉ (en même temps que le bug ci-dessus) : ne compte "aucune
+            # activité" que si DexScreener a RÉELLEMENT répondu (data non
+            # vide) — sinon un token encore sur la bonding curve (jamais
+            # indexé, data={}) aurait déclenché une fausse vente "no activity"
+            # au bout d'un seul cycle, à tort (absence de DONNÉE, pas absence
+            # RÉELLE d'activité).
             no_activity_s = settings.get("no_activity_sell_s")
-            if no_activity_s:
+            if no_activity_s and data:
                 txns_m5 = data.get("txns", {}).get("m5", {})
                 activity_count = txns_m5.get("buys", 0) + txns_m5.get("sells", 0)
                 if activity_count == 0:
@@ -584,8 +601,10 @@ class PaperTrader:
                 await self._check_buy_the_dip(position, price)
 
         if position["units"] > 0:
-            data = await _get_pair_data(position["token_mint"])
-            price = float(data.get("priceUsd", position["entry_price"]) or position["entry_price"])
+            # CORRIGÉ (même bug que ci-dessus) : repli DexScreener-only,
+            # même problème pour un token jamais migré.
+            live = await get_live_price_and_market_cap(position["token_mint"])
+            price = live["price"] or position["entry_price"]
             change_pct = self._pnl_pct(position, price)
             await self._close_remaining(position, price, change_pct, "EXPIRATION")
 
