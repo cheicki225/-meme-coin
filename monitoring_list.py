@@ -56,6 +56,7 @@ class DataStore:
                     for key, value in default.items():
                         loaded.setdefault(key, value)
                     self._backfill_wallet_settings(loaded)
+                    self._migrate_force_buy_only_once(loaded)
                     return loaded
             except (json.JSONDecodeError, OSError) as e:
                 log.error(f"Erreur lecture {self.path}: {e} — réinitialisation.")
@@ -83,6 +84,33 @@ class DataStore:
                     backfilled_count += 1
         if backfilled_count > 0:
             log.info(f"🔧 {backfilled_count} réglage(s) manquant(s) comblé(s) sur des wallets existants (rattrapage).")
+
+    def _migrate_force_buy_only_once(self, state: dict):
+        """
+        MIGRATION PONCTUELLE (demande explicite, 19 août 2026) : plusieurs
+        wallets existants avaient "buy_only_once" à False alors que le
+        défaut global (config.DEFAULT_WALLET_SETTINGS) est True — valeur
+        figée au moment de leur ajout, jamais mise à jour depuis. Le
+        backfill ci-dessus ne comble que les clés MANQUANTES, jamais une
+        valeur déjà présente (même si elle vient d'un ancien défaut), donc
+        il ne suffisait pas à corriger ce cas. Force ici "buy_only_once" à
+        True sur TOUS les wallets existants, UNE SEULE FOIS (flag
+        state["_migration_buy_only_once_forced_v1"]) — après ce passage,
+        le bouton Telegram redevient seul maître du réglage par wallet,
+        cette migration ne repassera plus jamais dessus.
+        """
+        if state.get("_migration_buy_only_once_forced_v1"):
+            return
+        wallets = state.get("monitored_dev_wallets", {})
+        forced_count = 0
+        for address, entry in wallets.items():
+            settings = entry.setdefault("settings", {})
+            if not settings.get("buy_only_once"):
+                settings["buy_only_once"] = True
+                forced_count += 1
+        state["_migration_buy_only_once_forced_v1"] = True
+        if forced_count > 0:
+            log.info(f"🔧 Migration ponctuelle : buy_only_once forcé à True sur {forced_count} wallet(s) existant(s).")
 
     def _default_state(self) -> dict:
         return {

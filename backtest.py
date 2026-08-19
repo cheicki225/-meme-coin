@@ -61,20 +61,41 @@ async def get_sol_usd_rate() -> float:
     SOL_PRICE_CACHE_TTL_S secondes via DexScreener (mint natif du SOL,
     config.SOL_MINT). Ne lève jamais d'exception — voir le repli en
     cascade documenté ci-dessus.
+
+    CORRIGÉ suite à un vrai bug trouvé (repéré via un "Market cap: 1$"
+    absurde sur une notification d'achat) : la première version réutilisait
+    _get_pair_data() telle quelle, qui renvoie pairs[0] sans distinguer si
+    le token demandé est le baseToken ou le quoteToken de la paire. Or le
+    SOL est très majoritairement QUOTE token dans les paires que DexScreener
+    renvoie pour son propre mint (convention "MEMECOIN/SOL", pas
+    "SOL/MEMECOIN") — et priceUsd d'une paire DexScreener correspond
+    TOUJOURS au baseToken, jamais au quoteToken. pairs[0] pouvait donc être
+    le prix d'un memecoin random appairé au SOL, pas le prix du SOL
+    lui-même. Ne garde maintenant QUE les paires où le SOL est bien le
+    baseToken, puis prend la plus liquide parmi elles (évite une paire
+    exotique/peu liquide qui fausserait le prix).
     """
     now = time.time()
     if _sol_price_cache["rate"] is not None and (now - _sol_price_cache["ts"]) < SOL_PRICE_CACHE_TTL_S:
         return _sol_price_cache["rate"]
 
     try:
-        pair_data = await _get_pair_data(config.SOL_MINT)
-        price = float(pair_data.get("priceUsd", 0) or 0)
-        if price > 0:
-            _sol_price_cache["rate"] = price
-            _sol_price_cache["ts"] = now
-            log.info(f"💱 Taux SOL/USD rafraîchi : {price:.2f}$ (source DexScreener)")
-            return price
-        log.warning("⚠️ Taux SOL/USD — DexScreener n'a renvoyé aucun prix pour le mint SOL natif.")
+        url = DEXSCREENER_PAIRS_URL.format(address=config.SOL_MINT)
+        async with aiohttp.ClientSession(connector=rpc_client.get_http_connector(), connector_owner=False) as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    pairs = data.get("pairs") or []
+                    sol_base_pairs = [p for p in pairs if (p.get("baseToken") or {}).get("address") == config.SOL_MINT]
+                    if sol_base_pairs:
+                        best_pair = max(sol_base_pairs, key=lambda p: (p.get("liquidity") or {}).get("usd", 0) or 0)
+                        price = float(best_pair.get("priceUsd", 0) or 0)
+                        if price > 0:
+                            _sol_price_cache["rate"] = price
+                            _sol_price_cache["ts"] = now
+                            log.info(f"💱 Taux SOL/USD rafraîchi : {price:.2f}$ (source DexScreener, paire {best_pair.get('dexId', '?')})")
+                            return price
+                    log.warning("⚠️ Taux SOL/USD — aucune paire avec SOL en baseToken trouvée chez DexScreener.")
     except Exception as e:
         log.warning(f"⚠️ Taux SOL/USD — échec de rafraîchissement DexScreener : {e}")
 
