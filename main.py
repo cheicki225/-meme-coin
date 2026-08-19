@@ -250,6 +250,18 @@ class SniperBot:
         label = entry.get("label", wallet_address[:8] + "...")
         unit = "SOL" if asset == "SOL" else "USDC"
 
+        # AJOUTÉ suite à une demande explicite : précise si le wallet SOURCE
+        # (celui qui retire) est suivi en mode Ruggeur (dev-sniping) ou Copy
+        # Trading — même catégorisation que count_wallets_by_mode (utilisée
+        # pour le compteur du menu principal), pour rester cohérent partout.
+        source_mode = entry.get("mode", "track_creation")
+        if source_mode in ("track_creation", "buy_on_dev_sell"):
+            type_label = "🎯 Ruggeur (dev)"
+        elif source_mode in ("track_buy", "track_sell"):
+            type_label = "📋 Copy Trading"
+        else:
+            type_label = f"❔ mode inconnu ({source_mode})"
+
         log.info(f"📤 Retrait {unit} : {label} a envoyé {amount:.4f} {unit} vers {destination[:8]}...")
 
         # AJOUTÉ suite à une demande explicite : affiche le solde restant
@@ -330,6 +342,7 @@ class SniperBot:
             "rugger_alert",
             f"📤 *Retrait {unit} détecté*\n\n"
             f"Wallet : `{wallet_address}` ({label})\n"
+            f"Type : {type_label}\n"
             f"Montant : `{amount:.4f}` {unit}\n"
             f"{balance_line}"
             f"Destination : `{destination}`{added_note}",
