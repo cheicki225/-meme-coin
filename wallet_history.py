@@ -456,11 +456,22 @@ async def get_token_creation_time(token_mint: str) -> float:
     si indéterminable (RPC injoignable après retries, ou aucune signature
     trouvée). None doit être traité comme "âge inconnu", jamais comme
     "token tout juste créé".
+
+    CORRIGÉ suite à un vrai cas observé : pour un token acheté en copy
+    trade quelques centaines de ms après sa création, getSignaturesForAddress
+    ne retournait souvent RIEN au premier essai — le temps de propagation
+    on-chain n'avait simplement pas encore eu lieu. Ironique : plus le
+    token est frais (le cas qu'on veut justement laisser passer), plus
+    cette détection risquait d'échouer. Réessaie maintenant une fois après
+    un court délai avant d'abandonner.
     """
-    signatures = await _get_signatures(token_mint, limit=50)
-    if not signatures:
-        return None
-    return signatures[-1].get("blockTime")
+    for attempt in range(2):
+        signatures = await _get_signatures(token_mint, limit=50)
+        if signatures:
+            return signatures[-1].get("blockTime")
+        if attempt == 0:
+            await asyncio.sleep(1.0)
+    return None
 
 
 async def get_all_signatures_paginated(address: str, max_pages: int = 20, page_size: int = 1000,

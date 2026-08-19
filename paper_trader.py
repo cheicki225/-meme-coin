@@ -179,29 +179,36 @@ class PaperTrader:
             if max_age_s:
                 creation_time = await wallet_history.get_token_creation_time(token_mint)
                 if creation_time is None:
-                    # Fail-closed : impossible de confirmer la fraîcheur du
-                    # token = on n'achète pas. Un skip est sans conséquence,
-                    # un achat non désiré sur un token bien plus vieux que
-                    # voulu coûte réellement de l'argent (ou fausse le PAPER).
-                    log.info(f"⏭️  Âge du token {token_mint[:8]}... indéterminable, skip (filtre âge actif).")
+                    # CORRIGÉ suite à un vrai cas observé en conditions réelles :
+                    # le fail-closed d'origine ("indéterminable = skip") bloquait
+                    # en pratique la QUASI-TOTALITÉ des copy trades, pas
+                    # seulement les tokens trop vieux. Cause : un token acheté
+                    # en copy trade très peu de temps après sa création est
+                    # justement le cas où getSignaturesForAddress n'a souvent
+                    # AUCUNE signature à retourner encore (propagation on-chain
+                    # pas terminée) — indéterminable est donc en réalité un
+                    # signal plutôt EN FAVEUR de "token très frais", pas contre.
+                    # Fail-open maintenant : on achète quand même, avec une
+                    # notif claire pour rester visible sur ce cas plutôt que de
+                    # bloquer silencieusement le copy trading dans son ensemble.
+                    log.info(f"⚠️  Âge du token {token_mint[:8]}... indéterminable — achat maintenu (probable token très frais).")
                     if self.notifier:
                         await self.notifier.notify(
                             "buy_skipped",
-                            f"⏭️ *Buy Skipped* (âge indéterminable)\nToken: `{token_mint[:8]}...`\n"
-                            f"Impossible de confirmer que le token a moins de {max_age_s:.0f}s.",
+                            f"⚠️ *Âge indéterminable* (achat maintenu)\nToken: `{token_mint[:8]}...`\n"
+                            f"Impossible de confirmer l'âge exact — probablement très frais, achat non bloqué.",
                         )
-                    return None
-
-                age_s = time.time() - creation_time
-                if age_s > max_age_s:
-                    log.info(f"⏭️  Token {token_mint[:8]}... âgé de {age_s:.0f}s (> {max_age_s:.0f}s), skip.")
-                    if self.notifier:
-                        await self.notifier.notify(
-                            "buy_skipped",
-                            f"⏭️ *Buy Skipped* (token trop vieux)\nToken: `{token_mint[:8]}...`\n"
-                            f"Âge: {age_s:.0f}s (max configuré: {max_age_s:.0f}s)",
-                        )
-                    return None
+                else:
+                    age_s = time.time() - creation_time
+                    if age_s > max_age_s:
+                        log.info(f"⏭️  Token {token_mint[:8]}... âgé de {age_s:.0f}s (> {max_age_s:.0f}s), skip.")
+                        if self.notifier:
+                            await self.notifier.notify(
+                                "buy_skipped",
+                                f"⏭️ *Buy Skipped* (token trop vieux)\nToken: `{token_mint[:8]}...`\n"
+                                f"Âge: {age_s:.0f}s (max configuré: {max_age_s:.0f}s)",
+                            )
+                        return None
 
             # CORRIGÉ suite à un vrai échec signalé : "Buy Failed - prix
             # d'entrée indisponible" survenait systématiquement sur des
