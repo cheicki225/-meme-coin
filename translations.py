@@ -23,6 +23,7 @@ TRANSLATIONS = {
     "btn_positions": {"fr": "📊 Positions", "en": "📊 Positions"},
     "btn_analyzecoin": {"fr": "🔍 Analyser un coin", "en": "🔍 Analyze a coin"},
     "btn_analyzewallet": {"fr": "🔎 Analyse de wallet", "en": "🔎 Wallet analysis"},
+    "btn_analyzedev": {"fr": "🕵️ Analyse de dev", "en": "🕵️ Dev analysis"},
     "btn_security": {"fr": "🛡️ Sécurité/Scam", "en": "🛡️ Security/Scam"},
     "btn_aiscore": {"fr": "📈 Score IA", "en": "📈 AI Score"},
     "btn_poscalc": {"fr": "💰 Calcul position", "en": "💰 Position Calc"},
@@ -306,6 +307,92 @@ TRANSLATIONS = {
     "notifications_title": {"fr": "🔔 *Notifications*", "en": "🔔 *Notifications*"},
     "notifications_always_on": {"fr": "_Buy Failed / Sell Failed / Bot Errors sont toujours actifs._",
                                  "en": "_Buy Failed / Sell Failed / Bot Errors are always active._"},
+
+    # ── Calcul de position / Stratégies / Stats session / Alertes globales ──
+    "poscalc_title": {
+        "fr": "💰 *Calcul de position*\n\nEnvoie-moi ton budget total et ton % de risque par trade, "
+              "séparés par un espace.\n\nExemple : `10 2` → 10 SOL de budget, 2% de risque par trade\n\n"
+              "Je te calcule le montant suggéré par position.",
+        "en": "💰 *Position sizing*\n\nSend me your total budget and your risk % per trade, "
+              "separated by a space.\n\nExample: `10 2` → 10 SOL budget, 2% risk per trade\n\n"
+              "I'll calculate the suggested amount per position.",
+    },
+    "poscalc_result": {
+        "fr": "💰 *Résultat*\n\nBudget total : `{budget}` SOL\nRisque par trade : `{risk_pct}%`\n\n"
+              "➡️ Montant suggéré par position : *{suggested:.4f} SOL*\n\n"
+              "_Avec ce montant, une série de {streak} pertes consécutives complètes viderait ton budget "
+              "— ajuste le % selon ta tolérance au risque._",
+        "en": "💰 *Result*\n\nTotal budget: `{budget}` SOL\nRisk per trade: `{risk_pct}%`\n\n"
+              "➡️ Suggested amount per position: *{suggested:.4f} SOL*\n\n"
+              "_With this amount, a streak of {streak} consecutive losses would wipe out your budget "
+              "— adjust the % based on your risk tolerance._",
+    },
+    "strategies_overview": {
+        "fr": "📜 *Stratégies disponibles*\n\n*🎯 Pullback Entry*\nAttend que le market cap redescende "
+              "sous un seuil avant d'acheter, plutôt que d'acheter immédiatement au prix affiché.\n\n"
+              "*📉 MC Trailing Sell*\nArme une vente automatique si le market cap redescend d'un certain "
+              "% après avoir atteint un pic.\n\n*📈 Profit Trail*\nPlancher de gain qui monte "
+              "progressivement à mesure que la position devient profitable — sécurise les gains sans "
+              "vendre trop tôt.\n\n_Configurables par wallet dans 🎯 Ruggeurs → [wallet] → 🎯 Stratégies "
+              "avancées._",
+        "en": "📜 *Available strategies*\n\n*🎯 Pullback Entry*\nWaits for the market cap to drop below "
+              "a threshold before buying, instead of buying immediately at the displayed price.\n\n"
+              "*📉 MC Trailing Sell*\nArms an automatic sell if the market cap drops by a certain % "
+              "after reaching a peak.\n\n*📈 Profit Trail*\nA profit floor that rises progressively as "
+              "the position becomes profitable — locks in gains without selling too early.\n\n"
+              "_Configurable per wallet in 🎯 Ruggers → [wallet] → 🎯 Advanced strategies._",
+    },
+    "session_stats": {
+        "fr": "📊 *Stats de session*\n\nP&L total : `{pnl:+.2f}$`\nRuggers suivis : `{n_ruggers}` | "
+              "Copy Trading : `{n_copytrade}` (total `{total}/{max_wallets}`)\nPositions ouvertes : "
+              "`{open_count}`\nTrades clôturés : `{closed_count}`\nWin rate : `{win_rate:.0f}%`",
+        "en": "📊 *Session stats*\n\nTotal P&L: `{pnl:+.2f}$`\nRuggers tracked: `{n_ruggers}` | "
+              "Copy Trading: `{n_copytrade}` (total `{total}/{max_wallets}`)\nOpen positions: "
+              "`{open_count}`\nClosed trades: `{closed_count}`\nWin rate: `{win_rate:.0f}%`",
+    },
+    "global_alerts_title": {
+        "fr": "🔔 *Alertes globales*\n\nStatut actuel : {status}\n\nCoupe ou active toutes les "
+              "notifications Telegram du bot.",
+        "en": "🔔 *Global alerts*\n\nCurrent status: {status}\n\nTurns all of the bot's Telegram "
+              "notifications on or off.",
+    },
+    "btn_toggle_status": {"fr": "Basculer : {status}", "en": "Toggle: {status}"},
+
+    # ── Confirmation générique / Config wallet / Referral / Presets ─────
+    "confirm_title": {
+        "fr": "⚠️ *Confirmation*\n\nTu es sur le point de :\n{description}\n\n_Cette action est "
+              "irréversible._",
+        "en": "⚠️ *Confirmation*\n\nYou are about to:\n{description}\n\n_This action is irreversible._",
+    },
+    "btn_confirm": {"fr": "✅ Confirmer", "en": "✅ Confirm"},
+    "btn_cancel": {"fr": "❌ Annuler", "en": "❌ Cancel"},
+    "wallet_not_found": {"fr": "Wallet introuvable.", "en": "Wallet not found."},
+    "wallet_config_title": {
+        "fr": "⚙️ *{label}*\n`{pubkey}`\n\nSolde : {balance}\nStatut : {status}",
+        "en": "⚙️ *{label}*\n`{pubkey}`\n\nBalance: {balance}\nStatus: {status}",
+    },
+    "wallet_status_active": {"fr": "🟢 Wallet actif", "en": "🟢 Active wallet"},
+    "wallet_status_inactive": {"fr": "⚪ Inactif", "en": "⚪ Inactive"},
+    "balance_line_unavailable": {"fr": "indisponible", "en": "unavailable"},
+    "btn_activate_wallet": {"fr": "✅ Activer ce wallet", "en": "✅ Activate this wallet"},
+    "btn_disperse_sol": {"fr": "📤 Disperse SOL (envoyer)", "en": "📤 Disperse SOL (send)"},
+    "btn_delete_wallet": {"fr": "🗑 Supprimer ce wallet", "en": "🗑 Delete this wallet"},
+    "referral_title": {
+        "fr": "🎁 *Referral*\n\n_⚠️ Simulé — ce bot est personnel, il n'y a pas de vrai système de "
+              "paiement/commission derrière (contrairement à F Project qui gère de vrais paiements "
+              "entre utilisateurs payants). Ce code est juste cosmétique/déclaratif._\n\n"
+              "Ton code : `{code}`\nFilleuls déclarés : {referred_count}\nCommission : "
+              "{commission_pct}% (non fonctionnel)",
+        "en": "🎁 *Referral*\n\n_⚠️ Simulated — this bot is personal, there's no real payment/commission "
+              "system behind it (unlike F Project, which handles real payments between paying users). "
+              "This code is purely cosmetic/declarative._\n\nYour code: `{code}`\nDeclared referrals: "
+              "{referred_count}\nCommission: {commission_pct}% (not functional)",
+    },
+    "presets_title": {"fr": "📋 *Presets*", "en": "📋 *Presets*"},
+    "presets_empty": {
+        "fr": "\n\nAucun preset sauvegardé. Depuis la config d'un rugger, utilise 📋 Save Preset.",
+        "en": "\n\nNo saved presets. From a rugger's config, use 📋 Save Preset.",
+    },
 }
 
 

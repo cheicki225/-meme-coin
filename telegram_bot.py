@@ -134,6 +134,7 @@ class SniperTelegramBot:
         self.app.add_handler(CommandHandler("settings", self.cmd_settings))
         self.app.add_handler(CommandHandler("analyze", self.cmd_analyze))
         self.app.add_handler(CommandHandler("wallet", self.cmd_wallet_analyze))
+        self.app.add_handler(CommandHandler("dev", self.cmd_dev_analyze))
         self.app.add_handler(CallbackQueryHandler(self.on_button))
         self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.on_text))
 
@@ -157,6 +158,7 @@ class SniperTelegramBot:
             BotCommand("positions", "📊 Positions ouvertes"),
             BotCommand("analyze", "🔍 Analyser un coin"),
             BotCommand("wallet", "🔎 Analyse de wallet"),
+            BotCommand("dev", "🕵️ Analyse de dev"),
             BotCommand("stats", "📊 Statistiques du bot"),
             BotCommand("settings", "⚙️ Settings"),
             BotCommand("help", "ℹ️ Aide"),
@@ -250,6 +252,17 @@ class SniperTelegramBot:
         user_states[chat_id] = {"awaiting": "analyze_wallet_address"}
         await update.message.reply_text("Colle l'adresse du WALLET à analyser (financement, statut dev, statut trader).")
 
+    async def cmd_dev_analyze(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Raccourci slash pour 🕵️ Analyse de dev — supporte aussi /dev <adresse> directement."""
+        chat_id = update.effective_chat.id
+        if context.args:
+            dev_address = context.args[0]
+            if _is_solana_address(dev_address):
+                await self.analyze_dev_inline(update, dev_address)
+                return
+        user_states[chat_id] = {"awaiting": "analyze_dev_address"}
+        await update.message.reply_text("Colle l'adresse du DEV à analyser (jusqu'à 12 dernières créations + statut fresh wallet).")
+
     # ══════════════════════════════════════════════════════════
     # MENU PRINCIPAL
     # ══════════════════════════════════════════════════════════
@@ -286,6 +299,9 @@ class SniperTelegramBot:
             [
                 InlineKeyboardButton(t("btn_analyzecoin", lang), callback_data="analyzecoin"),
                 InlineKeyboardButton(t("btn_analyzewallet", lang), callback_data="analyzewallet"),
+            ],
+            [
+                InlineKeyboardButton(t("btn_analyzedev", lang), callback_data="analyzedev"),
             ],
             [
                 InlineKeyboardButton(t("btn_security", lang), callback_data="checksecurity"),
@@ -1651,6 +1667,98 @@ class SniperTelegramBot:
             plain_text = text.replace("*", "").replace("`", "").replace("_", "")
             await msg.edit_text(plain_text, reply_markup=InlineKeyboardMarkup(keyboard), disable_web_page_preview=True)
 
+    async def analyze_dev_inline(self, update: Update, dev_address: str):
+        """
+        🕵️ Analyse de dev — AJOUTÉ suite à une demande explicite. Version
+        dédiée et allégée du bloc "Statut développeur" déjà présent dans
+        analyze_wallet_inline (financement + statut trader inclus), pour
+        quelqu'un qui veut évaluer UNIQUEMENT le profil créateur d'une
+        adresse, sans le bruit du reste. Deux différences volontaires par
+        rapport à "Analyse de wallet" (choisies explicitement) :
+          - jusqu'à 12 créations (au lieu de 10) — accessible directement
+            depuis le menu principal, pas besoin de passer par la version
+            combinée pour ce détail en plus.
+          - statut Fresh Wallet affiché ici aussi (déjà utilisé dans
+            "Analyse de wallet" et par le Protection Scanner) — un dev sur
+            une adresse fraîche (jamais active avant sa première création)
+            est un signal pertinent pour évaluer le risque, indépendamment
+            de son historique de créations.
+        Volontairement SANS le "Statut trader" ni le financement détaillé
+        de "Analyse de wallet" — reste focalisé sur le profil créateur.
+        """
+        import fund_tracer
+        import wallet_history
+        import backtest
+
+        msg = await update.message.reply_text(f"🕵️ Analyse du dev `{dev_address[:12]}...`...", parse_mode="Markdown")
+
+        if not config.HELIUS_API_KEY:
+            await msg.edit_text("❌ Aucune clé HELIUS_API_KEY configurée.")
+            return
+
+        is_fresh = await fund_tracer.is_fresh_wallet(dev_address)
+
+        text = f"🕵️ *Analyse de dev*\n`{dev_address}`\n\n"
+        text += f"🆕 Fresh wallet : {'✅ Oui (jamais actif avant)' if is_fresh else '❌ Non (déjà actif avant)'}\n\n"
+
+        created_tokens = await wallet_history.get_created_tokens(dev_address, max_results=12)
+        text += f"🛠️ *Créations* : `{len(created_tokens)}` token(s) trouvé(s) (sur les 12 dernières recherchées)\n"
+
+        if not created_tokens:
+            text += "   _Aucune création Pump.fun trouvée pour cette adresse — ce n'est peut-être pas un dev._\n"
+
+        dev_results = []
+        for i, ct in enumerate(created_tokens):
+            if len(created_tokens) > 1:
+                try:
+                    await msg.edit_text(
+                        f"🕵️ Analyse du dev `{dev_address[:12]}...`\n\n"
+                        f"🛠️ Analyse des créations : `{i + 1}/{len(created_tokens)}` en cours...",
+                        parse_mode="Markdown",
+                    )
+                except Exception:
+                    pass
+            detail = await backtest.get_detailed_trade_info(
+                ct["token_mint"], purchase_block_time=ct.get("block_time"),
+            )
+            dev_results.append(detail)
+            status_icon = "✅" if detail["hit_tp"] else ("❌" if detail["hit_sl"] else "➖")
+            if detail.get("symbol") and detail.get("dexscreener_url"):
+                name_display = f"[{detail['symbol']}]({detail['dexscreener_url']})"
+            elif detail.get("symbol"):
+                name_display = f"{detail['symbol']} — `{ct['token_mint'][:8]}...`"
+            else:
+                name_display = f"`{ct['token_mint'][:8]}...`"
+            mc_display = f", MC entrée: ${detail['entry_market_cap_usd']:,.0f}" if detail.get("entry_market_cap_usd") else ""
+            text += f"   {status_icon} {name_display} → `{detail['result_pct']:+.1f}%` ({detail['purchase_date']}{mc_display})\n"
+
+        if len(dev_results) >= 3:
+            avg_dev = sum(r["result_pct"] for r in dev_results) / len(dev_results)
+            wins_dev = [r for r in dev_results if r["result_pct"] > 0]
+            win_rate_dev = len(wins_dev) / len(dev_results) * 100
+            text += f"\n*Résultat moyen* : `{avg_dev:+.1f}%` par token | *Win rate* : `{win_rate_dev:.0f}%`\n"
+
+        rating = _compute_star_rating(dev_results)
+        if rating:
+            stars_display = "⭐" * rating["stars"] + "☆" * (5 - rating["stars"])
+            text += f"\n{stars_display} *Note* : `{rating['stars']}/5` (sur `{rating['trade_count']}` création(s))\n"
+
+        # Bouton d'ajout dès qu'au moins UNE création est trouvée — contrairement
+        # au seuil de 3 dans "Analyse de wallet" (qui doit départager plusieurs
+        # profils possibles), ici la personne est déjà venue spécifiquement
+        # pour évaluer un profil dev, le seuil bas reste pertinent.
+        keyboard = []
+        if created_tokens:
+            keyboard.append([InlineKeyboardButton("➕ Ajouter en Ruggeur (dev)", callback_data=f"quickadddev_{dev_address}")])
+        keyboard.append([InlineKeyboardButton("← Back", callback_data="menu_main")])
+
+        try:
+            await msg.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard), disable_web_page_preview=True)
+        except Exception as e:
+            log.warning(f"Erreur d'affichage Markdown pour l'analyse de dev {dev_address}: {e}")
+            plain_text = text.replace("*", "").replace("`", "").replace("_", "")
+            await msg.edit_text(plain_text, reply_markup=InlineKeyboardMarkup(keyboard), disable_web_page_preview=True)
+
     async def check_ai_score_inline(self, update: Update, input_address: str):
         """📈 Score IA complet — avis IA direct sur un dev ou un token, sans l'ajouter au monitoring."""
         import find_dev
@@ -1732,67 +1840,52 @@ class SniperTelegramBot:
 
     async def show_position_calculator(self, query):
         """💰 Calcul position — calculateur simple de taille de position."""
-        text = (
-            "💰 *Calcul de position*\n\n"
-            "Envoie-moi ton budget total et ton % de risque par trade, séparés par un espace.\n\n"
-            "Exemple : `10 2` → 10 SOL de budget, 2% de risque par trade\n\n"
-            "Je te calcule le montant suggéré par position."
-        )
-        keyboard = [[InlineKeyboardButton("← Back", callback_data="menu_main")]]
+        lang = self.data_store.state.get("language", "fr")
+        text = t("poscalc_title", lang)
+        keyboard = [[InlineKeyboardButton(t("btn_back", lang), callback_data="menu_main")]]
         await self._send_or_edit(query, text, InlineKeyboardMarkup(keyboard), edit=True)
 
     async def compute_position_size(self, update: Update, budget: float, risk_pct: float):
+        lang = self.data_store.state.get("language", "fr")
         suggested = budget * (risk_pct / 100)
-        text = (
-            f"💰 *Résultat*\n\n"
-            f"Budget total : `{budget}` SOL\n"
-            f"Risque par trade : `{risk_pct}%`\n\n"
-            f"➡️ Montant suggéré par position : *{suggested:.4f} SOL*\n\n"
-            f"_Avec ce montant, une série de {int(100/risk_pct) if risk_pct > 0 else '∞'} pertes "
-            f"consécutives complètes viderait ton budget — ajuste le % selon ta tolérance au risque._"
-        )
+        streak = int(100 / risk_pct) if risk_pct > 0 else "∞"
+        text = t("poscalc_result", lang, budget=budget, risk_pct=risk_pct, suggested=suggested, streak=streak)
         await update.message.reply_text(text, parse_mode="Markdown")
 
     async def show_strategies_overview(self, query):
         """📜 Stratégies — page d'explication des stratégies avancées disponibles."""
-        text = (
-            "📜 *Stratégies disponibles*\n\n"
-            "*🎯 Pullback Entry*\nAttend que le market cap redescende sous un seuil avant "
-            "d'acheter, plutôt que d'acheter immédiatement au prix affiché.\n\n"
-            "*📉 MC Trailing Sell*\nArme une vente automatique si le market cap redescend "
-            "d'un certain % après avoir atteint un pic.\n\n"
-            "*📈 Profit Trail*\nPlancher de gain qui monte progressivement à mesure que "
-            "la position devient profitable — sécurise les gains sans vendre trop tôt.\n\n"
-            "_Configurables par wallet dans 🎯 Ruggeurs → [wallet] → 🎯 Stratégies avancées._"
-        )
-        keyboard = [[InlineKeyboardButton("← Back", callback_data="menu_main")]]
+        lang = self.data_store.state.get("language", "fr")
+        text = t("strategies_overview", lang)
+        keyboard = [[InlineKeyboardButton(t("btn_back", lang), callback_data="menu_main")]]
         await self._send_or_edit(query, text, InlineKeyboardMarkup(keyboard), edit=True)
 
     async def show_session_stats(self, query):
         """📊 Stats session — même contenu que /stats, accessible depuis le menu."""
+        lang = self.data_store.state.get("language", "fr")
         state = self.data_store.state
         closed = state.get("closed_positions", [])
         wins = [p for p in closed if p.get("total_sol_received", 0) >= p.get("total_sol_invested", 0)]
         n_ruggers, n_copytrade = self.data_store.count_wallets_by_mode()
-        text = (
-            f"📊 *Stats de session*\n\n"
-            f"P&L total : `{state.get('total_pnl_usd', 0):+.2f}$`\n"
-            f"Ruggers suivis : `{n_ruggers}` | Copy Trading : `{n_copytrade}` (total `{self.data_store.count_wallets()}/{config.MAX_MONITORED_WALLETS}`)\n"
-            f"Positions ouvertes : `{len(state.get('open_positions', []))}`\n"
-            f"Trades clôturés : `{len(closed)}`\n"
-            f"Win rate : `{(len(wins)/len(closed)*100) if closed else 0:.0f}%`"
+        text = t(
+            "session_stats", lang,
+            pnl=state.get("total_pnl_usd", 0),
+            n_ruggers=n_ruggers, n_copytrade=n_copytrade,
+            total=self.data_store.count_wallets(), max_wallets=config.MAX_MONITORED_WALLETS,
+            open_count=len(state.get("open_positions", [])), closed_count=len(closed),
+            win_rate=(len(wins) / len(closed) * 100) if closed else 0,
         )
-        keyboard = [[InlineKeyboardButton("← Back", callback_data="menu_main")]]
+        keyboard = [[InlineKeyboardButton(t("btn_back", lang), callback_data="menu_main")]]
         await self._send_or_edit(query, text, InlineKeyboardMarkup(keyboard), edit=True)
 
     async def show_global_alerts_toggle(self, query):
         """🔔 Alertes ON/OFF — coupe/active toutes les notifications Telegram d'un coup."""
+        lang = self.data_store.state.get("language", "fr")
         current = self.data_store.state.get("global_alerts_enabled", True)
         status = "🟢 ON" if current else "🔴 OFF"
-        text = f"🔔 *Alertes globales*\n\nStatut actuel : {status}\n\nCoupe ou active toutes les notifications Telegram du bot."
+        text = t("global_alerts_title", lang, status=status)
         keyboard = [
-            [InlineKeyboardButton(f"Basculer : {status}", callback_data="togglealertsglobal")],
-            [InlineKeyboardButton("← Back", callback_data="menu_main")],
+            [InlineKeyboardButton(t("btn_toggle_status", lang, status=status), callback_data="togglealertsglobal")],
+            [InlineKeyboardButton(t("btn_back", lang), callback_data="menu_main")],
         ]
         await self._send_or_edit(query, text, InlineKeyboardMarkup(keyboard), edit=True)
 
@@ -1915,59 +2008,54 @@ class SniperTelegramBot:
         confirm_callback : callback_data déclenché par ✅ Confirmer (do* le plus souvent).
         cancel_callback : callback_data déclenché par ❌ Annuler (retour au bon menu).
         """
-        text = f"⚠️ *Confirmation*\n\nTu es sur le point de :\n{description}\n\n_Cette action est irréversible._"
+        lang = self.data_store.state.get("language", "fr")
+        text = t("confirm_title", lang, description=description)
         keyboard = [[
-            InlineKeyboardButton("✅ Confirmer", callback_data=confirm_callback),
-            InlineKeyboardButton("❌ Annuler", callback_data=cancel_callback),
+            InlineKeyboardButton(t("btn_confirm", lang), callback_data=confirm_callback),
+            InlineKeyboardButton(t("btn_cancel", lang), callback_data=cancel_callback),
         ]]
         await self._send_or_edit(query, text, InlineKeyboardMarkup(keyboard), edit=True)
 
     async def show_wallet_config(self, query, label: str):
+        lang = self.data_store.state.get("language", "fr")
         from wallet_manager import WalletManager
         wm = WalletManager(self.data_store)
         wallets = wm.list_wallets()
         pubkey = wallets.get(label)
         if not pubkey:
-            await query.edit_message_text("Wallet introuvable.")
+            await query.edit_message_text(t("wallet_not_found", lang))
             return
 
         try:
             balance = await wm.get_balance(label)
             balance_line = f"{balance:.4f} SOL"
         except Exception:
-            balance_line = "indisponible"
+            balance_line = t("balance_line_unavailable", lang)
 
         active = wm.get_active_label() == label
-        text = (
-            f"⚙️ *{label}*\n`{pubkey}`\n\n"
-            f"Solde : {balance_line}\n"
-            f"Statut : {'🟢 Wallet actif' if active else '⚪ Inactif'}"
-        )
+        status = t("wallet_status_active", lang) if active else t("wallet_status_inactive", lang)
+        text = t("wallet_config_title", lang, label=label, pubkey=pubkey, balance=balance_line, status=status)
         keyboard = []
         if not active:
-            keyboard.append([InlineKeyboardButton("✅ Activer ce wallet", callback_data=f"setactivewallet_{label}")])
-        keyboard.append([InlineKeyboardButton("📤 Disperse SOL (envoyer)", callback_data=f"dispersesol_{label}")])
-        keyboard.append([InlineKeyboardButton("🗑 Supprimer ce wallet", callback_data=f"askdeletewallet_{label}")])
-        keyboard.append([InlineKeyboardButton("← Back", callback_data="menu_wallets")])
+            keyboard.append([InlineKeyboardButton(t("btn_activate_wallet", lang), callback_data=f"setactivewallet_{label}")])
+        keyboard.append([InlineKeyboardButton(t("btn_disperse_sol", lang), callback_data=f"dispersesol_{label}")])
+        keyboard.append([InlineKeyboardButton(t("btn_delete_wallet", lang), callback_data=f"askdeletewallet_{label}")])
+        keyboard.append([InlineKeyboardButton(t("btn_back", lang), callback_data="menu_wallets")])
         await self._send_or_edit(query, text, InlineKeyboardMarkup(keyboard), edit=True)
 
     async def show_referral(self, query, chat_id: int):
+        lang = self.data_store.state.get("language", "fr")
         referral = self.data_store.get_referral_state()
         if not referral.get("code"):
             self.data_store.generate_referral_code(chat_id)
             referral = self.data_store.get_referral_state()
 
-        text = (
-            "🎁 *Referral*\n\n"
-            "_⚠️ Simulé — ce bot est personnel, il n'y a pas de vrai système de "
-            "paiement/commission derrière (contrairement à F Project qui gère de "
-            "vrais paiements entre utilisateurs payants). Ce code est juste "
-            "cosmétique/déclaratif._\n\n"
-            f"Ton code : `{referral['code']}`\n"
-            f"Filleuls déclarés : {referral['referred_count']}\n"
-            f"Commission : {referral['commission_pct']}% (non fonctionnel)"
+        text = t(
+            "referral_title", lang,
+            code=referral["code"], referred_count=referral["referred_count"],
+            commission_pct=referral["commission_pct"],
         )
-        keyboard = [[InlineKeyboardButton("← Back", callback_data="menu_more")]]
+        keyboard = [[InlineKeyboardButton(t("btn_back", lang), callback_data="menu_more")]]
         await self._send_or_edit(query, text, InlineKeyboardMarkup(keyboard), edit=True)
 
     # ══════════════════════════════════════════════════════════
@@ -1975,16 +2063,17 @@ class SniperTelegramBot:
     # ══════════════════════════════════════════════════════════
 
     async def show_presets(self, query):
+        lang = self.data_store.state.get("language", "fr")
         presets = self.data_store.state.get("presets", {})
-        text = "📋 *Presets*"
+        text = t("presets_title", lang)
         keyboard = []
         for name in presets:
             keyboard.append([
                 InlineKeyboardButton(f"🗑 {name}", callback_data=f"askdelpreset_{name}"),
             ])
         if not presets:
-            text += "\n\nAucun preset sauvegardé. Depuis la config d'un rugger, utilise 📋 Save Preset."
-        keyboard.append([InlineKeyboardButton("← Back", callback_data="menu_ruggers")])
+            text += t("presets_empty", lang)
+        keyboard.append([InlineKeyboardButton(t("btn_back", lang), callback_data="menu_ruggers")])
         await self._send_or_edit(query, text, InlineKeyboardMarkup(keyboard), edit=True)
 
     # ══════════════════════════════════════════════════════════
@@ -2108,6 +2197,9 @@ class SniperTelegramBot:
         elif data == "analyzewallet":
             user_states[chat_id] = {"awaiting": "analyze_wallet_address"}
             await query.edit_message_text("Colle l'adresse du WALLET à analyser (financement, statut dev, statut trader).")
+        elif data == "analyzedev":
+            user_states[chat_id] = {"awaiting": "analyze_dev_address"}
+            await query.edit_message_text("Colle l'adresse du DEV à analyser (jusqu'à 12 dernières créations + statut fresh wallet).")
         elif data == "checksecurity":
             user_states[chat_id] = {"awaiting": "check_security_address"}
             await query.edit_message_text("Colle l'adresse du token à vérifier (sécurité/scam).")
@@ -2655,6 +2747,21 @@ class SniperTelegramBot:
                 return
             user_states.pop(chat_id, None)
             await self.analyze_wallet_inline(update, text)
+
+        elif awaiting == "analyze_dev_address":
+            if not _is_solana_address(text):
+                await update.message.reply_text("Adresse invalide, réessaie.")
+                return
+            if _looks_like_token_mint(text):
+                await update.message.reply_text(
+                    "⚠️ Cette adresse ressemble à un TOKEN (se termine par 'pump'), pas à un wallet — "
+                    "d'où le résultat vide que tu obtiendrais. "
+                    "Utilise plutôt '🔍 Analyser un coin' pour trouver le VRAI dev à partir de ce token."
+                )
+                user_states.pop(chat_id, None)
+                return
+            user_states.pop(chat_id, None)
+            await self.analyze_dev_inline(update, text)
 
         elif awaiting == "check_security_address":
             if not _is_solana_address(text):
