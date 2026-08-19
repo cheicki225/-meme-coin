@@ -142,6 +142,35 @@ def _get_bonding_curve_address(mint: str) -> str:
     return str(pda)
 
 
+def _decode_bonding_curve_bytes(raw: bytes) -> dict:
+    """
+    Décodage brut d'un compte bonding curve Pump.fun déjà en mémoire (bytes),
+    SANS aucun appel réseau — extrait de get_bonding_curve_price pour être
+    réutilisé tel quel par la surveillance de position en WebSocket
+    (position_price_stream.py), qui reçoit déjà les données du compte
+    poussées directement par accountSubscribe, sans avoir besoin d'un appel
+    getAccountInfo séparé pour chaque mise à jour.
+
+    Retourne {"virtual_token_reserves": int, "virtual_sol_reserves": int,
+    "complete": bool} ou {} si le buffer est invalide/trop court.
+    """
+    try:
+        virtual_token_reserves = struct.unpack_from("<Q", raw, 8)[0]
+        virtual_sol_reserves = struct.unpack_from("<Q", raw, 16)[0]
+        complete = raw[48] != 0
+    except (IndexError, TypeError, struct.error):
+        return {}
+
+    if virtual_token_reserves <= 0 or virtual_sol_reserves <= 0:
+        return {}
+
+    return {
+        "virtual_token_reserves": virtual_token_reserves,
+        "virtual_sol_reserves": virtual_sol_reserves,
+        "complete": complete,
+    }
+
+
 async def get_bonding_curve_price(token_mint: str, retries: int = 2, retry_delay_s: float = 1.5) -> dict:
     """
     Lit le prix EN DIRECT depuis le compte bonding curve on-chain.
@@ -214,23 +243,31 @@ async def get_bonding_curve_price(token_mint: str, retries: int = 2, retry_delay
 
     try:
         raw = base64.b64decode(value["data"][0])
-        virtual_token_reserves = struct.unpack_from("<Q", raw, 8)[0]
-        virtual_sol_reserves = struct.unpack_from("<Q", raw, 16)[0]
-        complete = raw[48] != 0
-    except (KeyError, IndexError, TypeError, struct.error) as e:
-        log.warning(f"⚠️ Bonding curve — erreur décodage pour {token_mint}: {e}")
+    except (KeyError, IndexError, TypeError) as e:
+        log.warning(f"⚠️ Bonding curve — erreur décodage base64 pour {token_mint}: {e}")
         return {}
 
-    if virtual_token_reserves <= 0 or virtual_sol_reserves <= 0:
+    decoded = _decode_bonding_curve_bytes(raw)
+    if not decoded:
         return {}
 
+    return await _finalize_bonding_curve_price(decoded)
+
+
+async def _finalize_bonding_curve_price(decoded: dict) -> dict:
+    """
+    Convertit {"virtual_token_reserves", "virtual_sol_reserves", "complete"}
+    (sortie de _decode_bonding_curve_bytes) en {"price_sol", "market_cap_usd",
+    "complete"} — extrait pour être partagé entre get_bonding_curve_price
+    (RPC classique) et position_price_stream.py (push WebSocket).
+    """
     # virtual_sol_reserves en lamports (9 décimales), virtual_token_reserves
     # en unités brutes du token (6 décimales, standard SPL/Pump.fun).
-    price_sol = (virtual_sol_reserves / 1_000_000_000) / (virtual_token_reserves / 1_000_000)
+    price_sol = (decoded["virtual_sol_reserves"] / 1_000_000_000) / (decoded["virtual_token_reserves"] / 1_000_000)
     sol_usd_rate = await get_sol_usd_rate()
-    market_cap_usd = price_sol * PUMPFUN_STANDARD_TOTAL_SUPPLY * sol_usd_rate
-
-    return {"price_sol": price_sol, "market_cap_usd": market_cap_usd, "complete": complete}
+    price_usd = price_sol * sol_usd_rate
+    market_cap_usd = price_usd * PUMPFUN_STANDARD_TOTAL_SUPPLY
+    return {"price_sol": price_sol, "price_usd": price_usd, "market_cap_usd": market_cap_usd, "complete": decoded["complete"]}
 
 
 async def get_live_price_and_market_cap(token_mint: str, need_pair_data: bool = False) -> dict:

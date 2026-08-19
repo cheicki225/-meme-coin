@@ -33,6 +33,7 @@ from rug_scanner import RugScanner
 from wallet_cleanup import WalletCleanup
 from notifier import Notifier
 from telegram_bot import SniperTelegramBot
+from position_price_stream import PositionPriceStream
 import wallet
 
 # CORRIGÉ suite à un vrai crash en boucle signalé : logging.FileHandler()
@@ -69,11 +70,12 @@ class SniperBot:
     def __init__(self):
         self.data_store = DataStore()
         self.notifier = Notifier(self.data_store)
+        self.position_price_stream = PositionPriceStream()
 
         if config.TRADING_MODE == "LIVE":
-            self.trader = LiveTrader(self.data_store, notifier=self.notifier)
+            self.trader = LiveTrader(self.data_store, notifier=self.notifier, price_stream=self.position_price_stream)
         else:
-            self.trader = PaperTrader(self.data_store, notifier=self.notifier)
+            self.trader = PaperTrader(self.data_store, notifier=self.notifier, price_stream=self.position_price_stream)
 
         self.listener = NewTokenListener(on_new_token=self.on_new_token)
         self.copytrade_listener = CopyTradeListener(
@@ -113,7 +115,8 @@ class SniperBot:
         # Scan permanent Pump.fun (détection + évaluation) — désactivable
         # temporairement via config.DETECTION_ENABLED (voir config.py).
         # Le reste (Telegram, Protection, Copy Trading) continue de tourner.
-        tasks = [self.protection_scanner.start(), self.copytrade_listener.start(), self.rug_scanner.start(), self.wallet_cleanup.start()]
+        tasks = [self.protection_scanner.start(), self.copytrade_listener.start(), self.rug_scanner.start(),
+                 self.wallet_cleanup.start(), self.position_price_stream.start()]
         if config.DETECTION_ENABLED:
             tasks.append(self.listener.start())
         else:

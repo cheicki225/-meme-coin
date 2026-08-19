@@ -30,6 +30,7 @@ import config
 import rpc_client
 import wallet
 import wallet_history
+import position_price_stream
 from backtest import _get_pair_data, get_bonding_curve_price, get_sol_usd_rate, get_live_price_and_market_cap
 import security as security_check
 
@@ -74,9 +75,15 @@ def _build_position_keyboard(token_mint: str):
 
 
 class PaperTrader:
-    def __init__(self, data_store, notifier=None):
+    def __init__(self, data_store, notifier=None, price_stream=None):
         self.data_store = data_store
         self.notifier = notifier
+        # AJOUTÉ (demande explicite) : surveillance de position en WebSocket
+        # (accountSubscribe) au lieu du sondage RPC répété — voir
+        # position_price_stream.py pour le détail. None = fonctionne quand
+        # même (jamais requis), _monitor_position retombe alors uniquement
+        # sur le sondage RPC classique, comme avant ce changement.
+        self.price_stream = price_stream
 
     # ══════════════════════════════════════════════════════════
     # PRIMITIVES D'EXÉCUTION — surchargées par LiveTrader pour le vrai trading
@@ -518,116 +525,176 @@ class PaperTrader:
                 f"(Front Run Sell et/ou Auto-Sell on Big Buy actifs)"
             )
 
-        while elapsed < max_duration_s and position["units"] > 0:
-            await asyncio.sleep(effective_poll_interval)
-            elapsed += effective_poll_interval
+        # AJOUTÉ (demande explicite) : abonnement WebSocket (accountSubscribe)
+        # sur le compte bonding curve de ce token — voir position_price_stream.py.
+        # Remplace le sondage RPC répété par des mises à jour poussées par
+        # Helius, très largement moins coûteuses. self.price_stream est None
+        # si non câblé (ex: tests, ou si le module ne démarre pas faute de
+        # clé Helius) — dans ce cas on retombe intégralement sur l'ancien
+        # comportement de sondage, rien ne casse.
+        queue = await self.price_stream.subscribe(position["token_mint"]) if self.price_stream else None
+        last_ws_price_usd = None
+        last_ws_market_cap = None
+        last_ws_ts = 0.0
 
-            # CORRIGÉ suite à un vrai bug trouvé : "Auto-Sell global" (menu
-            # principal, bouton à côté d'"Auto-Buy global") changeait bien
-            # l'état affiché et sauvegardait la valeur, mais
-            # is_auto_sell_active() — la fonction censée le vérifier —
-            # n'était appelée NULLE PART dans le fichier qui exécute les
-            # ventes. Le bouton était décoratif : ON ou OFF, rien ne
-            # changeait réellement. Contrairement à "Auto-Buy global", déjà
-            # bien branché (voir open_position ci-dessus).
-            if not self.data_store.is_auto_sell_active(position["source_wallet"]):
-                continue  # vente automatique désactivée — la position reste ouverte, on continue juste de suivre son prix
+        try:
+            while elapsed < max_duration_s and position["units"] > 0:
+                await asyncio.sleep(effective_poll_interval)
+                elapsed += effective_poll_interval
 
-            # CORRIGÉ suite à un vrai bug trouvé : cette boucle utilisait
-            # SEULEMENT _get_pair_data (DexScreener), qui n'indexe jamais un
-            # token resté sur la bonding curve (voir le docstring de
-            # get_live_price_and_market_cap) — price=0 en continu, "continue"
-            # immédiat ci-dessous, donc AUCUNE logique de sortie ne
-            # s'exécutait jamais pour ces positions (la majorité des entrées
-            # copy trade). need_pair_data=True seulement si no_activity_sell
-            # est configuré pour ce wallet — c'est le seul bloc ci-dessous
-            # qui a besoin des champs DexScreener (txns.m5).
-            needs_pair_data = bool(settings.get("no_activity_sell_s"))
-            live = await get_live_price_and_market_cap(position["token_mint"], need_pair_data=needs_pair_data)
-            price = live["price"]
-            market_cap = live["market_cap"]
-            data = live["pair_data"]
-            if price <= 0:
-                continue
+                # CORRIGÉ suite à un vrai bug trouvé : "Auto-Sell global" (menu
+                # principal, bouton à côté d'"Auto-Buy global") changeait bien
+                # l'état affiché et sauvegardait la valeur, mais
+                # is_auto_sell_active() — la fonction censée le vérifier —
+                # n'était appelée NULLE PART dans le fichier qui exécute les
+                # ventes. Le bouton était décoratif : ON ou OFF, rien ne
+                # changeait réellement. Contrairement à "Auto-Buy global", déjà
+                # bien branché (voir open_position ci-dessus).
+                if not self.data_store.is_auto_sell_active(position["source_wallet"]):
+                    continue  # vente automatique désactivée — la position reste ouverte, on continue juste de suivre son prix
 
-            position["ath_market_cap"] = max(position["ath_market_cap"], market_cap)
-            change_pct = self._pnl_pct(position, price)
+                # AJOUTÉ : draine la queue de mises à jour poussées par le
+                # WebSocket (non-bloquant) — ne garde que la plus récente, les
+                # éventuelles mises à jour intermédiaires n'ont pas besoin
+                # d'être traitées une par une, seul l'état ACTUEL nous
+                # intéresse pour évaluer les conditions de sortie.
+                if queue:
+                    latest_push = None
+                    while not queue.empty():
+                        try:
+                            latest_push = queue.get_nowait()
+                        except asyncio.QueueEmpty:
+                            break
+                    if latest_push:
+                        last_ws_price_usd = latest_push["price_usd"]
+                        last_ws_market_cap = latest_push["market_cap_usd"]
+                        last_ws_ts = time.time()
 
-            # ── Vente auto sur repli de market cap après un pic ────────
-            # (ex: si le token a dépassé 5k MC puis retombe à 2.5k, vente totale)
-            if settings.get("mc_trailing_enabled"):
-                if await self._check_mc_trailing_sell(position, price, market_cap, change_pct, settings):
-                    return
+                # CORRIGÉ suite à un vrai bug trouvé : cette boucle utilisait
+                # SEULEMENT _get_pair_data (DexScreener), qui n'indexe jamais un
+                # token resté sur la bonding curve (voir le docstring de
+                # get_live_price_and_market_cap) — price=0 en continu, "continue"
+                # immédiat ci-dessous, donc AUCUNE logique de sortie ne
+                # s'exécutait jamais pour ces positions (la majorité des entrées
+                # copy trade). need_pair_data=True seulement si no_activity_sell
+                # est configuré pour ce wallet — c'est le seul bloc ci-dessous
+                # qui a besoin des champs DexScreener (txns.m5).
+                needs_pair_data = bool(settings.get("no_activity_sell_s"))
+                ws_price_fresh = last_ws_price_usd is not None and (time.time() - last_ws_ts) < position_price_stream.SAFETY_POLL_TIMEOUT_S
 
-            # ── Trailing stop sur le % de gain (breakeven puis serré) ──
-            if settings.get("profit_trail_enabled"):
-                if await self._check_profit_trail(position, price, change_pct, settings):
-                    return
+                if ws_price_fresh and not needs_pair_data:
+                    # AJOUTÉ : prix reçu récemment via WebSocket, et personne
+                    # n'a besoin des champs DexScreener (no_activity_sell
+                    # inactif) — aucun appel réseau nécessaire ce cycle.
+                    price = last_ws_price_usd
+                    market_cap = last_ws_market_cap
+                    data = {}
+                elif ws_price_fresh and needs_pair_data:
+                    # Prix WS à jour, mais no_activity_sell a quand même besoin
+                    # de txns.m5 — DexScreener seul (pas de RPC Helius, donc pas
+                    # de coût supplémentaire côté Helius), sans redemander le
+                    # prix bonding curve qu'on a déjà via le WS.
+                    data = await _get_pair_data(position["token_mint"])
+                    price = last_ws_price_usd
+                    market_cap = last_ws_market_cap
+                else:
+                    # AUCUNE mise à jour WS récente (pas de price_stream, pas
+                    # encore de premier message, ou plus de SAFETY_POLL_TIMEOUT_S
+                    # sans nouvelle — connexion WS potentiellement perdue) :
+                    # filet de sécurité, on retombe sur l'ancien sondage complet.
+                    live = await get_live_price_and_market_cap(position["token_mint"], need_pair_data=needs_pair_data)
+                    price = live["price"]
+                    market_cap = live["market_cap"]
+                    data = live["pair_data"]
 
-            # ── No activity sell ──────────────────────────────────
-            # CORRIGÉ (en même temps que le bug ci-dessus) : ne compte "aucune
-            # activité" que si DexScreener a RÉELLEMENT répondu (data non
-            # vide) — sinon un token encore sur la bonding curve (jamais
-            # indexé, data={}) aurait déclenché une fausse vente "no activity"
-            # au bout d'un seul cycle, à tort (absence de DONNÉE, pas absence
-            # RÉELLE d'activité).
-            no_activity_s = settings.get("no_activity_sell_s")
-            if no_activity_s and data:
-                txns_m5 = data.get("txns", {}).get("m5", {})
-                activity_count = txns_m5.get("buys", 0) + txns_m5.get("sells", 0)
-                if activity_count == 0:
-                    no_activity_elapsed += effective_poll_interval
-                    if no_activity_elapsed >= no_activity_s:
-                        await self._close_remaining(position, price, change_pct, "NO_ACTIVITY")
+                if price <= 0:
+                    continue
+
+                position["ath_market_cap"] = max(position["ath_market_cap"], market_cap)
+                change_pct = self._pnl_pct(position, price)
+
+                # ── Vente auto sur repli de market cap après un pic ────────
+                # (ex: si le token a dépassé 5k MC puis retombe à 2.5k, vente totale)
+                if settings.get("mc_trailing_enabled"):
+                    if await self._check_mc_trailing_sell(position, price, market_cap, change_pct, settings):
+                        return
+
+                # ── Trailing stop sur le % de gain (breakeven puis serré) ──
+                if settings.get("profit_trail_enabled"):
+                    if await self._check_profit_trail(position, price, change_pct, settings):
+                        return
+
+                # ── No activity sell ──────────────────────────────────
+                # CORRIGÉ (en même temps que le bug ci-dessus) : ne compte "aucune
+                # activité" que si DexScreener a RÉELLEMENT répondu (data non
+                # vide) — sinon un token encore sur la bonding curve (jamais
+                # indexé, data={}) aurait déclenché une fausse vente "no activity"
+                # au bout d'un seul cycle, à tort (absence de DONNÉE, pas absence
+                # RÉELLE d'activité).
+                no_activity_s = settings.get("no_activity_sell_s")
+                if no_activity_s and data:
+                    txns_m5 = data.get("txns", {}).get("m5", {})
+                    activity_count = txns_m5.get("buys", 0) + txns_m5.get("sells", 0)
+                    if activity_count == 0:
+                        no_activity_elapsed += effective_poll_interval
+                        if no_activity_elapsed >= no_activity_s:
+                            await self._close_remaining(position, price, change_pct, "NO_ACTIVITY")
+                            return
+                    else:
+                        no_activity_elapsed = 0
+
+                # ── Front Run Sell (best-effort, voir doc de la fonction) ─
+                if settings.get("front_run_sell_enabled"):
+                    triggered = await self._check_front_run_sell(position, price)
+                    if triggered:
+                        return
+
+                # ── Auto-Sell on Big Buy (best-effort) ────────────────
+                if settings.get("auto_sell_big_buy_levels"):
+                    remaining = await self._check_big_buy_levels(position, price)
+                    if remaining is not None and remaining <= 0:
+                        return
+
+                # ── Trailing SL multi-paliers (prioritaire sur les TP classiques) ─
+                if settings.get("trailing_sl_enabled"):
+                    if await self._check_trailing_sl(position, price, market_cap):
                         return
                 else:
-                    no_activity_elapsed = 0
+                    # SL classique
+                    sl_pct = settings.get("sl_pct")
+                    if sl_pct and change_pct <= -sl_pct:
+                        await self._close_remaining(position, price, change_pct, "SL")
+                        return
 
-            # ── Front Run Sell (best-effort, voir doc de la fonction) ─
-            if settings.get("front_run_sell_enabled"):
-                triggered = await self._check_front_run_sell(position, price)
-                if triggered:
-                    return
+                    # Multi-TP
+                    tp_levels = settings.get("tp_levels", [{"pct": config.TP_PCT, "sell_ratio": 1.0}])
+                    for i, level in enumerate(tp_levels):
+                        if i in position["tp_levels_hit"]:
+                            continue
+                        if change_pct >= level["pct"]:
+                            await self._partial_close(position, price, change_pct, level["sell_ratio"], tp_index=i)
+                            if position["units"] <= 0:
+                                return
 
-            # ── Auto-Sell on Big Buy (best-effort) ────────────────
-            if settings.get("auto_sell_big_buy_levels"):
-                remaining = await self._check_big_buy_levels(position, price)
-                if remaining is not None and remaining <= 0:
-                    return
+                # ── Buy The Dip (indépendant du sens de la position) ──
+                dip_levels = settings.get("buy_the_dip_levels", [])
+                if dip_levels:
+                    await self._check_buy_the_dip(position, price)
 
-            # ── Trailing SL multi-paliers (prioritaire sur les TP classiques) ─
-            if settings.get("trailing_sl_enabled"):
-                if await self._check_trailing_sl(position, price, market_cap):
-                    return
-            else:
-                # SL classique
-                sl_pct = settings.get("sl_pct")
-                if sl_pct and change_pct <= -sl_pct:
-                    await self._close_remaining(position, price, change_pct, "SL")
-                    return
-
-                # Multi-TP
-                tp_levels = settings.get("tp_levels", [{"pct": config.TP_PCT, "sell_ratio": 1.0}])
-                for i, level in enumerate(tp_levels):
-                    if i in position["tp_levels_hit"]:
-                        continue
-                    if change_pct >= level["pct"]:
-                        await self._partial_close(position, price, change_pct, level["sell_ratio"], tp_index=i)
-                        if position["units"] <= 0:
-                            return
-
-            # ── Buy The Dip (indépendant du sens de la position) ──
-            dip_levels = settings.get("buy_the_dip_levels", [])
-            if dip_levels:
-                await self._check_buy_the_dip(position, price)
-
-        if position["units"] > 0:
-            # CORRIGÉ (même bug que ci-dessus) : repli DexScreener-only,
-            # même problème pour un token jamais migré.
-            live = await get_live_price_and_market_cap(position["token_mint"])
-            price = live["price"] or position["entry_price"]
-            change_pct = self._pnl_pct(position, price)
-            await self._close_remaining(position, price, change_pct, "EXPIRATION")
+            if position["units"] > 0:
+                # CORRIGÉ (même bug que ci-dessus) : repli DexScreener-only,
+                # même problème pour un token jamais migré.
+                live = await get_live_price_and_market_cap(position["token_mint"])
+                price = live["price"] or position["entry_price"]
+                change_pct = self._pnl_pct(position, price)
+                await self._close_remaining(position, price, change_pct, "EXPIRATION")
+        finally:
+            # AJOUTÉ : désabonnement systématique, quelle que soit la façon
+            # dont la position s'est fermée (TP, SL, expiration, vente
+            # manuelle...) — sans ça, les souscriptions WebSocket
+            # s'accumuleraient indéfiniment sur la durée de vie du bot.
+            if self.price_stream:
+                await self.price_stream.unsubscribe(position["token_mint"])
 
     def _pnl_pct(self, position: dict, price: float) -> float:
         value = position["units"] * price

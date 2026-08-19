@@ -98,6 +98,33 @@ async def rpc_post(payload: dict, timeout: int = 12) -> dict:
     return {}
 
 
+async def fetch_parsed_transaction(signature: str) -> dict:
+    """
+    EXTRAIT de copytrade_listener.py (était _fetch_parsed_transaction, méthode
+    privée) pour être partagé avec d'autres modules qui ont besoin de la même
+    API Enhanced Transactions Helius — voir protection_scanner.py, qui
+    l'utilise maintenant pour sa propre détection en WebSocket (logsSubscribe)
+    au lieu du sondage RPC répété qu'il faisait avant.
+    """
+    if not config.HELIUS_API_KEY:
+        return {}
+    try:
+        await _rate_limiter.wait_if_needed()
+        async with aiohttp.ClientSession(connector=get_http_connector(), connector_owner=False) as session:
+            async with session.post(
+                config.HELIUS_PARSE_TX_URL,
+                json={"transactions": [signature]},
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                if resp.status != 200:
+                    return {}
+                data = await resp.json()
+                return data[0] if data else {}
+    except Exception as e:
+        log.debug(f"Erreur fetch transaction parsée {signature}: {e}")
+        return {}
+
+
 async def _try_endpoint(url: str, payload: dict, timeout: int, max_retries: int = 3):
     """
     CORRIGÉ suite à un vrai échec répété et non diagnosticable de

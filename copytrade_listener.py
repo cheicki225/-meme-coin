@@ -37,7 +37,6 @@ import asyncio
 import json
 import logging
 import time
-import aiohttp
 import websockets
 
 import config
@@ -386,26 +385,11 @@ class CopyTradeListener:
             await self.on_withdrawal(from_account, to_account, amount_usdc, "USDC", signature)
 
     async def _fetch_parsed_transaction(self, signature: str) -> dict:
-        """CORRIGÉ : même fix que websocket_listener.py — session isolée sans
-        fix DNS ni limiteur de débit, remplacée par le connecteur/limiteur
-        partagés de rpc_client.py."""
-        if not config.HELIUS_API_KEY:
-            return {}
-        try:
-            await rpc_client._rate_limiter.wait_if_needed()
-            async with aiohttp.ClientSession(connector=rpc_client.get_http_connector(), connector_owner=False) as session:
-                async with session.post(
-                    config.HELIUS_PARSE_TX_URL,
-                    json={"transactions": [signature]},
-                    timeout=aiohttp.ClientTimeout(total=10),
-                ) as resp:
-                    if resp.status != 200:
-                        return {}
-                    data = await resp.json()
-                    return data[0] if data else {}
-        except Exception as e:
-            log.debug(f"Erreur fetch tx copytrade {signature}: {e}")
-            return {}
+        """DÉPLACÉ vers rpc_client.fetch_parsed_transaction — partagé
+        maintenant avec protection_scanner.py, qui en a besoin pour sa propre
+        détection en WebSocket. Ce wrapper reste pour ne pas devoir changer
+        tous les appels existants dans ce fichier."""
+        return await rpc_client.fetch_parsed_transaction(signature)
 
     def _classify_transaction(self, parsed: dict) -> dict:
         """
