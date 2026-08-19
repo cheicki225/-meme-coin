@@ -45,9 +45,33 @@ class WalletCleanup:
             f"inactivité max: {settings['inactive_days']}j, "
             f"pertes consécutives max: {settings['max_consecutive_losses']}."
         )
+
+        # CORRIGÉ suite à un vrai problème de coût RPC identifié : le premier
+        # passage se lançait IMMÉDIATEMENT à chaque démarrage du bot, même si
+        # un passage complet venait d'avoir lieu quelques minutes plus tôt
+        # (ex: plusieurs redémarrages Railway rapprochés pendant une session
+        # de debug) — répétant inutilement l'analyse la plus coûteuse du bot
+        # (jusqu'à 150 transactions décodées par trade, jusqu'à 10 trades par
+        # wallet, tous les wallets suivis). Persiste maintenant l'horodatage
+        # du dernier passage RÉUSSI (state["wallet_cleanup_last_pass_at"],
+        # survit à un redémarrage puisque sauvegardé dans le fichier de
+        # données) et n'attend que le temps RESTANT avant le prochain passage
+        # dû, au lieu de toujours repartir de zéro au démarrage.
+        last_pass_at = self.data_store.state.get("wallet_cleanup_last_pass_at", 0)
+        elapsed_since_last_pass = time.time() - last_pass_at
+        wait_before_first_pass = max(0, config.WALLET_CLEANUP_INTERVAL_S - elapsed_since_last_pass)
+        if wait_before_first_pass > 0:
+            log.info(
+                f"🧹 Dernier passage il y a {elapsed_since_last_pass / 60:.0f} min — "
+                f"premier passage dans {wait_before_first_pass / 60:.0f} min (pas immédiat)."
+            )
+            await asyncio.sleep(wait_before_first_pass)
+
         while self._running:
             try:
                 await self._run_cleanup_pass()
+                self.data_store.state["wallet_cleanup_last_pass_at"] = time.time()
+                self.data_store.save()
             except Exception as e:
                 log.warning(f"⚠️ Erreur pendant le nettoyage automatique : {e}")
             await asyncio.sleep(config.WALLET_CLEANUP_INTERVAL_S)
