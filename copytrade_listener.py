@@ -432,6 +432,18 @@ class CopyTradeListener:
             if not mint:
                 continue
 
+            # CORRIGÉ suite à un vrai bug observé en conditions réelles : le
+            # SOL natif (wSOL) apparaît parfois lui-même comme tokenTransfer
+            # (ex: Jupiter qui route un swap via un compte wSOL intermédiaire)
+            # — sans cette exclusion, le bot classait "le wallet reçoit du
+            # wSOL" comme "achat du token So111...112" et tentait ensuite de
+            # décoder une bonding curve Pump.fun pour le mint SOL lui-même
+            # (qui n'existe pas), plantant sur une erreur de désérialisation
+            # et retombant sur un market cap de secours à 80+ millions de $.
+            # Même raisonnement pour l'USDC — jamais un "token" à copier.
+            if mint in (config.SOL_MINT, wallet.USDC_MINT):
+                continue
+
             to_account = tt.get("toUserAccount")
             from_account = tt.get("fromUserAccount")
 

@@ -28,6 +28,7 @@ import asyncio
 
 import config
 import rpc_client
+import wallet
 import wallet_history
 from backtest import _get_pair_data, get_bonding_curve_price, get_sol_usd_rate, get_live_price_and_market_cap
 import security as security_check
@@ -107,6 +108,19 @@ class PaperTrader:
     # ══════════════════════════════════════════════════════════
 
     async def open_position(self, token_mint: str, source_wallet: str, reason: str, creation_slot: int = None):
+        # CORRIGÉ suite à un vrai cas observé : SOL (et USDC par précaution)
+        # ne sont jamais un "token" à copier — voir le fix correspondant dans
+        # copytrade_listener._classify_transaction (cause racine, qui exclut
+        # déjà ces mints en amont). Second filet ici, indépendant : si un
+        # AUTRE chemin d'appel envoyait un jour un de ces mints par erreur,
+        # get_bonding_curve_price échouerait silencieusement (pas de bonding
+        # curve pour ces mints) et le repli DexScreener pourrait renvoyer un
+        # market cap absurde pour un mint aussi largement pairé que SOL/USDC
+        # (observé en pratique : 80+ millions de $ pour le mint SOL natif).
+        if token_mint in (config.SOL_MINT, wallet.USDC_MINT):
+            log.warning(f"🛑 open_position appelé avec un mint non-memecoin ({token_mint[:8]}...), achat refusé.")
+            return None
+
         state = self.data_store.state
         settings = self.data_store.get_wallet_settings(source_wallet)
 
