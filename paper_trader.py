@@ -28,6 +28,7 @@ import asyncio
 
 import config
 import rpc_client
+import wallet_history
 from backtest import _get_pair_data, get_bonding_curve_price, get_sol_usd_rate
 import security as security_check
 
@@ -166,6 +167,42 @@ class PaperTrader:
             entry_price = 0.0  # sera remplacé par le prix réel d'exécution Jupiter (actual_price)
             market_cap = 0.0
         else:
+            # AJOUTÉ (demande explicite) : n'achète en copy trade que si le
+            # token a moins de max_token_age_at_buy_s secondes au moment de
+            # l'achat détecté — un wallet suivi qui achète un token qui
+            # traîne déjà depuis un moment n'est pas le signal qu'on veut
+            # copier. Placé ici (pas avant le bloc skip_speed) pour rester
+            # cohérent avec le compromis déjà documenté de ce mode : aucune
+            # protection supplémentaire, aucun appel réseau en plus, priorité
+            # absolue à la vitesse d'exécution LIVE.
+            max_age_s = settings.get("max_token_age_at_buy_s")
+            if max_age_s:
+                creation_time = await wallet_history.get_token_creation_time(token_mint)
+                if creation_time is None:
+                    # Fail-closed : impossible de confirmer la fraîcheur du
+                    # token = on n'achète pas. Un skip est sans conséquence,
+                    # un achat non désiré sur un token bien plus vieux que
+                    # voulu coûte réellement de l'argent (ou fausse le PAPER).
+                    log.info(f"⏭️  Âge du token {token_mint[:8]}... indéterminable, skip (filtre âge actif).")
+                    if self.notifier:
+                        await self.notifier.notify(
+                            "buy_skipped",
+                            f"⏭️ *Buy Skipped* (âge indéterminable)\nToken: `{token_mint[:8]}...`\n"
+                            f"Impossible de confirmer que le token a moins de {max_age_s:.0f}s.",
+                        )
+                    return None
+
+                age_s = time.time() - creation_time
+                if age_s > max_age_s:
+                    log.info(f"⏭️  Token {token_mint[:8]}... âgé de {age_s:.0f}s (> {max_age_s:.0f}s), skip.")
+                    if self.notifier:
+                        await self.notifier.notify(
+                            "buy_skipped",
+                            f"⏭️ *Buy Skipped* (token trop vieux)\nToken: `{token_mint[:8]}...`\n"
+                            f"Âge: {age_s:.0f}s (max configuré: {max_age_s:.0f}s)",
+                        )
+                    return None
+
             # CORRIGÉ suite à un vrai échec signalé : "Buy Failed - prix
             # d'entrée indisponible" survenait systématiquement sur des
             # tokens tout juste créés (snipe_delay_s=0 par défaut). Cause

@@ -434,6 +434,35 @@ async def _get_signatures(address: str, limit: int = 300, max_retries: int = 4) 
     return []
 
 
+async def get_token_creation_time(token_mint: str) -> float:
+    """
+    AJOUTÉ suite à une demande explicite : détermine l'âge d'un token au
+    moment d'un achat copy trading (filtre "n'achète que dans les X
+    premières secondes après la création", voir paper_trader.open_position
+    et config.DEFAULT_WALLET_SETTINGS["max_token_age_at_buy_s"]).
+
+    Réutilise _get_signatures (même RPC, déjà utilisé ailleurs dans ce
+    fichier) avec une petite limite — un token vieux de quelques secondes
+    n'a de toute façon que très peu de signatures à ce stade, pas besoin de
+    la pagination complète de get_all_signatures_paginated (prévue pour un
+    historique long, donc bien plus lente).
+
+    getSignaturesForAddress trie du plus récent au plus ancien — la
+    DERNIÈRE entrée de la liste renvoyée est donc la toute première
+    transaction ayant touché ce mint, la création elle-même dans l'immense
+    majorité des cas.
+
+    Retourne le blockTime Unix (float/int) de cette transaction, ou None
+    si indéterminable (RPC injoignable après retries, ou aucune signature
+    trouvée). None doit être traité comme "âge inconnu", jamais comme
+    "token tout juste créé".
+    """
+    signatures = await _get_signatures(token_mint, limit=50)
+    if not signatures:
+        return None
+    return signatures[-1].get("blockTime")
+
+
 async def get_all_signatures_paginated(address: str, max_pages: int = 20, page_size: int = 1000,
                                         on_progress=None) -> list:
     """

@@ -159,6 +159,12 @@ DEFAULT_WALLET_SETTINGS = {
     "snipe_delay_s": 0,       # délai avant achat après détection (0 = immédiat, bloc zéro)
     "no_activity_sell_s": 35,  # vend si aucune activité (achat/vente) pendant N secondes — SL "naturel"
     "buy_only_once": True,    # n'achète qu'une fois par wallet suivi, même s'il rachète le même token
+    # AJOUTÉ (demande explicite) : n'achète en copy trade que si le token a
+    # moins de N secondes au moment de l'achat détecté — filtre les copy
+    # trades sur des tokens qui traînent déjà depuis un moment, pas des
+    # snipes frais. None ou 0 désactive le filtre. Voir
+    # wallet_history.get_token_creation_time et paper_trader.open_position.
+    "max_token_age_at_buy_s": 15,
     "trailing_sl_enabled": False,
     "buy_on_dev_sell": False,  # stub — racheter après la vente partielle du dev (non implémenté)
     # ── Ajouts F Project (menu Ruggers / Config par Rugger) ──
