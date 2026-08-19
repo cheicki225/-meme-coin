@@ -654,7 +654,8 @@ async def _get_price_points_after(token_mint: str, since_block_time: int,
 
 
 async def backtest_token_onchain_pathaware(token_mint: str, entry_price_sol: float, entry_block_time: int,
-                                            tp_pct: float = None, sl_pct: float = None) -> dict:
+                                            tp_pct: float = None, sl_pct: float = None,
+                                            max_transactions: int = 150) -> dict:
     """
     MÉTHODE DEMANDÉE, version on-chain (sans dépendance à une API tierce) —
     fonctionne pour un token à N'IMPORTE QUEL stade (bonding curve ou migré),
@@ -681,6 +682,15 @@ async def backtest_token_onchain_pathaware(token_mint: str, entry_price_sol: flo
     backtest_token_pathaware() (GeckoTerminal) avec la clôture de la 1ère
     bougie. Permet d'analyser un dev-créateur avec la même méthode fiable
     que pour un trader, sans avoir besoin d'un montant "acheté".
+
+    max_transactions : AJOUTÉ (demande explicite, réduction du coût RPC)
+    — profondeur de décodage transmise telle quelle à _get_price_points_after.
+    150 par défaut (précision maximale, adapté à une analyse ponctuelle
+    déclenchée par l'utilisateur — "Analyse de wallet"/"Analyse de dev").
+    wallet_cleanup.py passe une valeur plus basse : c'est une vérification
+    AUTOMATIQUE, fréquente (jusqu'à 28 wallets × 10 trades à chaque
+    passage), où le coût RPC cumulé compte plus que la précision maximale
+    sur chaque trade individuel — voir wallet_cleanup._count_consecutive_losses.
     """
     tp_pct = tp_pct if tp_pct is not None else config.TP_PCT
     sl_pct = sl_pct if sl_pct is not None else config.SL_PCT
@@ -688,7 +698,7 @@ async def backtest_token_onchain_pathaware(token_mint: str, entry_price_sol: flo
     if not entry_block_time:
         return None
 
-    points = await _get_price_points_after(token_mint, entry_block_time)
+    points = await _get_price_points_after(token_mint, entry_block_time, max_transactions=max_transactions)
     if not points:
         return None
 
@@ -908,7 +918,8 @@ PUMPFUN_STANDARD_TOTAL_SUPPLY = 1_000_000_000  # confirmé via données réelles
 
 async def get_detailed_trade_info(token_mint: str, purchase_block_time: int = None,
                                    tp_pct: float = None, sl_pct: float = None,
-                                   sol_spent: float = None, tokens_received: float = None) -> dict:
+                                   sol_spent: float = None, tokens_received: float = None,
+                                   max_transactions: int = 150) -> dict:
     """
     Rassemble TOUTES les données disponibles pour un token — pas juste le
     résultat du backtest, mais aussi le nom, le prix, le market cap, la
@@ -928,6 +939,14 @@ async def get_detailed_trade_info(token_mint: str, purchase_block_time: int = No
     Retourne un dict enrichi combinant le résultat de backtest_token() avec
     les métadonnées brutes. Certains champs peuvent être None si DexScreener
     ne les fournit pas pour ce token précis (normal, pas une erreur).
+
+    max_transactions : AJOUTÉ (demande explicite, réduction du coût RPC) —
+    transmis tel quel à backtest_token_onchain_pathaware (150 par défaut).
+    Réduire cette valeur réduit la précision de la reconstruction on-chain
+    (moins de transactions décodées après l'achat = risque de rater un pic
+    de prix survenu tard) mais réduit proportionnellement le coût RPC —
+    pertinent pour un appelant automatique et fréquent (wallet_cleanup),
+    moins pour une analyse ponctuelle déclenchée par l'utilisateur.
     """
     pair_data = await _get_pair_data(token_mint)
     backtest_result = await backtest_token(token_mint, tp_pct=tp_pct, sl_pct=sl_pct)
@@ -982,7 +1001,8 @@ async def get_detailed_trade_info(token_mint: str, purchase_block_time: int = No
     onchain_result = None
     if purchase_block_time:
         onchain_result = await backtest_token_onchain_pathaware(
-            token_mint, entry_price_sol, purchase_block_time, tp_pct=tp_pct, sl_pct=sl_pct
+            token_mint, entry_price_sol, purchase_block_time, tp_pct=tp_pct, sl_pct=sl_pct,
+            max_transactions=max_transactions,
         )
     if onchain_result is not None:
         backtest_result = onchain_result

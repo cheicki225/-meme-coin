@@ -143,6 +143,7 @@ class WalletCleanup:
             detail = await backtest.get_detailed_trade_info(
                 t["token_mint"], purchase_block_time=t.get("block_time"),
                 sol_spent=t.get("sol_spent"), tokens_received=t.get("tokens_received"),
+                max_transactions=config.WALLET_CLEANUP_MAX_TRANSACTIONS_SCANNED,
             )
             if detail["result_pct"] < 0:
                 consecutive += 1

@@ -380,6 +380,18 @@ WALLET_CLEANUP_ENABLED = os.getenv("WALLET_CLEANUP_ENABLED", "true").lower() == 
 WALLET_CLEANUP_INTERVAL_S = int(os.getenv("WALLET_CLEANUP_INTERVAL_S", "3600"))  # 1h entre 2 passages
 WALLET_CLEANUP_INACTIVE_DAYS = float(os.getenv("WALLET_CLEANUP_INACTIVE_DAYS", "30"))
 WALLET_CLEANUP_MAX_CONSECUTIVE_LOSSES = int(os.getenv("WALLET_CLEANUP_MAX_CONSECUTIVE_LOSSES", "7"))
+# AJOUTÉ (demande explicite, réduction du coût RPC) : profondeur de
+# décodage on-chain utilisée par _count_consecutive_losses pour reconstruire
+# le résultat de chaque trade analysé — voir backtest.get_detailed_trade_info
+# (paramètre max_transactions). Réduit de 150 (valeur par défaut, utilisée
+# pour "Analyse de wallet"/"Analyse de dev", déclenchées manuellement) à 40
+# ici : ce check n'a besoin que de savoir si un trade est gagnant ou perdant
+# (result_pct < 0), pas de sa magnitude exacte — 40 transactions restent
+# largement suffisantes pour ça, pour une fraction du coût RPC. Avec 28
+# wallets × jusqu'à 10 trades dans le pire cas (série de pertes), ça passe
+# le plafond théorique d'environ 43 000 appels RPC par passage à environ
+# 11 500 — une réduction d'environ 73%.
+WALLET_CLEANUP_MAX_TRANSACTIONS_SCANNED = int(os.getenv("WALLET_CLEANUP_MAX_TRANSACTIONS_SCANNED", "40"))
 
 # ── Buy on Dev Sell — délai max d'attente de la vente du dev après création ─
 BUY_ON_DEV_SELL_TIMEOUT_MIN = float(os.getenv("BUY_ON_DEV_SELL_TIMEOUT_MIN", "30"))
