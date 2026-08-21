@@ -419,11 +419,17 @@ async def _get_signatures(address: str, limit: int = 300, max_retries: int = 4) 
     retournait silencieusement [] — traité ensuite comme "0 token trouvé"
     alors que c'était en réalité "on n'a pas pu vérifier". Même logique de
     réessai que _get_raw_transaction.
+
+    CORRIGÉ (19 août, même raisonnement que _get_raw_transaction) :
+    "commitment": "confirmed" ajouté explicitement — utilisée par
+    get_token_creator sur des tokens potentiellement tout juste créés, où
+    le défaut du nœud ("finalized") retarderait inutilement la visibilité
+    de la toute première signature.
     """
     payload = {
         "jsonrpc": "2.0", "id": 1,
         "method": "getSignaturesForAddress",
-        "params": [address, {"limit": limit}],
+        "params": [address, {"limit": limit, "commitment": "confirmed"}],
     }
     for attempt in range(max_retries):
         result = await rpc_client.rpc_post(payload, timeout=15)
@@ -528,11 +534,24 @@ async def _get_raw_transaction(signature: str, max_retries: int = 4) -> dict:
     nombre de tentatives augmentés (0.5s→1s, 3→4) suite à des 429 persistants
     même avec le premier réessai — le rate-limit semble nécessiter plus de
     temps de repos avant retenter.
+
+    CORRIGÉ (19 août, réutilisation dans wallet_created_this_token/
+    get_token_creator pour le filtre Copy Trading) : aucun "commitment"
+    n'était précisé, donc l'appel retombait sur le défaut du nœud RPC —
+    "finalized" dans la pratique, le niveau le plus lent (peut prendre 13+
+    secondes après confirmation sur Solana). Sans conséquence pour les
+    usages d'origine de cette fonction (analyse historique, transactions
+    déjà largement finalisées) — mais échouait SYSTÉMATIQUEMENT (100% des
+    tentatives, tout le budget de retry épuisé en ~7s) pour une transaction
+    tout juste détectée en copy trading, où la finalisation n'a pas encore
+    eu lieu. "confirmed" est strictement plus rapide à disponibilité que
+    "finalized" (jamais plus lent) — sans risque de régression pour les
+    appelants existants.
     """
     payload = {
         "jsonrpc": "2.0", "id": 1,
         "method": "getTransaction",
-        "params": [signature, {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0}],
+        "params": [signature, {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0, "commitment": "confirmed"}],
     }
     for attempt in range(max_retries):
         result = await rpc_client.rpc_post(payload, timeout=12)
