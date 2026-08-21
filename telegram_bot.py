@@ -74,6 +74,20 @@ def _looks_like_token_mint(text: str) -> bool:
     return text.strip().endswith("pump")
 
 
+def _format_sol_amount(amount: float) -> str:
+    """
+    AJOUTÉ suite à un vrai cas ambigu observé : un montant de financement
+    affiché "0.0000 SOL" pouvait vouloir dire deux choses très différentes
+    — un vrai montant minuscule (poussière, arrondi à 4 décimales) ou un
+    bug d'extraction — impossible de distinguer les deux à l'affichage.
+    Passe à 8 décimales quand la valeur est non-nulle mais arrondirait à
+    0.0000 à la précision normale, pour lever l'ambiguïté visuellement.
+    """
+    if amount != 0 and round(amount, 4) == 0:
+        return f"{amount:.8f}"
+    return f"{amount:.4f}"
+
+
 def _compute_star_rating(results: list) -> dict:
     """
     AJOUTÉ suite à une demande explicite : note globale de 1 à 5 étoiles
@@ -1284,7 +1298,7 @@ class SniperTelegramBot:
             text += f"🔗 *Financement* : `{trace.get('scheme', 'inconnu')}`"
             if trace.get("exchange_name"):
                 text += f" ({trace['exchange_name']})"
-            text += f"\nFinancé par : `{trace['funder_address'][:12]}...`\nMontant : `{trace.get('amount_sol', 0):.4f}` SOL\n"
+            text += f"\nFinancé par : `{trace['funder_address'][:12]}...`\nMontant : `{_format_sol_amount(trace.get('amount_sol', 0))}` SOL\n"
         else:
             text += "🔗 *Financement* : introuvable\n"
         text += f"🆕 Fresh wallet : {'✅ Oui' if is_fresh else '❌ Non (déjà actif avant)'}\n\n"
@@ -1622,7 +1636,7 @@ class SniperTelegramBot:
             text += f"💰 Financé par : `{trace['funder_address'][:12]}...`"
             if trace.get("exchange_name"):
                 text += f" ({trace['exchange_name']})"
-            text += f"\nMontant : `{trace.get('amount_sol', 0):.4f}` SOL\nSchéma : `{trace.get('scheme', 'inconnu')}`\n"
+            text += f"\nMontant : `{_format_sol_amount(trace.get('amount_sol', 0))}` SOL\nSchéma : `{trace.get('scheme', 'inconnu')}`\n"
             if trace.get("funder_behavior_labels"):
                 text += f"Labels comportementaux : `{', '.join(trace['funder_behavior_labels'])}`\n"
         else:
@@ -2031,7 +2045,7 @@ class SniperTelegramBot:
         if trace.get("funder_address"):
             funding_details = (
                 f"Financé par : `{trace['funder_address'][:12]}...`\n"
-                f"Montant : `{trace.get('amount_sol', 0):.4f}` SOL\n"
+                f"Montant : `{_format_sol_amount(trace.get('amount_sol', 0))}` SOL\n"
                 f"Fresh wallet : {'✅ Oui' if is_fresh else '❌ Non (déjà actif avant)'}\n"
             )
 
