@@ -465,6 +465,7 @@ class SniperTelegramBot:
                 InlineKeyboardButton(t("btn_ruggers", lang), callback_data="menu_ruggers"),
                 InlineKeyboardButton(t("btn_copytrade", lang), callback_data="menu_copytrade"),
             ],
+            [InlineKeyboardButton("🚫 Devs bloqués", callback_data="menu_blockeddevs")],
             [
                 InlineKeyboardButton(t("btn_wallets", lang), callback_data="menu_wallets"),
                 InlineKeyboardButton(t("btn_positions", lang), callback_data="menu_positions"),
@@ -2313,7 +2314,7 @@ class SniperTelegramBot:
             keyboard.append([InlineKeyboardButton(
                 f"🗑 {info.get('label', address[:8] + '...')}", callback_data=f"unblockdev_{address}",
             )])
-        keyboard.append([InlineKeyboardButton("← Back", callback_data="menu_more")])
+        keyboard.append([InlineKeyboardButton("← Back", callback_data="menu_main")])
         await self._send_or_edit(query, text, InlineKeyboardMarkup(keyboard), edit=True)
 
     async def show_backups_menu(self, query):
