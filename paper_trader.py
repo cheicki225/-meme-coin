@@ -114,7 +114,8 @@ class PaperTrader:
     # OUVERTURE DE POSITION
     # ══════════════════════════════════════════════════════════
 
-    async def open_position(self, token_mint: str, source_wallet: str, reason: str, creation_slot: int = None):
+    async def open_position(self, token_mint: str, source_wallet: str, reason: str, creation_slot: int = None,
+                             source_entry_market_cap: float = None):
         # CORRIGÉ suite à un vrai cas observé : SOL (et USDC par précaution)
         # ne sont jamais un "token" à copier — voir le fix correspondant dans
         # copytrade_listener._classify_transaction (cause racine, qui exclut
@@ -455,13 +456,23 @@ class PaperTrader:
                 token_symbol = None
             token_line = f"Token: *{token_symbol}*\n" if token_symbol else "Token: _nom indisponible (token trop récent)_\n"
 
+            # AJOUTÉ (demande explicite) : distingue clairement MON market
+            # cap d'entrée de celui du wallet SOURCE (quand disponible) —
+            # avant, "Market cap: X$" ne précisait pas de qui il s'agissait,
+            # et le MC du wallet source n'était affiché nulle part.
+            mc_lines = f"Market cap (mon entrée): {market_cap:.0f}$\n"
+            if source_entry_market_cap:
+                source_label = source_entry.get("label", source_wallet[:8] + "...")
+                mc_lines += f"Market cap (entrée {source_label}): {source_entry_market_cap:.0f}$\n"
+
             await self.notifier.notify(
                 "buy_confirmed",
                 f"✅ *Buy Confirmed* ({buy_mode}, {config.TRADING_MODE})\n"
                 f"{source_line}"
                 f"{token_line}"
                 f"`{token_mint}`\n"
-                f"Montant: {cost_basis_usd:.2f}$ (~{settings.get('buy_amount_sol')} SOL)\nMarket cap: {market_cap:.0f}$"
+                f"Montant: {cost_basis_usd:.2f}$ (~{settings.get('buy_amount_sol')} SOL)\n"
+                f"{mc_lines}"
                 f"{sig_line}{speed_line}\nRaison: {reason}",
                 reply_markup=keyboard,
             )

@@ -184,12 +184,20 @@ class SniperBot:
         # Cas 2 : nouveau dev → pipeline complet d'évaluation
         await self._evaluate_new_dev(dev_address, token_mint)
 
-    async def on_copytrade_buy(self, wallet_address: str, token_mint: str, signature: str):
+    async def on_copytrade_buy(self, wallet_address: str, token_mint: str, signature: str,
+                                source_sol_spent_lamports: int = 0, source_tokens_received: float = 0):
         """
         Callback du copytrade_listener : un wallet suivi en mode track_buy vient
         d'acheter un token. Applique Max Token Age et Follow Cooldown (les deux
         étaient configurables depuis longtemps mais jamais vérifiés avant cette
         version), puis ouvre une position miroir.
+
+        source_sol_spent_lamports/source_tokens_received : AJOUTÉS suite à une
+        demande explicite ("pourquoi la notif ne montre pas à quel market cap
+        MON adresse suivie est rentrée ?") — permet de calculer le market cap
+        d'entrée du wallet SOURCE lui-même (pas seulement le nôtre), affiché
+        dans "Buy Confirmed" à côté du nôtre pour comparaison directe. Voir
+        copytrade_listener._classify_transaction pour l'extraction.
         """
         entry = self.data_store.state["monitored_dev_wallets"].get(wallet_address)
         if not entry or entry.get("mode") != "track_buy":
@@ -215,10 +223,26 @@ class SniperBot:
                 log.info(f"⏭️  Copy trade ignoré ({label}) — token âgé de {age:.1f}min > max {max_age}min.")
                 return
 
+        # AJOUTÉ (demande explicite) : market cap d'entrée du wallet SOURCE,
+        # calculé avec la MÊME méthode (prix on-chain × taux SOL/USD en
+        # direct) que celle déjà utilisée pour notre propre entrée — pas une
+        # approximation différente qui donnerait des chiffres incohérents
+        # entre les deux. None si les montants n'ont pas pu être extraits de
+        # la transaction (cas limite, ne bloque jamais l'achat).
+        source_entry_market_cap = None
+        if source_sol_spent_lamports and source_tokens_received:
+            try:
+                source_price_sol = (source_sol_spent_lamports / 1_000_000_000) / (source_tokens_received / 1_000_000)
+                sol_rate = await backtest.get_sol_usd_rate()
+                source_entry_market_cap = source_price_sol * backtest.PUMPFUN_STANDARD_TOTAL_SUPPLY * sol_rate
+            except (ZeroDivisionError, TypeError, ValueError):
+                source_entry_market_cap = None
+
         log.info(f"📋 Copy trade détecté : {label} a acheté {token_mint[:8]}... (tx {signature[:12]}...)")
         await self.trader.open_position(
             token_mint, wallet_address,
-            reason=f"Copy trade — achat détecté chez {label}"
+            reason=f"Copy trade — achat détecté chez {label}",
+            source_entry_market_cap=source_entry_market_cap,
         )
 
     async def on_wallet_withdrawal(self, wallet_address: str, destination: str, amount: float, asset: str = "SOL", signature: str = None):
