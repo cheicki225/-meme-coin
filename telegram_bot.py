@@ -704,6 +704,17 @@ class SniperTelegramBot:
             [InlineKeyboardButton(t("btn_snipe_config", lang), callback_data=f"snipeconfig_{self._sid(address)}")],
             [InlineKeyboardButton(t("btn_maxloss", lang), callback_data=f"maxloss_{self._sid(address)}")],
             [InlineKeyboardButton(t("btn_savepreset", lang), callback_data=f"savepreset_{self._sid(address)}")],
+        ]
+        # AJOUTÉ (demande explicite, 19 août) : accès rapide à la liste des
+        # devs bloqués depuis la fiche même du wallet — seulement pour les
+        # wallets Copy Trading (track_buy/track_sell), puisque ce filtre ne
+        # s'applique qu'aux achats en Copy Trading (voir main.on_copytrade_buy).
+        # La liste elle-même reste GLOBALE (partagée entre tous les wallets),
+        # ce bouton n'est qu'un raccourci vers le même écran que celui du
+        # menu principal.
+        if entry.get("mode") in ("track_buy", "track_sell"):
+            keyboard.append([InlineKeyboardButton("🚫 Devs bloqués", callback_data="menu_blockeddevs")])
+        keyboard += [
             [
                 InlineKeyboardButton(t("btn_rename", lang), callback_data=f"rename_{self._sid(address)}"),
                 InlineKeyboardButton(t("btn_reset", lang), callback_data=f"askreset_{self._sid(address)}"),
