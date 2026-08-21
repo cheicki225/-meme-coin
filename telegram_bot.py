@@ -465,7 +465,7 @@ class SniperTelegramBot:
                 InlineKeyboardButton(t("btn_ruggers", lang), callback_data="menu_ruggers"),
                 InlineKeyboardButton(t("btn_copytrade", lang), callback_data="menu_copytrade"),
             ],
-            [InlineKeyboardButton("🚫 Devs bloqués", callback_data="menu_blockeddevs")],
+            [InlineKeyboardButton("🚫 Devs bloqués (tous les wallets)", callback_data="menu_blockeddevs_global")],
             [
                 InlineKeyboardButton(t("btn_wallets", lang), callback_data="menu_wallets"),
                 InlineKeyboardButton(t("btn_positions", lang), callback_data="menu_positions"),
@@ -713,7 +713,7 @@ class SniperTelegramBot:
         # ce bouton n'est qu'un raccourci vers le même écran que celui du
         # menu principal.
         if entry.get("mode") in ("track_buy", "track_sell"):
-            keyboard.append([InlineKeyboardButton("🚫 Devs bloqués", callback_data="menu_blockeddevs")])
+            keyboard.append([InlineKeyboardButton("🚫 Devs bloqués", callback_data=f"walletblockeddevs_{self._sid(address)}")])
         keyboard += [
             [
                 InlineKeyboardButton(t("btn_rename", lang), callback_data=f"rename_{self._sid(address)}"),
@@ -2297,35 +2297,65 @@ class SniperTelegramBot:
             ],
             [InlineKeyboardButton("⚙️ Settings", callback_data="menu_settings")],
             [InlineKeyboardButton("📋 Presets", callback_data="list_presets")],
-            [InlineKeyboardButton("🚫 Devs bloqués", callback_data="menu_blockeddevs")],
+            [InlineKeyboardButton("🚫 Devs bloqués (tous les wallets)", callback_data="menu_blockeddevs_global")],
             [InlineKeyboardButton("💾 Backups", callback_data="menu_backups")],
             [InlineKeyboardButton("← Back", callback_data="menu_main")],
         ]
         await self._send_or_edit(query, text, InlineKeyboardMarkup(keyboard), edit=True)
 
-    async def show_blocked_devs_menu(self, query):
+    async def show_blocked_devs_global_menu(self, query):
         """
-        🚫 Devs bloqués — AJOUTÉ (demande explicite, 19 août) : liste de
-        devs à éviter en Copy Trading, indépendante du monitoring — un dev
-        bloqué n'a pas besoin d'être un wallet suivi par le bot. Voir
-        monitoring_list.add_blocked_dev/is_dev_blocked et
+        🚫 Devs bloqués (tous les wallets) — AJOUTÉ (demande explicite, 19
+        août) : action GROUPÉE — bloque un dev sur TOUS les wallets Copy
+        Trading d'un coup (ajoute la même entrée dans les settings
+        blocked_devs de chacun), complémentaire à l'écran individuel par
+        wallet (show_blocked_devs_menu). Pas une liste séparée : les mêmes
+        données, juste écrites partout en une seule action.
+        """
+        n_ruggers, n_copytrade = self.data_store.count_wallets_by_mode()
+        text = (
+            "🚫 *Devs bloqués — tous les wallets*\n\n"
+            "_Bloque un dev sur TOUS tes wallets Copy Trading d'un coup, plutôt que "
+            "un par un. Pour gérer la liste d'un wallet précis (voir/retirer), passe "
+            "par sa fiche → •••Plus → Devs bloqués._\n\n"
+            f"`{n_copytrade}` wallet(s) Copy Trading seront concernés."
+        )
+        keyboard = [
+            [InlineKeyboardButton("➕ Bloquer un dev sur tous les wallets", callback_data="addblockeddevall")],
+            [InlineKeyboardButton("← Back", callback_data="menu_main")],
+        ]
+        await self._send_or_edit(query, text, InlineKeyboardMarkup(keyboard), edit=True)
+
+    async def show_blocked_devs_menu(self, query, address: str):
+        """
+        🚫 Devs bloqués — MODIFIÉ (demande explicite, 19 août) : d'abord une
+        liste globale, maintenant INDIVIDUELLE par wallet Copy Trading —
+        chaque wallet a sa propre liste, stockée dans ses propres settings
+        (comme buy_only_once). Voir monitoring_list.add_blocked_dev et
         main.on_copytrade_buy pour l'application réelle.
         """
-        blocked = self.data_store.list_blocked_devs()
+        entry = self.data_store.state["monitored_dev_wallets"].get(address)
+        if not entry:
+            lang = self.data_store.state.get("language", "fr")
+            await query.edit_message_text(t("rugger_not_found", lang))
+            return
+
+        label = entry.get("label", address[:8] + "...")
+        blocked = self.data_store.list_blocked_devs(address)
         text = (
-            "🚫 *Devs bloqués*\n\n"
+            f"🚫 *Devs bloqués — {label}*\n\n"
             "_Un dev sur cette liste peut être n'importe quelle adresse — pas besoin "
-            "qu'il soit déjà suivi par le bot. Tout achat en Copy Trading sur un token "
-            "créé par un dev de cette liste est automatiquement ignoré, quel que soit "
-            "le wallet suivi qui l'achète._\n\n"
-            f"`{len(blocked)}` dev(s) bloqué(s)."
+            "qu'il soit déjà suivi par le bot. Tout achat de CE wallet sur un token créé "
+            "par un dev de cette liste est automatiquement ignoré. Propre à ce wallet — "
+            "les autres wallets Copy Trading ont chacun leur propre liste._\n\n"
+            f"`{len(blocked)}` dev(s) bloqué(s) sur ce wallet."
         )
-        keyboard = [[InlineKeyboardButton("➕ Bloquer un dev", callback_data="addblockeddev")]]
-        for address, info in blocked.items():
+        keyboard = [[InlineKeyboardButton("➕ Bloquer un dev", callback_data=f"addblockeddev_{self._sid(address)}")]]
+        for dev_address, info in blocked.items():
             keyboard.append([InlineKeyboardButton(
-                f"🗑 {info.get('label', address[:8] + '...')}", callback_data=f"unblockdev_{address}",
+                f"🗑 {info.get('label', dev_address[:8] + '...')}", callback_data=f"unblockdev_{self._sid(address)}_{self._sid(dev_address)}",
             )])
-        keyboard.append([InlineKeyboardButton("← Back", callback_data="menu_main")])
+        keyboard.append([InlineKeyboardButton("← Back", callback_data=f"ruggermore_{self._sid(address)}")])
         await self._send_or_edit(query, text, InlineKeyboardMarkup(keyboard), edit=True)
 
     async def show_backups_menu(self, query):
@@ -2809,19 +2839,29 @@ class SniperTelegramBot:
             await query.edit_message_text("Colle l'adresse du wallet à ajouter au monitoring.")
         elif data == "list_presets":
             await self.show_presets(query)
-        elif data == "menu_blockeddevs":
-            await self.show_blocked_devs_menu(query)
-        elif data == "addblockeddev":
-            user_states[chat_id] = {"awaiting": "add_blocked_dev_address"}
+        elif data == "menu_blockeddevs_global":
+            await self.show_blocked_devs_global_menu(query)
+        elif data == "addblockeddevall":
+            user_states[chat_id] = {"awaiting": "add_blocked_dev_all_wallets"}
             await query.edit_message_text(
-                "🚫 Colle l'adresse du dev à bloquer — peut être n'importe quelle adresse, "
+                "🚫 Colle l'adresse du dev à bloquer sur TOUS tes wallets Copy Trading — "
+                "peut être n'importe quelle adresse, pas besoin qu'elle soit déjà suivie par le bot."
+            )
+        elif data.startswith("walletblockeddevs_"):
+            address = data[len("walletblockeddevs_"):]
+            await self.show_blocked_devs_menu(query, address)
+        elif data.startswith("addblockeddev_"):
+            address = data[len("addblockeddev_"):]
+            user_states[chat_id] = {"awaiting": "add_blocked_dev_address", "address": address}
+            await query.edit_message_text(
+                "🚫 Colle l'adresse du dev à bloquer pour ce wallet — peut être n'importe quelle adresse, "
                 "pas besoin qu'elle soit déjà suivie par le bot."
             )
         elif data.startswith("unblockdev_"):
-            address = data[len("unblockdev_"):]
-            self.data_store.remove_blocked_dev(address)
+            wallet_address, dev_address = data[len("unblockdev_"):].split("_")
+            self.data_store.remove_blocked_dev(wallet_address, dev_address)
             await query.answer("✅ Dev débloqué.")
-            await self.show_blocked_devs_menu(query)
+            await self.show_blocked_devs_menu(query, wallet_address)
         elif data == "menu_backups":
             await self.show_backups_menu(query)
         elif data == "backupnow":
@@ -3182,12 +3222,29 @@ class SniperTelegramBot:
             if not _is_solana_address(text):
                 await update.message.reply_text("Adresse invalide, réessaie.")
                 return
+            wallet_address = state.get("address")
             user_states.pop(chat_id, None)
-            self.data_store.add_blocked_dev(text)
+            self.data_store.add_blocked_dev(wallet_address, text)
             await update.message.reply_text(
                 f"🚫 Dev bloqué : `{text[:8]}...`\n\n"
-                "Tout achat en Copy Trading sur un token créé par ce dev sera désormais ignoré, "
-                "quel que soit le wallet suivi qui l'achète.",
+                "Tout achat de ce wallet sur un token créé par ce dev sera désormais ignoré. "
+                "Ne s'applique qu'à ce wallet précis.",
+                parse_mode="Markdown",
+            )
+
+        elif awaiting == "add_blocked_dev_all_wallets":
+            if not _is_solana_address(text):
+                await update.message.reply_text("Adresse invalide, réessaie.")
+                return
+            user_states.pop(chat_id, None)
+            wallets = {a: e for a, e in self.data_store.list_wallets().items() if e.get("mode") in ("track_buy", "track_sell")}
+            for wallet_address in wallets:
+                self.data_store.add_blocked_dev(wallet_address, text)
+            await update.message.reply_text(
+                f"🚫 Dev bloqué : `{text[:8]}...`\n\n"
+                f"Appliqué sur les `{len(wallets)}` wallet(s) Copy Trading actuels. "
+                "Un wallet Copy Trading ajouté plus tard n'héritera pas automatiquement de ce blocage — "
+                "il faudra le rajouter, ou repasser par ce bouton une nouvelle fois.",
                 parse_mode="Markdown",
             )
 
