@@ -50,6 +50,8 @@ TRANSLATIONS = {
     "btn_tracking_mode": {"fr": "🔔 Tracking Mode", "en": "🔔 Tracking Mode"},
     "btn_buy_config": {"fr": "💰 Buy Config", "en": "💰 Buy Config"},
     "btn_sell_config": {"fr": "📈 Sell Config", "en": "📈 Sell Config"},
+    "btn_analyze_this_wallet": {"fr": "🔎 Analyse de wallet", "en": "🔎 Wallet analysis"},
+    "btn_analyze_this_dev": {"fr": "🕵️ Analyse de dev", "en": "🕵️ Dev analysis"},
     "btn_protection": {"fr": "🛡️ Protection", "en": "🛡️ Protection"},
     "btn_security_ai": {"fr": "🛡️🤖 Security & AI", "en": "🛡️🤖 Security & AI"},
     "btn_snipe_config": {"fr": "🎯 Snipe Config", "en": "🎯 Snipe Config"},

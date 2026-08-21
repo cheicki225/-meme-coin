@@ -322,11 +322,19 @@ class SniperTelegramBot:
         self.data_store.set_telegram_chat_id(update.effective_chat.id)
 
         # MODIFIÉ (demande explicite, 19 août — inspiré d'un screenshot F
-        # Project fourni, adapté à FLACH COIN) : /start affiche maintenant un
-        # véritable écran d'accueil (bannière + présentation des capacités +
-        # bouton "Démarrer") plutôt que de sauter directement au menu
-        # opérationnel. Affiché à CHAQUE /start (pas juste la toute première
-        # fois) — plus simple, et permet de le revoir à volonté.
+        # Project fourni, adapté à FLACH COIN) : /start affiche un véritable
+        # écran d'accueil (bannière + présentation des capacités + bouton
+        # "Démarrer") plutôt que de sauter directement au menu opérationnel.
+        #
+        # CORRIGÉ (précisé juste après le premier déploiement) : affiché
+        # SEULEMENT à la toute première utilisation — pas à chaque /start —
+        # via un flag persisté (state["welcome_screen_shown"], survit à un
+        # redémarrage). Les /start suivants vont directement au menu
+        # principal, comme avant l'ajout de cet écran.
+        if self.data_store.state.get("welcome_screen_shown"):
+            await self.show_main_menu(update)
+            return
+
         welcome_text = (
             "⚡ *FLACH COIN*\n_Automated Trading Intelligence_\n\n"
             "🚀 *Ton bot de copy trading Solana*\n\n"
@@ -341,6 +349,9 @@ class SniperTelegramBot:
             "Démarre ton trading automatisé dès maintenant ! 🌟"
         )
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🚀 Démarrer", callback_data="menu_main")]])
+
+        self.data_store.state["welcome_screen_shown"] = True
+        self.data_store.save()
 
         if config.BANNER_IMAGE_PATH and os.path.isfile(config.BANNER_IMAGE_PATH):
             try:
@@ -631,15 +642,62 @@ class SniperTelegramBot:
         ab = "🟢 ON" if s.get("auto_buy") else "🔴 OFF"
         as_ = "🟢 ON" if s.get("auto_sell") else "🔴 OFF"
 
+        # MODIFIÉ (demande explicite, 19 août) : cet écran avait grossi à 14
+        # boutons au fil des sessions — max 5 boutons "importants" visibles
+        # directement maintenant, le reste déplacé dans "••• Plus" (voir
+        # show_rugger_config_more). Choix des 5 faits par défaut (à ajuster
+        # si besoin) : Auto-Buy, Auto-Sell, Analyse contextuelle (nouveau),
+        # Buy Config, Sell Config — les réglages les plus consultés au
+        # quotidien, contrairement à Snipe Config/Max Loss Counter/
+        # Rename/Reset/Delete, plus rares une fois le wallet configuré.
+        #
+        # AJOUTÉ (demande explicite) : bouton d'analyse contextuel — plus
+        # besoin de retourner au menu principal et recoller l'adresse.
+        # "Analyse de dev" pour un Ruggeur (track_creation/buy_on_dev_sell),
+        # "Analyse de wallet" pour un Copy Trading (track_buy/track_sell) —
+        # le bon profil selon ce que ce wallet est réellement suivi pour.
+        is_dev_profile = entry.get("mode") in ("track_creation", "buy_on_dev_sell")
+        analyze_btn = (
+            InlineKeyboardButton(t("btn_analyze_this_dev", lang), callback_data=f"analyzethisdev_{self._sid(address)}")
+            if is_dev_profile else
+            InlineKeyboardButton(t("btn_analyze_this_wallet", lang), callback_data=f"analyzethiswallet_{self._sid(address)}")
+        )
+
         keyboard = [
             [
                 InlineKeyboardButton(f"{t('btn_autobuy', lang)}: {ab}", callback_data=f"toggle_ab_{self._sid(address)}"),
                 InlineKeyboardButton(f"{t('btn_autosell', lang)}: {as_}", callback_data=f"toggle_as_{self._sid(address)}"),
             ],
-            [InlineKeyboardButton(f"{t('btn_buymode_prefix', lang)}: {buy_mode_display}", callback_data=f"buymode_{self._sid(address)}")],
-            [InlineKeyboardButton(t("btn_tracking_mode", lang), callback_data=f"tracking_{self._sid(address)}")],
+            [analyze_btn],
             [InlineKeyboardButton(t("btn_buy_config", lang), callback_data=f"buyconfig_{self._sid(address)}")],
             [InlineKeyboardButton(t("btn_sell_config", lang), callback_data=f"sellconfig_{self._sid(address)}")],
+            [InlineKeyboardButton(t("btn_more", lang), callback_data=f"ruggermore_{self._sid(address)}")],
+            [InlineKeyboardButton(
+                t("btn_back", lang),
+                callback_data="menu_copytrade" if entry.get("mode") in ("track_buy", "track_sell") else "menu_ruggers",
+            )],
+        ]
+        await self._send_or_edit(query, text, InlineKeyboardMarkup(keyboard), edit=True)
+
+    async def show_rugger_config_more(self, query, address: str):
+        """
+        ••• Plus — AJOUTÉ (demande explicite, 19 août) : les boutons retirés
+        de l'écran principal show_rugger_config pour rester à 5 maximum.
+        Rien de fonctionnel n'a changé ici, juste déplacé.
+        """
+        lang = self.data_store.state.get("language", "fr")
+        entry = self.data_store.state["monitored_dev_wallets"].get(address)
+        if not entry:
+            await query.edit_message_text(t("rugger_not_found", lang))
+            return
+
+        s = entry["settings"]
+        buy_mode = s.get("buy_mode", "simple")
+        buy_mode_display = t("buy_mode_hardcore", lang) if buy_mode == "hardcore" else t("buy_mode_simple", lang)
+
+        keyboard = [
+            [InlineKeyboardButton(f"{t('btn_buymode_prefix', lang)}: {buy_mode_display}", callback_data=f"buymode_{self._sid(address)}")],
+            [InlineKeyboardButton(t("btn_tracking_mode", lang), callback_data=f"tracking_{self._sid(address)}")],
             [InlineKeyboardButton(t("btn_protection", lang), callback_data=f"protection_{self._sid(address)}")],
             [InlineKeyboardButton(t("btn_security_ai", lang), callback_data=f"securityai_{self._sid(address)}")],
             [InlineKeyboardButton(t("btn_snipe_config", lang), callback_data=f"snipeconfig_{self._sid(address)}")],
@@ -650,12 +708,9 @@ class SniperTelegramBot:
                 InlineKeyboardButton(t("btn_reset", lang), callback_data=f"askreset_{self._sid(address)}"),
             ],
             [InlineKeyboardButton(t("btn_delete", lang), callback_data=f"askdelete_{self._sid(address)}")],
-            [InlineKeyboardButton(
-                t("btn_back", lang),
-                callback_data="menu_copytrade" if entry.get("mode") in ("track_buy", "track_sell") else "menu_ruggers",
-            )],
+            [InlineKeyboardButton(t("btn_back", lang), callback_data=f"rugger_{self._sid(address)}")],
         ]
-        await self._send_or_edit(query, text, InlineKeyboardMarkup(keyboard), edit=True)
+        await self._send_or_edit(query, f"⚙️ *{entry.get('label', address[:8] + '...')}* — ••• Plus", InlineKeyboardMarkup(keyboard), edit=True)
 
     async def show_buy_mode(self, query, address: str):
         lang = self.data_store.state.get("language", "fr")
@@ -2738,6 +2793,19 @@ class SniperTelegramBot:
         elif data.startswith("rugger_"):
             address = data.split("_", 1)[1]
             await self.show_rugger_config(query, address)
+        elif data.startswith("ruggermore_"):
+            address = data.split("_", 1)[1]
+            await self.show_rugger_config_more(query, address)
+        elif data.startswith("analyzethiswallet_"):
+            # AJOUTÉ (demande explicite, 19 août) : lance "Analyse de wallet"
+            # directement depuis la fiche d'un wallet Copy Trading, sans
+            # retourner au menu principal ni recoller l'adresse.
+            address = data[len("analyzethiswallet_"):]
+            await self.analyze_wallet_inline(query, address)
+        elif data.startswith("analyzethisdev_"):
+            # Même principe, "Analyse de dev" pour un Ruggeur.
+            address = data[len("analyzethisdev_"):]
+            await self.analyze_dev_inline(query, address)
         elif data.startswith("toggle_ab_"):
             address = data.split("_", 2)[2]
             s = self.data_store.get_wallet_settings(address)
@@ -3616,7 +3684,19 @@ class SniperTelegramBot:
     # ══════════════════════════════════════════════════════════
 
     async def _send_or_edit(self, update_or_query, text: str, markup, edit: bool):
-        if edit and hasattr(update_or_query, "edit_message_text"):
+        # CORRIGÉ suite à un vrai bug signalé : le bouton "🚀 Démarrer" de
+        # l'écran d'accueil (envoyé en photo avec légende, voir cmd_start)
+        # ne faisait RIEN au clic — cette fonction appelait toujours
+        # edit_message_text() sans vérifier si le message d'origine était une
+        # PHOTO. Telegram refuse ce type de modification (il faut
+        # edit_message_caption pour une photo, pas edit_message_text) et
+        # rejette l'appel silencieusement côté utilisateur — aucune erreur
+        # visible, juste "rien ne se passe". Envoie maintenant un nouveau
+        # message à la place dans ce cas précis, plutôt que de tenter une
+        # édition impossible.
+        is_photo_message = edit and hasattr(update_or_query, "message") and getattr(update_or_query.message, "photo", None)
+
+        if edit and hasattr(update_or_query, "edit_message_text") and not is_photo_message:
             await update_or_query.edit_message_text(text, parse_mode="Markdown", reply_markup=markup)
         elif hasattr(update_or_query, "message") and update_or_query.message:
             await update_or_query.message.reply_text(text, parse_mode="Markdown", reply_markup=markup)
