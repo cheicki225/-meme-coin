@@ -108,7 +108,20 @@ async def _get_first_funder_via_helius_native(wallet_address: str) -> dict:
     payload = {
         "jsonrpc": "2.0", "id": 1,
         "method": "getTransfersByAddress",
-        "params": [wallet_address, {"direction": "in", "limit": 100}],
+        # CORRIGÉ suite à un vrai bug trouvé (montant à 0.0000 SOL malgré un
+        # financeur bien identifié) : sans filtre "mint", cette méthode
+        # retourne TOUS les transferts entrants — SOL ET n'importe quel
+        # token SPL confondus (confirmé dans la doc officielle Helius). Le
+        # code traitait ensuite le montant brut comme si c'était TOUJOURS du
+        # SOL (division par 1 milliard, conversion lamports). Si la toute
+        # première transaction entrante d'un wallet est en réalité un TOKEN
+        # (avec un nombre de décimales différent de 9), le calcul devenait
+        # faux — pour un token à 6 décimales par ex., le résultat est 1000x
+        # trop petit, arrondi à 0.0000 à l'affichage. Filtre maintenant
+        # explicitement sur le mint SOL natif, avec solMode="merged" (WSOL
+        # traité comme SOL natif — comportement par défaut documenté, rendu
+        # explicite ici) pour ne récupérer QUE de vrais transferts SOL.
+        "params": [wallet_address, {"direction": "in", "limit": 100, "mint": config.SOL_MINT, "solMode": "merged"}],
     }
     try:
         result = await rpc_client.rpc_post(payload, timeout=20)
@@ -139,11 +152,16 @@ async def _get_first_funder_via_helius_native(wallet_address: str) -> dict:
     sender = oldest.get("fromUserAccount") or oldest.get("from") or oldest.get("sender")
     signature = oldest.get("signature") or oldest.get("txHash")
     amount_raw = oldest.get("amount", 0)
+    # AJOUTÉ (même fix) : utilise le champ "decimals" réellement retourné par
+    # l'API plutôt que de supposer 9 (lamports) sans vérifier — filet de
+    # sécurité supplémentaire même si le filtre "mint" ci-dessus devrait déjà
+    # garantir qu'on ne voit que du SOL natif (9 décimales).
+    decimals = oldest.get("decimals", 9)
     if not sender:
         return None
 
     try:
-        amount_sol = float(amount_raw) / 1_000_000_000
+        amount_sol = float(amount_raw) / (10 ** decimals)
     except (ValueError, TypeError):
         return None
 
