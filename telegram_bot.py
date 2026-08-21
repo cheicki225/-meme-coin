@@ -1687,6 +1687,7 @@ class SniperTelegramBot:
         )
 
         keyboard = [
+            [InlineKeyboardButton("📋 Achats récents (10 tokens)", callback_data=f"walletbuys_{wallet_address}")],
             [InlineKeyboardButton("🔍 Voir le détail complet (plus lent)", callback_data=f"walletdetail_{wallet_address}")],
             [InlineKeyboardButton("← Back", callback_data="menu_main")],
         ]
@@ -1696,6 +1697,84 @@ class SniperTelegramBot:
             log.warning(f"Erreur d'affichage Markdown pour le résumé rapide de {wallet_address}: {e}")
             plain_text = text.replace("*", "").replace("`", "").replace("_", "")
             await msg.edit_text(plain_text, reply_markup=InlineKeyboardMarkup(keyboard), disable_web_page_preview=True)
+
+    async def analyze_wallet_buys_only_inline(self, query, wallet_address: str):
+        """
+        📋 Achats récents — AJOUTÉ (demande explicite, 19 août) : juste la
+        liste des 10 derniers tokens différents achetés par ce wallet, avec
+        résultat par token — SANS checklist copy trading, note en étoiles,
+        score bot, ni potentiel ATH. Plus rapide que "détail complet" (évite
+        toutes les analyses supplémentaires), mais reste plus lent que le
+        résumé GMGN (la reconstruction on-chain par token reste nécessaire
+        pour un vrai résultat par trade, GMGN ne le donne pas — voir
+        gmgn_client.py et la discussion sur wallet_activity/wallet_profits).
+        """
+        import wallet_history
+        import backtest
+
+        await query.edit_message_text(f"📋 Achats récents de `{wallet_address[:12]}...`...", parse_mode="Markdown")
+
+        if not config.HELIUS_API_KEY:
+            await query.edit_message_text("❌ Aucune clé HELIUS_API_KEY configurée.")
+            return
+
+        recent_buys = await wallet_history.get_recent_buys(wallet_address, max_results=10)
+        text = f"📋 *Achats récents — {wallet_address[:12]}...*\n\n"
+        text += f"`{len(recent_buys)}` achat(s) Pump.fun trouvé(s) (sur les 10 derniers scannés)\n"
+
+        trader_results = []
+        if len(recent_buys) >= 1:
+            for i, buy in enumerate(recent_buys):
+                try:
+                    await query.edit_message_text(
+                        f"📋 Achats récents de `{wallet_address[:12]}...`\n\n"
+                        f"Analyse : `{i + 1}/{len(recent_buys)}` en cours "
+                        f"(scan on-chain — peut prendre jusqu'à 1-2 min par token)...",
+                        parse_mode="Markdown",
+                    )
+                except Exception:
+                    pass
+
+                detail = await backtest.get_detailed_trade_info(
+                    buy["token_mint"], purchase_block_time=buy.get("block_time"), tp_pct=100.0, sl_pct=config.SL_PCT,
+                    sol_spent=buy.get("sol_spent"), tokens_received=buy.get("tokens_received"),
+                )
+
+                max_mc_filter = config.DEFAULT_WALLET_SETTINGS.get("max_market_cap")
+                entry_mc = detail.get("entry_market_cap_usd")
+                excluded_by_filter = bool(max_mc_filter and entry_mc and entry_mc > max_mc_filter)
+
+                if not excluded_by_filter:
+                    trader_results.append(detail)
+                status_icon = "🚫" if excluded_by_filter else ("✅" if detail["hit_tp"] else ("❌" if detail["hit_sl"] else "➖"))
+
+                if detail.get("symbol") and detail.get("dexscreener_url"):
+                    name_display = f"[{detail['symbol']}]({detail['dexscreener_url']})"
+                elif detail.get("symbol"):
+                    name_display = f"{detail['symbol']} — `{buy['token_mint'][:8]}...`"
+                else:
+                    name_display = f"`{buy['token_mint'][:8]}...`"
+
+                mc_display = f", MC entrée: ${detail['entry_market_cap_usd']:,.0f}" if detail.get("entry_market_cap_usd") else ""
+                filter_note = f" _(> filtre {max_mc_filter:,.0f}$, exclu)_" if excluded_by_filter else ""
+                text += f"   {status_icon} {name_display} → `{detail['result_pct']:+.1f}%` ({detail['purchase_date']}{mc_display}){filter_note}\n"
+
+        if len(trader_results) >= 3:
+            avg = sum(r["result_pct"] for r in trader_results) / len(trader_results)
+            wins = [r for r in trader_results if r["result_pct"] > 0]
+            win_rate = len(wins) / len(trader_results) * 100
+            text += f"\n*Résultat moyen* : `{avg:+.1f}%` par trade | *Win rate* : `{win_rate:.0f}%`\n"
+
+        keyboard = []
+        if len(recent_buys) >= 3:
+            keyboard.append([InlineKeyboardButton("➕ Ajouter en Copy Trading (trader)", callback_data=f"quickaddtrader_{wallet_address}")])
+        keyboard.append([InlineKeyboardButton("← Back", callback_data="menu_main")])
+        try:
+            await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard), disable_web_page_preview=True)
+        except Exception as e:
+            log.warning(f"Erreur d'affichage Markdown pour les achats récents de {wallet_address}: {e}")
+            plain_text = text.replace("*", "").replace("`", "").replace("_", "")
+            await query.edit_message_text(plain_text, reply_markup=InlineKeyboardMarkup(keyboard), disable_web_page_preview=True)
 
     async def analyze_wallet_detail_inline(self, query, wallet_address: str):
         """
@@ -2439,6 +2518,12 @@ class SniperTelegramBot:
             # rapide GMGN. Voir analyze_wallet_detail_inline.
             address = data[len("walletdetail_"):]
             await self.analyze_wallet_detail_inline(query, address)
+        elif data.startswith("walletbuys_"):
+            # AJOUTÉ (demande explicite) : juste les 10 derniers achats avec
+            # résultat par token — sans checklist/étoiles/score bot/potentiel
+            # ATH. Voir analyze_wallet_buys_only_inline.
+            address = data[len("walletbuys_"):]
+            await self.analyze_wallet_buys_only_inline(query, address)
         elif data == "checksecurity":
             user_states[chat_id] = {"awaiting": "check_security_address"}
             await query.edit_message_text("Colle l'adresse du token à vérifier (sécurité/scam).")
