@@ -185,6 +185,67 @@ async def _compute_bot_probability(trades: list) -> dict:
     return {"score": score, "label": label, "fast_buy_pct": fast_pct, "avg_speed_s": avg_speed, "sample_size": len(speeds)}
 
 
+async def _compute_ath_potential(wallet_address: str, max_tokens: int = 12) -> dict:
+    """
+    AJOUTÉ (demande explicite) : "si j'avais copié les N derniers PREMIERS
+    achats de ce wallet et vendu chacun exactement à son market cap
+    maximum atteint après l'achat, quel aurait été mon résultat global ?"
+
+    IMPORTANT — ce n'est PAS une simulation réaliste (personne ne vend
+    jamais pile au sommet, ce qui rend ce nombre systématiquement optimiste
+    par rapport à un vrai résultat de trading) : c'est une mesure du
+    POTENTIEL MAXIMAL THÉORIQUE des tokens que ce wallet choisit — utile
+    pour juger si ce wallet a l'œil pour repérer des tokens qui PEUVENT
+    beaucoup monter, indépendamment du bon moment de sortie. À comparer
+    avec le résultat réaliste de "Analyse de wallet" (TP/SL simulés), pas
+    à la place.
+
+    Ne garde que le PREMIER achat de chaque token (déduplique — racheter
+    plus tard le même token n'est pas un nouveau "pari" distinct).
+    Réutilise backtest_token_onchain_pathaware (champ max_gain_pct,
+    maintenant exposé) — même méthode de reconstruction on-chain que le
+    reste du bot, pas un calcul séparé.
+
+    Retourne None si moins de 3 tokens avec un résultat calculable, sinon
+    {"avg_gap_pct": float, "sample_size": int, "details": [{"token_mint",
+    "gap_pct"}, ...]}.
+    """
+    import wallet_history
+    import backtest
+
+    # Sur-échantillonne large puis déduplique, pour arriver à max_tokens
+    # tokens UNIQUES même si le wallet a parfois racheté le même token
+    # plusieurs fois (get_recent_buys peut retourner des doublons de mint).
+    raw_buys = await wallet_history.get_recent_buys(wallet_address, max_results=max_tokens * 3)
+
+    seen_mints = set()
+    first_buys = []
+    for buy in raw_buys:  # déjà trié du plus récent au plus ancien
+        mint = buy.get("token_mint")
+        if not mint or mint in seen_mints:
+            continue
+        seen_mints.add(mint)
+        first_buys.append(buy)
+        if len(first_buys) >= max_tokens:
+            break
+
+    if len(first_buys) < 3:
+        return None
+
+    details = []
+    for buy in first_buys:
+        result = await backtest.backtest_token_onchain_pathaware(buy["token_mint"], None, buy.get("block_time"))
+        if result is None or "max_gain_pct" not in result:
+            continue
+        details.append({"token_mint": buy["token_mint"], "gap_pct": result["max_gain_pct"]})
+
+    if len(details) < 3:
+        return None
+
+    avg_gap = sum(d["gap_pct"] for d in details) / len(details)
+    return {"avg_gap_pct": avg_gap, "sample_size": len(details), "details": details}
+
+
 class SniperTelegramBot:
     def __init__(self, data_store, notifier, paper_trader):
         self.data_store = data_store
@@ -1742,6 +1803,59 @@ class SniperTelegramBot:
                 f"   _Vitesse d'achat moyenne après création : {bot_score['avg_speed_s']:.0f}s "
                 f"({bot_score['fast_buy_pct']:.0f}% des achats en moins de 30s, sur {bot_score['sample_size']} trade(s))_\n"
             )
+
+        # AJOUTÉ (demande explicite) : "si j'avais copié ses N derniers
+        # PREMIERS achats et vendu chacun à son ATH, j'aurais gagné combien
+        # en moyenne ?" — voir _compute_ath_potential pour la méthode et ses
+        # limites (potentiel THÉORIQUE, pas un résultat réaliste).
+        try:
+            await msg.edit_text(
+                f"🔎 Analyse du wallet `{wallet_address[:12]}...`\n\n"
+                f"📐 Calcul du potentiel ATH sur les 12 derniers tokens uniques...",
+                parse_mode="Markdown",
+            )
+        except Exception:
+            pass
+        ath_potential = await _compute_ath_potential(wallet_address, max_tokens=12)
+        if ath_potential:
+            text += (
+                f"\n📐 *Potentiel ATH* (si vendu au sommet à chaque fois) : "
+                f"`{ath_potential['avg_gap_pct']:+.0f}%` en moyenne, sur les "
+                f"`{ath_potential['sample_size']}` derniers premiers achats uniques\n"
+                f"   _⚠️ Théorique — personne ne vend jamais pile au sommet. "
+                f"Mesure le potentiel des tokens choisis, pas un résultat réaliste._\n"
+            )
+
+        # AJOUTÉ (demande explicite, 19 août) : enrichissement via l'API
+        # GMGN (gmgn_client.py) — comparaison avec ce que le bot calcule
+        # déjà lui-même, pas un remplacement. N'affiche rien si
+        # GMGN_API_KEY n'est pas configurée ou si GMGN n'a aucune donnée
+        # sur ce wallet précis (silencieux, pas une erreur à afficher).
+        import gmgn_client
+        gmgn_stats = await gmgn_client.get_wallet_stats(wallet_address)
+        pnl_stat = gmgn_stats.get("pnl_stat") if gmgn_stats else None
+        if pnl_stat and pnl_stat.get("token_num", 0) > 0:
+            try:
+                realized_profit = float(gmgn_stats.get("realized_profit", 0) or 0)
+                realized_profit_pnl = float(gmgn_stats.get("realized_profit_pnl", 0) or 0)
+            except (TypeError, ValueError):
+                realized_profit, realized_profit_pnl = 0.0, 0.0
+            winrate_pct = pnl_stat.get("winrate", 0) * 100
+
+            common = gmgn_stats.get("common") or {}
+            tags = common.get("tags") or []
+            tags_display = f" — étiquettes GMGN : {', '.join(tags)}" if tags else ""
+
+            text += (
+                f"\n🌐 *Selon GMGN* (source externe, {pnl_stat['token_num']} token(s) connus)"
+                f"{tags_display}\n"
+                f"   Profit réalisé : `${realized_profit:,.2f}` (`{realized_profit_pnl:+.1f}%`) | "
+                f"Win rate : `{winrate_pct:.0f}%`\n"
+            )
+        elif not config.GMGN_API_KEY:
+            pass  # pas de clé configurée — bloc GMGN silencieusement absent, pas une erreur
+        # sinon : clé configurée mais GMGN n'a rien sur ce wallet — également silencieux,
+        # pas la peine d'encombrer l'affichage avec "aucune donnée trouvée"
 
         # CORRIGÉ suite à un vrai bug signalé : le seul bouton disponible
         # ("Ajouter en Ruggeur") ajoutait TOUJOURS le wallet en mode
