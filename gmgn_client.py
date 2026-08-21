@@ -114,3 +114,48 @@ async def get_created_tokens(wallet_address: str, chain: str = "sol") -> dict:
     propre wallet_history.get_created_tokens ne calcule pas nativement,
     seulement via un appel séparé à get_detailed_trade_info)."""
     return await _get("/v1/user/created_tokens", {"chain": chain, "wallet_address": wallet_address})
+
+
+async def get_wallet_profits(wallet_address: str, chain: str = "sol") -> dict:
+    """
+    AJOUTÉ (demande explicite, 19 août) : profit agrégé déjà calculé côté
+    serveur GMGN — realized_profit, unrealized_profit, total_profit,
+    total_cost, nombre d'achats/ventes sur la période (7 jours par défaut
+    côté GMGN). Contrairement à wallet_stats (win rate + distribution des
+    multiples), celui-ci donne le $ réalisé — utilisé ensemble dans le
+    résumé rapide de "Analyse de wallet" pour éviter la reconstruction
+    on-chain coûteuse par défaut (voir telegram_bot.analyze_wallet_inline).
+
+    Confirmé "Exist auth" (clé API seule, pas de clé privée) malgré la
+    méthode POST (contrairement aux autres endpoints GET de ce module) —
+    vérifié directement dans le code source de gmgn-cli, pas supposé.
+
+    Retourne {"list": [...]} — un objet par wallet interrogé (supporte les
+    requêtes par lot côté GMGN, mais ce client n'interroge qu'un wallet à
+    la fois pour l'instant).
+    """
+    if not config.GMGN_API_KEY:
+        return {}
+
+    query = _auth_query()
+    headers = {
+        "X-APIKEY": config.GMGN_API_KEY,
+        "Content-Type": "application/json",
+        "User-Agent": "flach-coin-bot/1.0",
+    }
+    body = {"chain": chain, "wallet_addresses": [wallet_address]}
+
+    try:
+        async with aiohttp.ClientSession(connector=rpc_client.get_http_connector(), connector_owner=False) as session:
+            async with session.post(
+                f"{GMGN_BASE_URL}/v1/user/wallet_profits", headers=headers, params=query, json=body,
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                if resp.status != 200:
+                    log.warning(f"⚠️ GMGN — wallet_profits a répondu {resp.status}")
+                    return {}
+                data = await resp.json()
+                return data.get("data", data) if isinstance(data, dict) else data
+    except Exception as e:
+        log.warning(f"⚠️ GMGN — erreur requête wallet_profits: {e}")
+        return {}

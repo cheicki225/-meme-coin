@@ -1589,14 +1589,22 @@ class SniperTelegramBot:
 
     async def analyze_wallet_inline(self, update: Update, wallet_address: str):
         """
-        🔎 Analyse de wallet — profil complet d'une adresse, combinant tout
-        ce que le bot sait faire : financement, statut dev, statut trader,
-        fresh wallet. Contrairement à "Analyser un coin" (part d'un TOKEN),
-        celle-ci part directement d'un WALLET, sans token de départ.
+        🔎 Analyse de wallet — MODIFIÉ (demande explicite, 19 août) : affiche
+        maintenant un résumé RAPIDE d'abord (financement + fresh wallet,
+        toujours calculés nous-mêmes, + résumé GMGN si disponible — 2 appels
+        API légers, pas de RPC), avant de proposer le détail complet
+        (reconstruction on-chain token par token) comme une action SÉPARÉE,
+        à la demande, via le bouton "🔍 Voir le détail complet".
+
+        Avant ce changement, le détail complet (jusqu'à 10 tokens décodés
+        on-chain, potentiellement plusieurs minutes) se lançait
+        AUTOMATIQUEMENT à chaque "Analyse de wallet" — coûteux en RPC même
+        pour juste vérifier rapidement un wallet. Voir
+        analyze_wallet_detail_inline pour la suite (ex-contenu de cette
+        fonction, inchangé).
         """
         import fund_tracer
-        import wallet_history
-        import backtest
+        import gmgn_client
 
         msg = await update.message.reply_text(f"🔎 Analyse du wallet `{wallet_address[:12]}...`...", parse_mode="Markdown")
 
@@ -1604,7 +1612,7 @@ class SniperTelegramBot:
             await msg.edit_text("❌ Aucune clé HELIUS_API_KEY configurée.")
             return
 
-        # ── Financement + fresh wallet ──────────────────────────────────
+        # ── Financement + fresh wallet (toujours nous-mêmes, rapide) ─────
         trace = await fund_tracer.get_first_funder(wallet_address)
         is_fresh = await fund_tracer.is_fresh_wallet(wallet_address)
 
@@ -1622,13 +1630,82 @@ class SniperTelegramBot:
 
         text += f"🆕 Fresh wallet : {'✅ Oui' if is_fresh else '❌ Non (déjà actif avant)'}\n\n"
 
+        # ── Résumé GMGN (rapide — win rate, profit, tags, sans RPC) ──────
+        gmgn_stats = await gmgn_client.get_wallet_stats(wallet_address)
+        gmgn_profits_resp = await gmgn_client.get_wallet_profits(wallet_address)
+        gmgn_profits_list = gmgn_profits_resp.get("list") if gmgn_profits_resp else None
+        gmgn_profits = gmgn_profits_list[0] if gmgn_profits_list else None
+
+        pnl_stat = gmgn_stats.get("pnl_stat") if gmgn_stats else None
+        has_gmgn_data = bool(pnl_stat and pnl_stat.get("token_num", 0) > 0)
+
+        if has_gmgn_data:
+            winrate_pct = pnl_stat.get("winrate", 0) * 100
+            common = gmgn_stats.get("common") or {}
+            tags = common.get("tags") or []
+            tags_display = f" — étiquettes GMGN : {', '.join(tags)}" if tags else ""
+
+            text += (
+                f"🌐 *Résumé GMGN* (source externe, {pnl_stat['token_num']} token(s) connus)"
+                f"{tags_display}\n"
+                f"   Win rate : `{winrate_pct:.0f}%`\n"
+            )
+            if gmgn_profits:
+                try:
+                    total_profit = float(gmgn_profits.get("total_profit", 0) or 0)
+                    total_cost = float(gmgn_profits.get("total_cost", 0) or 0)
+                except (TypeError, ValueError):
+                    total_profit, total_cost = 0.0, 0.0
+                profit_pct = (total_profit / total_cost * 100) if total_cost else 0
+                text += (
+                    f"   Profit réalisé (7j) : `${total_profit:,.2f}` (`{profit_pct:+.1f}%`) — "
+                    f"`{gmgn_profits.get('buy', 0)}` achat(s), `{gmgn_profits.get('sell', 0)}` vente(s)\n"
+                )
+            text += "\n"
+        elif not config.GMGN_API_KEY:
+            text += "🌐 _Résumé GMGN indisponible (GMGN_API_KEY non configurée)._\n\n"
+        else:
+            text += "🌐 _GMGN n'a aucune donnée sur ce wallet précis._\n\n"
+
+        text += (
+            "_Résumé rapide seulement — aucune reconstruction on-chain n'a été faite. "
+            "Pour le détail token par token (plus lent), utilise le bouton ci-dessous._"
+        )
+
+        keyboard = [
+            [InlineKeyboardButton("🔍 Voir le détail complet (plus lent)", callback_data=f"walletdetail_{wallet_address}")],
+            [InlineKeyboardButton("← Back", callback_data="menu_main")],
+        ]
+        try:
+            await msg.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard), disable_web_page_preview=True)
+        except Exception as e:
+            log.warning(f"Erreur d'affichage Markdown pour le résumé rapide de {wallet_address}: {e}")
+            plain_text = text.replace("*", "").replace("`", "").replace("_", "")
+            await msg.edit_text(plain_text, reply_markup=InlineKeyboardMarkup(keyboard), disable_web_page_preview=True)
+
+    async def analyze_wallet_detail_inline(self, query, wallet_address: str):
+        """
+        🔍 Détail complet d'un wallet — reconstruction on-chain token par
+        token (créations ET achats), checklist copy trading, note en
+        étoiles, score bot, potentiel ATH. EX-CONTENU de analyze_wallet_inline
+        avant sa scission (19 août) — inchangé, juste déclenché à la
+        demande maintenant (bouton "🔍 Voir le détail complet") plutôt
+        qu'automatiquement à chaque analyse. Voir analyze_wallet_inline
+        pour le résumé rapide qui précède celle-ci.
+        """
+        import wallet_history
+        import backtest
+        import gmgn_client
+
+        await query.edit_message_text(f"🔍 Détail complet du wallet `{wallet_address[:12]}...`...", parse_mode="Markdown")
+
+        if not config.HELIUS_API_KEY:
+            await query.edit_message_text("❌ Aucune clé HELIUS_API_KEY configurée.")
+            return
+
+        text = f"🔍 *Détail complet — {wallet_address[:12]}...*\n\n"
+
         # ── Statut DEV (a-t-il créé des tokens ?) ────────────────────────
-        # CORRIGÉ suite à une demande explicite : cette section n'affichait
-        # qu'un résumé compact en une ligne (ratio + résultat cumulé, via
-        # backtest_wallet — l'ancienne approximation h24), alors que la
-        # section trader juste en dessous liste chaque token individuellement
-        # avec la vraie reconstruction on-chain (get_detailed_trade_info).
-        # Même traitement ici pour les deux catégories.
         created_tokens = await wallet_history.get_created_tokens(wallet_address, max_results=10)
         text += f"🛠️ *Statut développeur* : `{len(created_tokens)}` token(s) créé(s) (sur les 10 derniers scannés)\n"
 
@@ -1636,8 +1713,8 @@ class SniperTelegramBot:
         for i, ct in enumerate(created_tokens):
             if len(created_tokens) > 1:
                 try:
-                    await msg.edit_text(
-                        f"🔎 Analyse du wallet `{wallet_address[:12]}...`\n\n"
+                    await query.edit_message_text(
+                        f"🔍 Détail complet du wallet `{wallet_address[:12]}...`\n\n"
                         f"🛠️ Analyse des créations : `{i + 1}/{len(created_tokens)}` en cours...",
                         parse_mode="Markdown",
                     )
@@ -1664,65 +1741,26 @@ class SniperTelegramBot:
             text += f"   *Résultat moyen* : `{avg_dev:+.1f}%` par token | *Win rate* : `{win_rate_dev:.0f}%`\n"
 
         # ── Statut TRADER (a-t-il acheté des tokens ?) ───────────────────
-        # Détail token par token, comme analyze_copytrade_candidate.py dans
-        # le terminal — pas juste une moyenne condensée. Nom + date ajoutés
-        # (suite à une demande de plus de détail) ; pour VRAIMENT tous les
-        # détails (market cap, liquidité, volume...), voir le script terminal
-        # analyze_wallet_detailed.py — un message Telegram a une limite de
-        # longueur qui ne permettrait pas d'afficher tout ça pour 10 tokens.
-        #
-        # AJOUTÉ (demande explicite) : MC d'entrée EXACT (calculé depuis les
-        # vraies données on-chain de la transaction d'achat, pas une
-        # approximation) + nom du token en LIEN CLIQUABLE vers DexScreener.
         recent_buys = await wallet_history.get_recent_buys(wallet_address, max_results=10)
         text += f"\n📈 *Statut trader* : `{len(recent_buys)}` achat(s) Pump.fun trouvé(s) (sur les 10 derniers scannés)\n"
-        # CORRIGÉ suite à un vrai crash signalé (UnboundLocalError) :
-        # trader_results n'était initialisé qu'À L'INTÉRIEUR du bloc
-        # "if len(recent_buys) >= 1:", mais utilisé plus bas SANS cette
-        # condition (ligne "if len(trader_results) >= 3:") — un wallet sans
-        # AUCUN achat trouvé faisait planter toute la fonction en silence.
         trader_results = []
         if len(recent_buys) >= 1:
-            # CORRIGÉ : affichait rien du tout en dessous de 3 achats trouvés
-            # — trop strict, un wallet avec juste 1-2 achats mérite quand
-            # même de voir le détail. Seule la moyenne/win rate (qui n'a de
-            # sens statistique qu'avec un minimum d'échantillon) garde le
-            # seuil de 3.
             for i, buy in enumerate(recent_buys):
-                # AJOUTÉ suite à un vrai signalement : la reconstruction
-                # on-chain (backtest.py, méthode "MC max après entrée") peut
-                # décoder des dizaines/centaines de transactions PAR TOKEN
-                # via le rate limiter global (~5-6 req/s) — jusqu'à plusieurs
-                # minutes pour 10 tokens. Sans retour, le message Telegram
-                # restait figé sur "Analyse en cours..." tout ce temps,
-                # donnant l'impression que le bot était bloqué/planté alors
-                # qu'il tournait normalement. Édite maintenant le message à
-                # chaque token pour montrer une vraie progression.
                 try:
-                    await msg.edit_text(
-                        f"🔎 Analyse du wallet `{wallet_address[:12]}...`\n\n"
+                    await query.edit_message_text(
+                        f"🔍 Détail complet du wallet `{wallet_address[:12]}...`\n\n"
                         f"📈 Analyse des achats : `{i + 1}/{len(recent_buys)}` en cours "
                         f"(scan on-chain — peut prendre jusqu'à 1-2 min par token)...",
                         parse_mode="Markdown",
                     )
                 except Exception:
-                    pass  # édition ratée (rate-limit Telegram, message identique...) — pas bloquant, on continue
+                    pass
 
                 detail = await backtest.get_detailed_trade_info(
                     buy["token_mint"], purchase_block_time=buy.get("block_time"), tp_pct=100.0, sl_pct=config.SL_PCT,
                     sol_spent=buy.get("sol_spent"), tokens_received=buy.get("tokens_received"),
                 )
 
-                # CORRIGÉ suite à un vrai signalement : cette analyse comptait
-                # TOUS les achats du wallet dans la moyenne/win rate, y
-                # compris ceux au-dessus de max_market_cap (6500$ par défaut,
-                # voir config.DEFAULT_WALLET_SETTINGS) — un filtre qui n'est
-                # vérifié QUE dans paper_trader.py au moment d'un achat réel,
-                # jamais ici. Résultat : des trades que le bot n'aurait
-                # JAMAIS achetés en LIVE (ex: MC entrée $13-17K alors que le
-                # filtre coupe à $6500) faussaient l'évaluation "ce wallet
-                # vaut-il la peine d'être copié ?". Marqués maintenant à part
-                # et exclus du calcul.
                 max_mc_filter = config.DEFAULT_WALLET_SETTINGS.get("max_market_cap")
                 entry_mc = detail.get("entry_market_cap_usd")
                 excluded_by_filter = bool(max_mc_filter and entry_mc and entry_mc > max_mc_filter)
@@ -1731,8 +1769,6 @@ class SniperTelegramBot:
                     trader_results.append(detail)
                 status_icon = "🚫" if excluded_by_filter else ("✅" if detail["hit_tp"] else ("❌" if detail["hit_sl"] else "➖"))
 
-                # Nom cliquable si on a un symbole ET une URL DexScreener,
-                # repli sur l'adresse tronquée sinon (comme avant).
                 if detail.get("symbol") and detail.get("dexscreener_url"):
                     name_display = f"[{detail['symbol']}]({detail['dexscreener_url']})"
                 elif detail.get("symbol"):
@@ -1751,16 +1787,10 @@ class SniperTelegramBot:
             text += f"\n   *Résultat moyen* : `{avg:+.1f}%` par trade | *Win rate* : `{win_rate:.0f}%`\n"
             text += f"   _Pour tous les détails (market cap, liquidité, volume...) : `python analyze_wallet_detailed.py --wallet {wallet_address}`_\n"
 
-            # AJOUTÉ suite à une demande explicite : intègre les étapes D,
-            # E, F, G de la checklist copy trading A-H (copytrade_checklist.py)
-            # directement dans "Analyse de wallet". B, C1, C2 ne sont PAS
-            # incluses ici — elles ont besoin d'un TOKEN de référence précis
-            # (ex: "sur ce rug précis, cet achat était-il bundlé ?"), ce qui
-            # ne correspond pas à une vue d'ensemble du wallet comme celle-ci.
             try:
                 import copytrade_checklist
-                await msg.edit_text(
-                    f"🔎 Analyse du wallet `{wallet_address[:12]}...`\n\n📋 Checklist copy trading en cours (D, E, F, G)...",
+                await query.edit_message_text(
+                    f"🔍 Détail complet du wallet `{wallet_address[:12]}...`\n\n📋 Checklist copy trading en cours (D, E, F, G)...",
                     parse_mode="Markdown",
                 )
                 freq = await copytrade_checklist.check_buy_frequency(wallet_address)
@@ -1781,10 +1811,6 @@ class SniperTelegramBot:
                 log.warning(f"Erreur checklist copy trading pour {wallet_address}: {e}")
                 text += "\n📋 _Checklist copy trading indisponible (erreur pendant le calcul)._\n"
 
-        # AJOUTÉ suite à une demande explicite : note globale de 1 à 5
-        # étoiles, combinant TOUS les trades connus (créations ET achats
-        # confondus) — voir _compute_star_rating() pour la formule complète,
-        # transparente et documentée.
         all_results = dev_results + trader_results
         rating = _compute_star_rating(all_results)
         if rating:
@@ -1793,9 +1819,6 @@ class SniperTelegramBot:
         else:
             text += f"\n☆☆☆☆☆ *Note globale* : _pas assez de trades connus (minimum 3) pour noter ce wallet_\n"
 
-        # AJOUTÉ (demande explicite) : score indicatif "probabilité bot" —
-        # voir _compute_bot_probability. Réutilise recent_buys (déjà
-        # récupéré ci-dessus), un appel léger de plus par trade.
         bot_score = await _compute_bot_probability(recent_buys)
         if bot_score:
             text += (
@@ -1804,13 +1827,9 @@ class SniperTelegramBot:
                 f"({bot_score['fast_buy_pct']:.0f}% des achats en moins de 30s, sur {bot_score['sample_size']} trade(s))_\n"
             )
 
-        # AJOUTÉ (demande explicite) : "si j'avais copié ses N derniers
-        # PREMIERS achats et vendu chacun à son ATH, j'aurais gagné combien
-        # en moyenne ?" — voir _compute_ath_potential pour la méthode et ses
-        # limites (potentiel THÉORIQUE, pas un résultat réaliste).
         try:
-            await msg.edit_text(
-                f"🔎 Analyse du wallet `{wallet_address[:12]}...`\n\n"
+            await query.edit_message_text(
+                f"🔍 Détail complet du wallet `{wallet_address[:12]}...`\n\n"
                 f"📐 Calcul du potentiel ATH sur les 12 derniers tokens uniques...",
                 parse_mode="Markdown",
             )
@@ -1826,12 +1845,6 @@ class SniperTelegramBot:
                 f"Mesure le potentiel des tokens choisis, pas un résultat réaliste._\n"
             )
 
-        # AJOUTÉ (demande explicite, 19 août) : enrichissement via l'API
-        # GMGN (gmgn_client.py) — comparaison avec ce que le bot calcule
-        # déjà lui-même, pas un remplacement. N'affiche rien si
-        # GMGN_API_KEY n'est pas configurée ou si GMGN n'a aucune donnée
-        # sur ce wallet précis (silencieux, pas une erreur à afficher).
-        import gmgn_client
         gmgn_stats = await gmgn_client.get_wallet_stats(wallet_address)
         pnl_stat = gmgn_stats.get("pnl_stat") if gmgn_stats else None
         if pnl_stat and pnl_stat.get("token_num", 0) > 0:
@@ -1841,57 +1854,30 @@ class SniperTelegramBot:
             except (TypeError, ValueError):
                 realized_profit, realized_profit_pnl = 0.0, 0.0
             winrate_pct = pnl_stat.get("winrate", 0) * 100
-
             common = gmgn_stats.get("common") or {}
             tags = common.get("tags") or []
             tags_display = f" — étiquettes GMGN : {', '.join(tags)}" if tags else ""
-
             text += (
                 f"\n🌐 *Selon GMGN* (source externe, {pnl_stat['token_num']} token(s) connus)"
                 f"{tags_display}\n"
                 f"   Profit réalisé : `${realized_profit:,.2f}` (`{realized_profit_pnl:+.1f}%`) | "
                 f"Win rate : `{winrate_pct:.0f}%`\n"
             )
-        elif not config.GMGN_API_KEY:
-            pass  # pas de clé configurée — bloc GMGN silencieusement absent, pas une erreur
-        # sinon : clé configurée mais GMGN n'a rien sur ce wallet — également silencieux,
-        # pas la peine d'encombrer l'affichage avec "aucune donnée trouvée"
 
-        # CORRIGÉ suite à un vrai bug signalé : le seul bouton disponible
-        # ("Ajouter en Ruggeur") ajoutait TOUJOURS le wallet en mode
-        # track_creation (dev-sniping), même pour un wallet qui n'a créé
-        # AUCUN token mais a un historique d'achats rentable — càd
-        # exactement le profil "copy trading", pas "dev à tracker". Le
-        # bouton proposé dépend maintenant du VRAI profil observé plus haut :
-        # dev (≥3 créations) → Ruggeur (track_creation)
-        # trader (≥3 achats) → Copy Trading (track_buy)
-        # Les deux peuvent apparaître si le wallet a les deux profils.
         keyboard = []
         if len(created_tokens) >= 3:
             keyboard.append([InlineKeyboardButton("➕ Ajouter en Ruggeur (dev)", callback_data=f"quickadddev_{wallet_address}")])
         if len(recent_buys) >= 3:
             keyboard.append([InlineKeyboardButton("➕ Ajouter en Copy Trading (trader)", callback_data=f"quickaddtrader_{wallet_address}")])
         if not keyboard:
-            # Ni assez de créations ni assez d'achats pour trancher — repli
-            # sur l'ancien comportement (track_creation) plutôt que de ne
-            # proposer aucun bouton du tout.
             keyboard.append([InlineKeyboardButton("➕ Ajouter en Ruggeur", callback_data=f"quickadddev_{wallet_address}")])
         keyboard.append([InlineKeyboardButton("← Back", callback_data="menu_main")])
-        # CORRIGÉ suite à une recherche systématique de bugs — cette fonction
-        # (la plus utilisée et la plus complexe du bot) n'avait JAMAIS reçu
-        # le filet de sécurité déjà présent dans analyze_coin_inline,
-        # check_security_inline et check_ai_score_inline. Risque réel : les
-        # labels générés par l'alerte retrait SOL ("retrait_XXXX...") et le
-        # transfert important ("transfert_XXXX...") contiennent des
-        # underscores non échappés — exactement le genre de caractère qui
-        # casse le Markdown Telegram sans prévenir, provoquant le même
-        # silence total qu'on a déjà chassé plusieurs fois dans cette session.
         try:
-            await msg.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard), disable_web_page_preview=True)
+            await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard), disable_web_page_preview=True)
         except Exception as e:
-            log.warning(f"Erreur d'affichage Markdown pour l'analyse de wallet {wallet_address}: {e}")
+            log.warning(f"Erreur d'affichage Markdown pour le détail de {wallet_address}: {e}")
             plain_text = text.replace("*", "").replace("`", "").replace("_", "")
-            await msg.edit_text(plain_text, reply_markup=InlineKeyboardMarkup(keyboard), disable_web_page_preview=True)
+            await query.edit_message_text(plain_text, reply_markup=InlineKeyboardMarkup(keyboard), disable_web_page_preview=True)
 
     async def analyze_dev_inline(self, update: Update, dev_address: str):
         """
@@ -2432,6 +2418,13 @@ class SniperTelegramBot:
         elif data == "analyzedev":
             user_states[chat_id] = {"awaiting": "analyze_dev_address"}
             await query.edit_message_text("Colle l'adresse du DEV à analyser (jusqu'à 12 dernières créations + statut fresh wallet).")
+        elif data.startswith("walletdetail_"):
+            # AJOUTÉ (demande explicite, 19 août) : déclenche la reconstruction
+            # on-chain complète (ex-comportement automatique de "Analyse de
+            # wallet") — maintenant à la demande seulement, depuis le résumé
+            # rapide GMGN. Voir analyze_wallet_detail_inline.
+            address = data[len("walletdetail_"):]
+            await self.analyze_wallet_detail_inline(query, address)
         elif data == "checksecurity":
             user_states[chat_id] = {"awaiting": "check_security_address"}
             await query.edit_message_text("Colle l'adresse du token à vérifier (sécurité/scam).")
