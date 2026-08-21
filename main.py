@@ -223,6 +223,25 @@ class SniperBot:
                 log.info(f"⏭️  Copy trade ignoré ({label}) — token âgé de {age:.1f}min > max {max_age}min.")
                 return
 
+        # AJOUTÉ (demande explicite, 19 août) : n'achète PAS quand ce wallet
+        # Copy Trading vient de créer LUI-MÊME le token qu'il "achète" —
+        # schéma create+buy atomique très courant chez les devs. Copier ça
+        # reviendrait à sniper toutes ses créations depuis un wallet en
+        # track_buy — c'est précisément le rôle de track_creation (Ruggeur),
+        # pas de Copy Trading. Voir wallet_history.wallet_created_this_token.
+        if await wallet_history.wallet_created_this_token(wallet_address, token_mint, signature):
+            log.info(f"⏭️  Copy trade ignoré ({label}) — c'est sa propre création (Copy Trading ne sniper pas les créations).")
+            return
+
+        # AJOUTÉ (demande explicite, 19 août) : n'achète pas si le token a été
+        # créé par un dev sur la liste des devs bloqués — cette liste est
+        # indépendante du monitoring, un dev bloqué n'a pas besoin d'être un
+        # wallet suivi par le bot. Voir monitoring_list.is_dev_blocked.
+        token_creator = await wallet_history.get_token_creator(token_mint)
+        if token_creator and self.data_store.is_dev_blocked(token_creator):
+            log.info(f"⏭️  Copy trade ignoré ({label}) — token créé par un dev bloqué ({token_creator[:8]}...).")
+            return
+
         # AJOUTÉ (demande explicite) : market cap d'entrée du wallet SOURCE,
         # calculé avec la MÊME méthode (prix on-chain × taux SOL/USD en
         # direct) que celle déjà utilisée pour notre propre entrée — pas une

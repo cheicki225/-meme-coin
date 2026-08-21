@@ -543,12 +543,19 @@ async def _get_raw_transaction(signature: str, max_retries: int = 4) -> dict:
     return {}
 
 
-def _find_pump_fun_create(tx: dict, expected_creator: str) -> dict:
+def _find_pump_fun_create(tx: dict, expected_creator: str = None) -> dict:
     """
     Cherche dans les instructions de la transaction (de premier niveau ET
-    imbriquées/CPI) une instruction "create" OU "create_v2" de Pump.fun dont
-    le créateur correspond à expected_creator. Retourne
-    {"mint": str, "block_time": int | None} ou None si non trouvé.
+    imbriquées/CPI) une instruction "create" OU "create_v2" de Pump.fun.
+    Retourne {"mint": str, "creator": str, "block_time": int | None} ou
+    None si non trouvé.
+
+    expected_creator : AJOUTÉ optionnel (demande explicite, 19 août —
+    était obligatoire avant) — si fourni, ne retourne un résultat QUE si le
+    créateur correspond (usage historique : "ce wallet a-t-il créé CE
+    token ?"). Si omis (None), retourne le créateur trouvé QUEL QU'IL SOIT
+    — nouvel usage : "qui a créé ce token ?" (voir get_token_creator,
+    utilisé pour vérifier une liste de devs bloqués en Copy Trading).
 
     Le mint est TOUJOURS à l'index 0 des comptes, dans les deux versions.
     L'index du créateur diffère : 7 pour "create" (legacy, SPL standard),
@@ -596,12 +603,71 @@ def _find_pump_fun_create(tx: dict, expected_creator: str) -> dict:
         mint = accounts[0]
         creator = accounts[creator_index]
 
-        if creator != expected_creator:
+        if expected_creator is not None and creator != expected_creator:
             continue
 
-        return {"mint": mint, "block_time": tx.get("blockTime")}
+        return {"mint": mint, "creator": creator, "block_time": tx.get("blockTime")}
 
     return None
+
+
+async def wallet_created_this_token(wallet_address: str, token_mint: str, signature: str) -> bool:
+    """
+    AJOUTÉ (demande explicite, 19 août) : vérifie si CETTE transaction
+    précise contient une instruction de création Pump.fun ("create" ou
+    "create_v2") par ce wallet, pour CE token — càd si le wallet vient de
+    créer le token qu'il "achète" dans cette même transaction (schéma
+    create+buy atomique, très courant chez les devs qui achètent leur
+    propre lancement).
+
+    Utilisé pour exclure ces achats du Copy Trading (mode track_buy) : un
+    dev qui achète son PROPRE token à la création n'est pas un signal de
+    trading à copier — c'est juste sa propre création. Le mode dédié pour
+    sniper les créations d'un dev est track_creation (Ruggeur), pas
+    track_buy — voir main.on_copytrade_buy.
+
+    Réutilise _find_pump_fun_create (déjà éprouvée, affinée plusieurs fois
+    cette session — discriminant create/create_v2, index créateur, scan des
+    innerInstructions/CPI) — nécessite un appel RPC brut séparé
+    (getTransaction, pas l'API Enhanced déjà utilisée par
+    copytrade_listener.py, formats incompatibles) — un coût RPC de plus par
+    signal de copy trade, mais borné et non répété.
+    """
+    tx = await _get_raw_transaction(signature)
+    if not tx:
+        return False  # échec RPC — fail-open (n'exclut pas l'achat) plutôt que de bloquer le copy trading sur un doute
+
+    creation = _find_pump_fun_create(tx, expected_creator=wallet_address)
+    return bool(creation and creation.get("mint") == token_mint)
+
+
+async def get_token_creator(token_mint: str) -> str:
+    """
+    AJOUTÉ (demande explicite, 19 août) : trouve QUI a créé ce token — sens
+    inverse de get_created_tokens (qui part d'un dev connu). Remonte à la
+    toute première signature du mint (sa création, quasi certainement),
+    puis en extrait le créateur via _find_pump_fun_create (sans filtre —
+    voir son docstring).
+
+    Utilisé pour la liste de devs bloqués en Copy Trading : un dev qu'on
+    veut éviter n'est pas forcément dans le monitoring du bot — voir
+    main.on_copytrade_buy et monitoring_list.is_dev_blocked.
+
+    Retourne l'adresse du créateur, ou None si indéterminable (RPC en
+    échec, token pas créé via Pump.fun, ou trop de signatures pour trouver
+    la toute première avec la limite utilisée ici).
+    """
+    signatures = await _get_signatures(token_mint, limit=50)
+    if not signatures:
+        return None
+
+    oldest = signatures[-1]  # getSignaturesForAddress trie du plus récent au plus ancien
+    tx = await _get_raw_transaction(oldest["signature"])
+    if not tx:
+        return None
+
+    creation = _find_pump_fun_create(tx, expected_creator=None)
+    return creation.get("creator") if creation else None
 
 
 async def check_sell_regularity(dev_address: str, tokens: list) -> dict:

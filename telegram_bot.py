@@ -2285,9 +2285,35 @@ class SniperTelegramBot:
             ],
             [InlineKeyboardButton("⚙️ Settings", callback_data="menu_settings")],
             [InlineKeyboardButton("📋 Presets", callback_data="list_presets")],
+            [InlineKeyboardButton("🚫 Devs bloqués", callback_data="menu_blockeddevs")],
             [InlineKeyboardButton("💾 Backups", callback_data="menu_backups")],
             [InlineKeyboardButton("← Back", callback_data="menu_main")],
         ]
+        await self._send_or_edit(query, text, InlineKeyboardMarkup(keyboard), edit=True)
+
+    async def show_blocked_devs_menu(self, query):
+        """
+        🚫 Devs bloqués — AJOUTÉ (demande explicite, 19 août) : liste de
+        devs à éviter en Copy Trading, indépendante du monitoring — un dev
+        bloqué n'a pas besoin d'être un wallet suivi par le bot. Voir
+        monitoring_list.add_blocked_dev/is_dev_blocked et
+        main.on_copytrade_buy pour l'application réelle.
+        """
+        blocked = self.data_store.list_blocked_devs()
+        text = (
+            "🚫 *Devs bloqués*\n\n"
+            "_Un dev sur cette liste peut être n'importe quelle adresse — pas besoin "
+            "qu'il soit déjà suivi par le bot. Tout achat en Copy Trading sur un token "
+            "créé par un dev de cette liste est automatiquement ignoré, quel que soit "
+            "le wallet suivi qui l'achète._\n\n"
+            f"`{len(blocked)}` dev(s) bloqué(s)."
+        )
+        keyboard = [[InlineKeyboardButton("➕ Bloquer un dev", callback_data="addblockeddev")]]
+        for address, info in blocked.items():
+            keyboard.append([InlineKeyboardButton(
+                f"🗑 {info.get('label', address[:8] + '...')}", callback_data=f"unblockdev_{address}",
+            )])
+        keyboard.append([InlineKeyboardButton("← Back", callback_data="menu_more")])
         await self._send_or_edit(query, text, InlineKeyboardMarkup(keyboard), edit=True)
 
     async def show_backups_menu(self, query):
@@ -2771,6 +2797,19 @@ class SniperTelegramBot:
             await query.edit_message_text("Colle l'adresse du wallet à ajouter au monitoring.")
         elif data == "list_presets":
             await self.show_presets(query)
+        elif data == "menu_blockeddevs":
+            await self.show_blocked_devs_menu(query)
+        elif data == "addblockeddev":
+            user_states[chat_id] = {"awaiting": "add_blocked_dev_address"}
+            await query.edit_message_text(
+                "🚫 Colle l'adresse du dev à bloquer — peut être n'importe quelle adresse, "
+                "pas besoin qu'elle soit déjà suivie par le bot."
+            )
+        elif data.startswith("unblockdev_"):
+            address = data[len("unblockdev_"):]
+            self.data_store.remove_blocked_dev(address)
+            await query.answer("✅ Dev débloqué.")
+            await self.show_blocked_devs_menu(query)
         elif data == "menu_backups":
             await self.show_backups_menu(query)
         elif data == "backupnow":
@@ -3126,6 +3165,19 @@ class SniperTelegramBot:
                 parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard),
             )
             user_states.pop(chat_id, None)
+
+        elif awaiting == "add_blocked_dev_address":
+            if not _is_solana_address(text):
+                await update.message.reply_text("Adresse invalide, réessaie.")
+                return
+            user_states.pop(chat_id, None)
+            self.data_store.add_blocked_dev(text)
+            await update.message.reply_text(
+                f"🚫 Dev bloqué : `{text[:8]}...`\n\n"
+                "Tout achat en Copy Trading sur un token créé par ce dev sera désormais ignoré, "
+                "quel que soit le wallet suivi qui l'achète.",
+                parse_mode="Markdown",
+            )
 
         elif awaiting == "add_copytrade_address":
             if not _is_solana_address(text):

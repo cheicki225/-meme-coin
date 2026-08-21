@@ -156,6 +156,11 @@ class DataStore:
             "referral": dict(config.DEFAULT_REFERRAL_STATE),
             "linked_wallet_groups": {},
             "pending_dev_sell_watch": {},
+            # AJOUTÉ (demande explicite, 19 août) : liste de devs à éviter en
+            # Copy Trading, indépendante du monitoring — un dev bloqué n'a
+            # PAS besoin d'être un wallet suivi par le bot. Voir
+            # add_blocked_dev/remove_blocked_dev/is_dev_blocked ci-dessous.
+            "blocked_devs": {},                 # {address: {label, added_at}}
         }
 
     def save(self):
@@ -658,6 +663,35 @@ class DataStore:
         }
         self.save()
         log.info(f"➕ Protection ajoutée : {label} ({target_type}, {address[:8]}...)")
+
+    # ══════════════════════════════════════════════════════════
+    # DEVS BLOQUÉS (Copy Trading)
+    # ══════════════════════════════════════════════════════════
+    # AJOUTÉ (demande explicite, 19 août) : liste de devs à éviter en Copy
+    # Trading, indépendante du monitoring — un dev bloqué n'a pas besoin
+    # d'être un wallet suivi par le bot (peut être "un dev aléatoire",
+    # jamais ajouté nulle part ailleurs). Voir main.on_copytrade_buy pour
+    # l'application réelle du filtre.
+
+    def add_blocked_dev(self, address: str, label: str = None):
+        import time
+        self.state["blocked_devs"][address] = {
+            "label": label or address[:8] + "...",
+            "added_at": time.time(),
+        }
+        self.save()
+        log.info(f"🚫 Dev bloqué ajouté : {address[:8]}...")
+
+    def remove_blocked_dev(self, address: str):
+        self.state["blocked_devs"].pop(address, None)
+        self.save()
+        log.info(f"✅ Dev débloqué : {address[:8]}...")
+
+    def is_dev_blocked(self, address: str) -> bool:
+        return address in self.state.get("blocked_devs", {})
+
+    def list_blocked_devs(self) -> dict:
+        return self.state.get("blocked_devs", {})
 
     def remove_protection_target(self, label: str):
         self.state["protection_targets"].pop(label, None)
