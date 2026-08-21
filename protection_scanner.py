@@ -179,8 +179,15 @@ class ProtectionScanner:
                     continue
                 amount_sol = amount_lamports / 1_000_000_000
 
-                child_settings = self._resolve_child_settings(target)
-                parent_ranges = child_settings.get("transfer_ranges") if child_settings else None
+                # AJOUTÉ (demande explicite, 19 août) : un intervalle défini
+                # DIRECTEMENT sur la cible (ajout manuel en une étape) est
+                # prioritaire sur celui hérité d'un wallet parent.
+                parent_ranges = target.get("ranges")
+                if not parent_ranges:
+                    child_settings = self._resolve_child_settings(target)
+                    parent_ranges = child_settings.get("transfer_ranges") if child_settings else None
+                else:
+                    child_settings = self._resolve_child_settings(target)
 
                 if not self._matches_target_criteria(target, amount_sol, parent_ranges):
                     continue
@@ -228,8 +235,11 @@ class ProtectionScanner:
         # Résout les settings du parent EN AMONT — nécessaire pour connaître
         # transfer_ranges (plusieurs plages) et fresh_wallet_only avant de
         # choisir la méthode de scan et de valider chaque nouveau wallet.
+        # AJOUTÉ (demande explicite, 19 août) : un intervalle défini
+        # DIRECTEMENT sur la cible (ajout manuel en une étape) est
+        # prioritaire sur celui hérité d'un wallet parent.
         child_settings = self._resolve_child_settings(target)
-        parent_ranges = child_settings.get("transfer_ranges") if child_settings else None
+        parent_ranges = target.get("ranges") or (child_settings.get("transfer_ranges") if child_settings else None)
 
         if target_type == "exchange":
             if parent_ranges:

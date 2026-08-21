@@ -111,7 +111,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 
 # ── Bannière affichée au /start (image locale, voir telegram_bot.py cmd_start) ─
 # Place l'image de bannière dans le dossier du bot et indique son nom ici.
-BANNER_IMAGE_PATH = os.getenv("BANNER_IMAGE_PATH", "banner.png")
+BANNER_IMAGE_PATH = os.getenv("BANNER_IMAGE_PATH", "banner.jpg")
 DATA_FILE = os.getenv("DATA_FILE", "sniper_data.json")
 
 # ── Filtres de découverte des tokens (étape 1 de la vidéo) ──────

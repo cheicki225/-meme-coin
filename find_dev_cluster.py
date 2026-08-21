@@ -91,7 +91,13 @@ async def find_cluster_addresses(dev_address: str, max_starred: int = 12, on_pro
         # réseau, arrondis internes) — 0.001% était bien trop strict et
         # ratait systématiquement les vrais transferts. 0.5% couvre l'écart
         # maximum observé (0.49%) avec une petite marge.
-        tolerance_pct = 0.00001  # 0.001% (restauré — régression accidentelle lors d'une réécriture précédente)
+        # CORRIGÉ suite à un vrai bug trouvé (19 août) : cette valeur était à
+        # 0.00001 (0.001%), en contradiction directe avec le commentaire
+        # juste au-dessus qui documente la calibration réelle à 0.5% —
+        # régression accidentelle d'une réécriture précédente qui n'avait
+        # jamais été corrigée. 0.001% ratait systématiquement les vrais
+        # transferts (écart réel observé jusqu'à 0.49%).
+        tolerance_pct = 0.005  # 0.5% — restauré à la valeur réellement calibrée
         tolerance_sol = amount * tolerance_pct
         lo = amount - tolerance_sol
         hi = amount + tolerance_sol

@@ -114,6 +114,77 @@ def _compute_star_rating(results: list) -> dict:
     return {"stars": stars, "score": combined, "trade_count": len(results)}
 
 
+async def _compute_bot_probability(trades: list) -> dict:
+    """
+    AJOUTÉ (demande explicite) : score indicatif "probabilité bot" pour un
+    wallet, basé sur deux signaux comportementaux calculables sans appel RPC
+    lourd supplémentaire — réutilise wallet_history.get_token_creation_time
+    (un seul appel léger par trade, pas le décodage à 150 transactions) :
+
+    1. VITESSE D'ACHAT après création du token — un bot de sniping achète
+       systématiquement dans les toutes premières secondes (score élevé si
+       la moyenne est très basse).
+    2. RÉGULARITÉ de cette vitesse — un humain a un temps de réaction
+       variable (curiosité, hésitation, multitâche...), un bot est
+       mécaniquement constant d'un trade à l'autre (coefficient de
+       variation bas = suspect).
+
+    Ne couvre PAS dans cette version (hors scope, nécessiterait des
+    signaux supplémentaires) : la régularité des MONTANTS investis
+    (sol_spent n'est pas fiablement disponible partout), ni la détection
+    de "wallets en essaim" (plusieurs wallets financés par la même
+    source). Purement indicatif — jamais utilisé pour bloquer un ajout
+    automatiquement, juste affiché.
+
+    trades : liste de dicts avec au moins "block_time" et "token_mint"
+    (même format que wallet_history.get_recent_buys/get_created_tokens).
+
+    Retourne None si moins de 3 trades avec un temps de création
+    déterminable (pas assez de données pour un score fiable), sinon
+    {"score": int (0-100), "label": str, "fast_buy_pct": float,
+    "avg_speed_s": float, "sample_size": int}.
+    """
+    import wallet_history
+
+    speeds = []
+    for trade in trades:
+        if not trade.get("block_time") or not trade.get("token_mint"):
+            continue
+        creation_time = await wallet_history.get_token_creation_time(trade["token_mint"])
+        if creation_time is None:
+            continue
+        speed_s = trade["block_time"] - creation_time
+        if speed_s < 0:
+            continue  # incohérent (latence RPC/horloge) — ignoré plutôt que de fausser le score
+        speeds.append(speed_s)
+
+    if len(speeds) < 3:
+        return None
+
+    avg_speed = sum(speeds) / len(speeds)
+    fast_pct = sum(1 for s in speeds if s < 30) / len(speeds) * 100
+
+    mean = avg_speed if avg_speed > 0 else 1
+    variance = sum((s - avg_speed) ** 2 for s in speeds) / len(speeds)
+    coefficient_variation = (variance ** 0.5) / mean
+
+    # Vitesse : ~100 pts pour un achat quasi instantané, ~0 pt au-delà de 5 min.
+    speed_score = max(0, min(100, 100 - (avg_speed / 3)))
+    # Régularité : coefficient de variation bas (peu de variation) = score haut.
+    regularity_score = max(0, 100 - (coefficient_variation * 50))
+
+    score = int(round(speed_score * 0.6 + regularity_score * 0.4))
+
+    if score >= 70:
+        label = "🤖 Très probablement un bot"
+    elif score >= 40:
+        label = "🤔 Comportement mixte / incertain"
+    else:
+        label = "🙂 Comportement plutôt humain"
+
+    return {"score": score, "label": label, "fast_buy_pct": fast_pct, "avg_speed_s": avg_speed, "sample_size": len(speeds)}
+
+
 class SniperTelegramBot:
     def __init__(self, data_store, notifier, paper_trader):
         self.data_store = data_store
@@ -175,22 +246,38 @@ class SniperTelegramBot:
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         self.data_store.set_telegram_chat_id(update.effective_chat.id)
 
-        text, markup = self._build_main_menu_content()
+        # MODIFIÉ (demande explicite, 19 août — inspiré d'un screenshot F
+        # Project fourni, adapté à FLACH COIN) : /start affiche maintenant un
+        # véritable écran d'accueil (bannière + présentation des capacités +
+        # bouton "Démarrer") plutôt que de sauter directement au menu
+        # opérationnel. Affiché à CHAQUE /start (pas juste la toute première
+        # fois) — plus simple, et permet de le revoir à volonté.
+        welcome_text = (
+            "⚡ *FLACH COIN*\n_Automated Trading Intelligence_\n\n"
+            "🚀 *Ton bot de copy trading Solana*\n\n"
+            "🎯 Automatise le sniping et le copy trading\n"
+            "💼 Gère ton portefeuille et tes positions\n"
+            "🔒 Sécurisé — aucune clé privée exposée dans le chat\n"
+            "⚙️ Entièrement personnalisable, wallet par wallet\n"
+            "📊 Suit tes performances en temps réel\n"
+            "🛡️ Protection proactive (schémas mère/exchange)\n\n"
+            "Configure tes préférences, surveille des wallets, et laisse "
+            "le bot exécuter les trades selon tes réglages.\n\n"
+            "Démarre ton trading automatisé dès maintenant ! 🌟"
+        )
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🚀 Démarrer", callback_data="menu_main")]])
 
-        # Envoie la bannière en photo avec le menu attaché (comme F Project) si
-        # le fichier existe ; sinon retombe proprement sur le menu texte simple.
-        import os
         if config.BANNER_IMAGE_PATH and os.path.isfile(config.BANNER_IMAGE_PATH):
             try:
                 with open(config.BANNER_IMAGE_PATH, "rb") as photo:
                     await update.message.reply_photo(
-                        photo=photo, caption=text, parse_mode="Markdown", reply_markup=markup,
+                        photo=photo, caption=welcome_text, parse_mode="Markdown", reply_markup=keyboard,
                     )
                 return
             except Exception as e:
-                log.warning(f"Impossible d'envoyer la bannière ({e}) — retombe sur le menu texte.")
+                log.warning(f"Impossible d'envoyer la bannière ({e}) — retombe sur le texte seul.")
 
-        await self.show_main_menu(update)
+        await update.message.reply_text(welcome_text, parse_mode="Markdown", reply_markup=keyboard)
 
     async def cmd_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         state = self.data_store.state
@@ -343,8 +430,13 @@ class SniperTelegramBot:
         lang = state.get("language", "fr")
         # Ne montre que les wallets en mode sniping de dev — les wallets copytrade
         # (track_buy/track_sell) vivent désormais dans leur propre menu 📋 Copy Trading.
+        # AJOUTÉ (demande explicite, 19 août) : exclut aussi les adresses de
+        # retrait rattachées en arrière-plan à un parent (linked_to_parent) —
+        # toujours surveillées normalement, juste plus affichées comme ligne
+        # séparée ici. Voir monitoring_list.add_dev_wallet.
         wallets = {a: e for a, e in self.data_store.list_wallets().items()
-                   if e.get("mode", "track_creation") in ("track_creation", "buy_on_dev_sell")}
+                   if e.get("mode", "track_creation") in ("track_creation", "buy_on_dev_sell")
+                   and not e.get("linked_to_parent")}
 
         auto_buy = "🟢 ON" if state.get("global_auto_buy", True) else "🔴 OFF"
         auto_sell = "🟢 ON" if state.get("global_auto_sell", True) else "🔴 OFF"
@@ -371,8 +463,13 @@ class SniperTelegramBot:
         for address, entry in page_items:
             label = entry.get("label", address[:8] + "...")
             status = "⏸ PAUSED" if entry["settings"].get("paused") else "🟢"
+            # AJOUTÉ (demande explicite) : compteur d'adresses de retrait
+            # rattachées en arrière-plan à ce wallet, à la place des lignes
+            # séparées qu'elles occupaient avant.
+            linked_count = self.data_store.count_linked_wallets(address)
+            linked_suffix = f" ({linked_count} adresse{'s' if linked_count > 1 else ''} liée{'s' if linked_count > 1 else ''})" if linked_count else ""
             keyboard.append([InlineKeyboardButton(
-                f"{status} {label} ({entry.get('mode', 'track_creation')})",
+                f"{status} {label} ({entry.get('mode', 'track_creation')}){linked_suffix}",
                 callback_data=f"rugger_{self._sid(address)}",
             )])
 
@@ -394,8 +491,12 @@ class SniperTelegramBot:
         de wallet (settings partagés) mais liste/ajoute séparément.
         """
         lang = self.data_store.state.get("language", "fr")
+        # AJOUTÉ (demande explicite, 19 août) : filtre défensif — les wallets
+        # Copy Trading n'obtiennent plus JAMAIS d'adresse de retrait rattachée
+        # (voir main.on_wallet_withdrawal, exclusion explicite), mais ce
+        # filtre protège quand même contre une éventuelle entrée héritée.
         wallets = {a: e for a, e in self.data_store.list_wallets().items()
-                   if e.get("mode") in ("track_buy", "track_sell")}
+                   if e.get("mode") in ("track_buy", "track_sell") and not e.get("linked_to_parent")}
 
         text = (
             f"{t('copytrade_menu_title', lang, count=len(wallets))}\n\n"
@@ -1631,6 +1732,17 @@ class SniperTelegramBot:
         else:
             text += f"\n☆☆☆☆☆ *Note globale* : _pas assez de trades connus (minimum 3) pour noter ce wallet_\n"
 
+        # AJOUTÉ (demande explicite) : score indicatif "probabilité bot" —
+        # voir _compute_bot_probability. Réutilise recent_buys (déjà
+        # récupéré ci-dessus), un appel léger de plus par trade.
+        bot_score = await _compute_bot_probability(recent_buys)
+        if bot_score:
+            text += (
+                f"{bot_score['label']} — score `{bot_score['score']}/100`\n"
+                f"   _Vitesse d'achat moyenne après création : {bot_score['avg_speed_s']:.0f}s "
+                f"({bot_score['fast_buy_pct']:.0f}% des achats en moins de 30s, sur {bot_score['sample_size']} trade(s))_\n"
+            )
+
         # CORRIGÉ suite à un vrai bug signalé : le seul bouton disponible
         # ("Ajouter en Ruggeur") ajoutait TOUJOURS le wallet en mode
         # track_creation (dev-sniping), même pour un wallet qui n'a créé
@@ -1742,6 +1854,12 @@ class SniperTelegramBot:
         if rating:
             stars_display = "⭐" * rating["stars"] + "☆" * (5 - rating["stars"])
             text += f"\n{stars_display} *Note* : `{rating['stars']}/5` (sur `{rating['trade_count']}` création(s))\n"
+
+        # PAS de score "probabilité bot" ici (contrairement à analyze_wallet_inline) :
+        # _compute_bot_probability mesure la vitesse d'ACHAT après création — pour
+        # un DEV, le block_time d'une création EST le moment de la création
+        # elle-même, donc cette vitesse serait toujours ≈0 pour tout le monde.
+        # Signal dégénéré, pas transposable tel quel au profil créateur.
 
         # Bouton d'ajout dès qu'au moins UNE création est trouvée — contrairement
         # au seuil de 3 dans "Analyse de wallet" (qui doit départager plusieurs
@@ -2283,6 +2401,21 @@ class SniperTelegramBot:
                     self.data_store.add_dev_wallet(addr, label=addr[:8] + "...", scheme="cluster", backtest_ratio=0.0)
                     added += 1
                 await query.answer(f"✅ {added} adresse(s) ajoutée(s) ({skipped} déjà présente(s)).", show_alert=True)
+        elif data.startswith("markintermediate_"):
+            # AJOUTÉ (demande explicite, 19 août) : complète le flux commencé
+            # au moment d'ajouter un rugger manuellement — demande
+            # maintenant l'intervalle de montant à surveiller sur cette
+            # adresse. Voir monitoring_list.add_protection_target
+            # (paramètre "ranges") pour la suite.
+            address = data[len("markintermediate_"):]
+            user_states[chat_id] = {"awaiting": "add_intermediate_range", "address": address}
+            await query.edit_message_text(
+                f"🔗 Wallet intermédiaire : `{address[:8]}...`\n\n"
+                "Envoie le montant MIN et MAX (en SOL) à surveiller, séparés par un espace.\n\n"
+                "Exemple : `1.5 2.5` → tout wallet ayant reçu entre 1.5 et 2.5 SOL depuis "
+                "cette adresse sera automatiquement ajouté au monitoring.",
+                parse_mode="Markdown",
+            )
         elif data.startswith("quickaddprotection_"):
             # AJOUTÉ suite à une question explicite : le scanner de
             # protection (protection_scanner.py) tourne en tâche de fond
@@ -2699,7 +2832,26 @@ class SniperTelegramBot:
                 user_states.pop(chat_id, None)
                 return
             self.data_store.add_dev_wallet(text, label=text[:8] + "...", scheme="manuel", backtest_ratio=0.0)
-            await update.message.reply_text(f"✅ Rugger ajouté : `{text[:8]}...`", parse_mode="Markdown")
+            # AJOUTÉ (demande explicite, 19 août) : propose de marquer le
+            # wallet fraîchement ajouté comme "adresse intermédiaire" —
+            # réutilise l'infrastructure Protection Scanner déjà existante
+            # (Transfer Ranges) plutôt qu'un nouveau système séparé : le
+            # wallet devient sa propre "cible" de protection
+            # (parent_address = lui-même), avec les intervalles de montant
+            # donnés ci-dessous stockés dans ses propres settings
+            # (transfer_ranges) — voir protection_scanner._resolve_child_settings,
+            # qui va déjà chercher exactement là.
+            keyboard = [[
+                InlineKeyboardButton("🔀 Oui, adresse intermédiaire", callback_data=f"markintermediate_{text}"),
+                InlineKeyboardButton("Non", callback_data="menu_ruggers"),
+            ]]
+            await update.message.reply_text(
+                f"✅ Rugger ajouté : `{text[:8]}...`\n\n"
+                f"Marquer comme *adresse intermédiaire* ? Le bot surveillera alors en continu ses transferts "
+                f"sortants et ajoutera automatiquement (en arrière-plan) toute adresse ayant reçu un montant "
+                f"dans l'intervalle que tu donneras.",
+                parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard),
+            )
             user_states.pop(chat_id, None)
 
         elif awaiting == "add_copytrade_address":
@@ -2762,6 +2914,36 @@ class SniperTelegramBot:
                 return
             user_states.pop(chat_id, None)
             await self.analyze_dev_inline(update, text)
+
+        elif awaiting == "add_intermediate_range":
+            address = state.get("address")
+            parts = text.split()
+            if len(parts) != 2:
+                await update.message.reply_text("Format invalide. Envoie deux nombres séparés par un espace, ex: `1.5 2.5`.", parse_mode="Markdown")
+                return
+            try:
+                min_sol, max_sol = float(parts[0]), float(parts[1])
+            except ValueError:
+                await update.message.reply_text("Montants invalides, réessaie (ex: `1.5 2.5`).", parse_mode="Markdown")
+                return
+            if min_sol < 0 or max_sol <= min_sol:
+                await update.message.reply_text("Le max doit être supérieur au min, et les deux positifs. Réessaie.")
+                return
+
+            user_states.pop(chat_id, None)
+            self.data_store.add_protection_target(
+                label=f"intermediaire_{address[:8]}",
+                target_type="exchange",
+                address=address,
+                ranges=[{"min": min_sol, "max": max_sol}],
+            )
+            await update.message.reply_text(
+                f"✅ Wallet intermédiaire configuré : `{address[:8]}...`\n"
+                f"Intervalle surveillé : `{min_sol}` – `{max_sol}` SOL\n\n"
+                "Tout wallet recevant un montant dans cet intervalle depuis cette adresse "
+                "sera automatiquement ajouté au monitoring.",
+                parse_mode="Markdown",
+            )
 
         elif awaiting == "check_security_address":
             if not _is_solana_address(text):

@@ -212,10 +212,19 @@ class DataStore:
 
     # ── Gestion des wallets dev surveillés ──────────────────────
     def add_dev_wallet(self, address: str, label: str, scheme: str, backtest_ratio: float,
-                        mode: str = "track_creation", settings: dict = None):
+                        mode: str = "track_creation", settings: dict = None, linked_to_parent: str = None):
         """
         mode: "track_creation" (sniping de dev — défaut) ou "track_buy" (copy trade, hors scope ici)
         settings: dict partiel qui override config.DEFAULT_WALLET_SETTINGS
+
+        linked_to_parent : AJOUTÉ (demande explicite) — adresse du wallet
+        "parent" si ce wallet est une adresse de retrait détectée
+        automatiquement (voir main.on_wallet_withdrawal). Toujours surveillé
+        normalement (souscriptions, détection achat/vente inchangées), mais
+        n'apparaît plus comme ligne séparée dans le menu Ruggeurs/Copy
+        Trading (voir show_ruggers_menu/show_copytrade_menu) — le compteur
+        s'affiche sur la ligne du parent à la place. None (défaut) = wallet
+        normal, visible comme avant.
         """
         final_settings = copy.deepcopy(config.DEFAULT_WALLET_SETTINGS)
         if settings:
@@ -236,9 +245,22 @@ class DataStore:
             "already_bought": False,  # pour buy_only_once
             "added_at": now,
             "last_activity_at": now,
+            "linked_to_parent": linked_to_parent,
         }
         self.save()
-        log.info(f"➕ Wallet dev ajouté au monitoring : {address[:8]}... ({label}, mode={mode})")
+        if linked_to_parent:
+            log.info(f"➕ Adresse de retrait rattachée en arrière-plan à {linked_to_parent[:8]}... : {address[:8]}... (masquée du menu)")
+        else:
+            log.info(f"➕ Wallet dev ajouté au monitoring : {address[:8]}... ({label}, mode={mode})")
+
+    def count_linked_wallets(self, parent_address: str) -> int:
+        """AJOUTÉ (demande explicite) — nombre d'adresses de retrait
+        rattachées en arrière-plan à ce wallet parent, pour l'affichage du
+        compteur dans le menu (voir add_dev_wallet, linked_to_parent)."""
+        return sum(
+            1 for entry in self.state.get("monitored_dev_wallets", {}).values()
+            if entry.get("linked_to_parent") == parent_address
+        )
 
     def update_wallet_activity(self, address: str):
         """AJOUTÉ pour le nettoyage automatique — appelé à chaque activité
@@ -582,12 +604,21 @@ class DataStore:
     # ── Protection targets (surveillance proactive schéma mère/exchange) ─
     def add_protection_target(self, label: str, target_type: str, address: str,
                                amount_sol: float = None, tolerance: float = None,
-                               preset_name: str = None, parent_address: str = None):
+                               preset_name: str = None, parent_address: str = None,
+                               ranges: list = None):
         """
         target_type: "exchange" (montant fixe) ou "mere" (tous les transferts sortants)
         parent_address: si défini, les nouvelles adresses enfants héritent selon le
                         toggle inherit_settings du parent (voir _resolve_child_settings
                         dans protection_scanner.py)
+        ranges: AJOUTÉ (demande explicite, 19 août) — liste de {"min": float,
+                "max": float}, stockée DIRECTEMENT sur la cible plutôt que de devoir
+                passer par un parent_address existant avec transfer_ranges configuré
+                sur ses propres settings (l'ancien seul chemin possible). Permet
+                d'ajouter un wallet intermédiaire avec son intervalle en UNE étape,
+                sans wallet parent préexistant. Voir protection_scanner._matches_target_criteria
+                et _resolve_child_settings, qui vérifient maintenant target["ranges"]
+                en premier avant de retomber sur le mécanisme parent_address.
         """
         self.state["protection_targets"][label] = {
             "type": target_type,
@@ -596,6 +627,7 @@ class DataStore:
             "tolerance": tolerance or config.FIXED_AMOUNT_TOLERANCE_SOL,
             "preset_name": preset_name,
             "parent_address": parent_address,
+            "ranges": ranges,
             "known_recipients": [],  # évite de re-traiter les mêmes adresses à chaque scan
         }
         self.save()
