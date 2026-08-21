@@ -48,6 +48,18 @@ GOPLUS_API_SECRET = os.getenv("GOPLUS_API_SECRET", "")
 # (contrairement à Arkham, jamais confirmé gratuit et à accès sur demande).
 MOBULA_API_KEY = os.getenv("MOBULA_API_KEY", "")
 
+# ── GMGN — analyse enrichie de wallet (PnL, win rate, classification) ────
+# AJOUTÉ suite à une demande explicite, 19 août. Clé API GMGN, lecture
+# seule (endpoints "Exist auth" uniquement — voir gmgn_client.py).
+# Générée via gmgn-cli en LOCAL (paire de clés Ed25519), la clé API elle-
+# même doit être ajoutée ICI (variable d'environnement Railway), séparément
+# du fichier ~/.config/gmgn/.env du CLI local — deux environnements
+# différents, la clé doit être configurée dans les deux si tu veux utiliser
+# le CLI en local ET le bot en ligne.
+# ⚠️ GMGN_PRIVATE_KEY n'est PAS demandée ici et ne doit jamais l'être —
+# reste exclusivement dans le fichier local du CLI, jamais sur Railway.
+GMGN_API_KEY = os.getenv("GMGN_API_KEY", "")
+
 # ── Vérification des résultats Mobula (wallet/deployer) ──────────────────
 # True (défaut) : chaque résultat Mobula est confirmé sur la blockchain
 # (1-2 appels Helius légers) avant d'être accepté — le plus fiable.
