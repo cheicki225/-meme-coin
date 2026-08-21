@@ -308,7 +308,15 @@ class SniperBot:
             cooldown_blocked = not self.data_store.check_and_update_auto_add_cooldown(wallet_address)
 
         added_note = ""
-        if not wd_settings.get("auto_add", True):
+        # AJOUTÉ suite à une demande explicite (19 août) : une adresse de
+        # retrait issue d'un wallet Copy Trading n'est PLUS jamais ajoutée au
+        # monitoring, ni visible ni en arrière-plan — contrairement à un
+        # Ruggeur (dev), où le comportement précédent (arrière-plan +
+        # cascade/cooldown) reste inchangé, juste masqué du menu (voir plus
+        # bas, linked_to_parent).
+        if source_mode in ("track_buy", "track_sell"):
+            added_note = "\n\n⏭️ _Adresse destinataire NON ajoutée (source Copy Trading — pas de suivi des retraits pour ce type)._"
+        elif not wd_settings.get("auto_add", True):
             added_note = ""  # ajout auto désactivé — juste la notification, rien à signaler de plus
         elif cascade_blocked:
             added_note = "\n\n⏭️ _Adresse destinataire NON ajoutée (cascade bloquée — ce wallet a lui-même été ajouté automatiquement)._"
@@ -320,14 +328,21 @@ class SniperBot:
             # par défaut), sans jamais regarder le mode réel de la source —
             # un destinataire d'un wallet en Copy Trading (track_buy)
             # atterrissait quand même dans les Ruggeurs, sans aucun lien
-            # logique. Hérite maintenant du mode de la source.
+            # logique. Hérite maintenant du mode de la source. (Le cas Copy
+            # Trading lui-même est maintenant exclu plus haut avant même
+            # d'arriver ici — cette branche ne concerne donc que les
+            # Ruggeurs en pratique.)
             inherited_mode = entry.get("mode", "track_creation")
             self.data_store.add_dev_wallet(
                 destination, label=f"retrait_{wallet_address[:6]}_{destination[:6]}", scheme="sol_withdrawal",
                 backtest_ratio=0.0, mode=inherited_mode,
+                # AJOUTÉ suite à une demande explicite : rattachée en
+                # arrière-plan au parent plutôt que visible comme entrée
+                # séparée — voir monitoring_list.add_dev_wallet et
+                # show_ruggers_menu (compteur affiché sur la ligne du parent).
+                linked_to_parent=wallet_address,
             )
-            log.info(f"➕ Adresse destinataire ajoutée au monitoring suite au retrait : {destination[:8]}... (mode={inherited_mode})")
-            added_note = "\n\n_Adresse destinataire ajoutée au monitoring._"
+            added_note = "\n\n_Adresse destinataire ajoutée au monitoring (en arrière-plan, rattachée à ce wallet)._"
         elif not self.data_store.has_free_slot():
             added_note = "\n\n⚠️ _Limite de wallets atteinte — adresse destinataire NON ajoutée._"
 
@@ -396,9 +411,15 @@ class SniperBot:
         elif not self.data_store.is_dev_monitored(destination) and self.data_store.has_free_slot():
             self.data_store.add_dev_wallet(
                 destination, label=f"transfert_{dev_address[:6]}_{destination[:6]}", scheme="sol_transfer", backtest_ratio=0.0,
+                # AJOUTÉ suite à une demande explicite (19 août) : même
+                # traitement que on_wallet_withdrawal — rattaché en
+                # arrière-plan au parent, plus visible comme entrée séparée.
+                # Toujours un Ruggeur ici (_creation_mode_wallets scope déjà
+                # cette alerte aux wallets track_creation uniquement), pas
+                # besoin d'exclusion Copy Trading comme pour les retraits.
+                linked_to_parent=dev_address,
             )
-            log.info(f"➕ Adresse destinataire ajoutée au monitoring suite au transfert : {destination[:8]}...")
-            added_note = "\n\n_Adresse destinataire ajoutée au monitoring._"
+            added_note = "\n\n_Adresse destinataire ajoutée au monitoring (en arrière-plan, rattachée à ce wallet)._"
         elif not self.data_store.has_free_slot():
             added_note = "\n\n⚠️ _Limite de wallets atteinte — adresse destinataire NON ajoutée._"
 
