@@ -273,16 +273,20 @@ DEFAULT_WALLET_SETTINGS = {
     "mc_trailing_enabled": False,
     "mc_trailing_arm_threshold": 5000,   # MC à atteindre pour "armer" la protection
     "mc_trailing_sell_threshold": 2500,  # MC de vente une fois armé
-    # ── Trailing stop sur le % de gain (breakeven puis serré) ────────────
-    # Une fois le gain >= profit_trail_arm_pct, verrouille un plancher à
-    # +profit_trail_initial_floor_pct. Une fois le gain >= profit_trail_tight_arm_pct,
-    # bascule en trailing serré : plancher = pic - profit_trail_gap_pct, remonté à
-    # chaque nouveau sommet.
+    # ── Trailing stop sur le % de gain (breakeven progressif) ────────────
+    # MODIFIÉ (demande explicite, 19 août) : avant, le plancher restait figé
+    # à profit_trail_initial_floor_pct jusqu'à ce que le gain atteigne
+    # profit_trail_tight_arm_pct (2 étapes distinctes). Maintenant, dès
+    # l'armement (gain >= profit_trail_arm_pct), le plancher trail EN
+    # CONTINU : plancher = max(profit_trail_initial_floor_pct, pic de gain -
+    # profit_trail_gap_pct) — remonté à chaque nouveau sommet, jamais
+    # abaissé. profit_trail_tight_arm_pct n'est plus utilisé (gardé dans les
+    # settings existants pour compatibilité, sans effet).
     "profit_trail_enabled": False,
     "profit_trail_arm_pct": 50,
-    "profit_trail_initial_floor_pct": 10,
-    "profit_trail_tight_arm_pct": 105,
-    "profit_trail_gap_pct": 10,
+    "profit_trail_initial_floor_pct": 20,
+    "profit_trail_tight_arm_pct": 105,  # DÉPRÉCIÉ — plus utilisé, voir commentaire ci-dessus
+    "profit_trail_gap_pct": 30,
 }
 
 # ── Referral (simulé — pas de vrai système de paiement/commission) ─

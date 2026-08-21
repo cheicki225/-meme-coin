@@ -885,7 +885,7 @@ class SniperTelegramBot:
             f"{t('profit_trail_label', lang)}\n"
             f"{t('status_label', lang)}: `{'🟢' if s.get('profit_trail_enabled') else '🔴'}`\n"
             f"{t('arm_threshold_label', lang)}: +{s.get('profit_trail_arm_pct')}% → {t('floor_label', lang)} +{s.get('profit_trail_initial_floor_pct')}%\n"
-            f"{t('tight_mode_from', lang)}: +{s.get('profit_trail_tight_arm_pct')}% ({t('gap_label', lang)} {s.get('profit_trail_gap_pct')}%)"
+            f"Trailing continu — écart {s.get('profit_trail_gap_pct')}% sous le pic, dès l'armement"
         )
         keyboard = [
             [InlineKeyboardButton(
@@ -906,7 +906,6 @@ class SniperTelegramBot:
             )],
             [InlineKeyboardButton(t("btn_arm_pct", lang), callback_data=f"editset_{self._sid(address)}|profit_trail_arm_pct|float")],
             [InlineKeyboardButton(t("btn_initial_floor", lang), callback_data=f"editset_{self._sid(address)}|profit_trail_initial_floor_pct|float")],
-            [InlineKeyboardButton(t("btn_tight_arm", lang), callback_data=f"editset_{self._sid(address)}|profit_trail_tight_arm_pct|float")],
             [InlineKeyboardButton(t("btn_tight_gap", lang), callback_data=f"editset_{self._sid(address)}|profit_trail_gap_pct|float")],
             [InlineKeyboardButton(t("btn_back", lang), callback_data=f"sellconfig_{self._sid(address)}")],
         ]

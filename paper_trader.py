@@ -799,36 +799,44 @@ class PaperTrader:
 
     async def _check_profit_trail(self, position: dict, price: float, change_pct: float, settings: dict) -> bool:
         """
-        Trailing stop en 2 étapes basé sur le % de gain :
-        1) Une fois le gain >= profit_trail_arm_pct, verrouille un plancher à
-           +profit_trail_initial_floor_pct (protection anti-retour en perte)
-        2) Une fois le gain >= profit_trail_tight_arm_pct, bascule en trailing
-           serré : plancher = pic de gain - profit_trail_gap_pct, remonté à
-           chaque nouveau sommet (jamais abaissé)
+        MODIFIÉ (demande explicite, 19 août) : avant, le plancher restait
+        figé à profit_trail_initial_floor_pct jusqu'à ce que le gain
+        atteigne profit_trail_tight_arm_pct (2 étapes séparées — voir
+        l'historique git pour l'ancienne version si besoin de comparer).
+        Maintenant, dès l'armement (gain >= profit_trail_arm_pct), le
+        plancher trail EN CONTINU à chaque cycle :
+            plancher = max(profit_trail_initial_floor_pct, pic de gain - profit_trail_gap_pct)
+        — remonté à chaque nouveau sommet de gain, jamais abaissé.
+        profit_trail_tight_arm_pct n'est plus utilisé.
+
         Vend la totalité si le gain retombe au niveau du plancher actif.
         """
         arm_pct = settings.get("profit_trail_arm_pct", 50)
-        initial_floor = settings.get("profit_trail_initial_floor_pct", 10)
-        tight_arm_pct = settings.get("profit_trail_tight_arm_pct", 105)
+        initial_floor = settings.get("profit_trail_initial_floor_pct", 20)
         gap_pct = settings.get("profit_trail_gap_pct", 10)
 
         if not position.get("profit_trail_armed") and change_pct >= arm_pct:
             position["profit_trail_armed"] = True
             position["profit_trail_floor"] = initial_floor
+            position["profit_trail_peak"] = change_pct
             self.data_store.save()
             log.info(f"🔒 Profit Trail armé sur {position['token_mint'][:8]}... — plancher initial +{initial_floor}%")
 
         if not position.get("profit_trail_armed"):
             return False
 
-        # Bascule en mode serré une fois le seuil élevé atteint, et remonte le
-        # plancher à chaque nouveau sommet (jamais abaissé).
-        if change_pct >= tight_arm_pct:
-            new_floor = change_pct - gap_pct
-            if new_floor > position.get("profit_trail_floor", initial_floor):
-                position["profit_trail_floor"] = new_floor
-                self.data_store.save()
-                log.info(f"📈 Profit Trail remonté sur {position['token_mint'][:8]}... — plancher +{new_floor:.1f}%")
+        # Suit le pic de gain observé depuis l'armement, et remonte le
+        # plancher en continu à chaque nouveau sommet — jamais abaissé, et
+        # jamais en dessous du plancher initial.
+        peak = max(position.get("profit_trail_peak", change_pct), change_pct)
+        if peak > position.get("profit_trail_peak", 0):
+            position["profit_trail_peak"] = peak
+
+        new_floor = max(initial_floor, peak - gap_pct)
+        if new_floor > position.get("profit_trail_floor", initial_floor):
+            position["profit_trail_floor"] = new_floor
+            self.data_store.save()
+            log.info(f"📈 Profit Trail remonté sur {position['token_mint'][:8]}... — plancher +{new_floor:.1f}%")
 
         floor = position.get("profit_trail_floor", initial_floor)
         if change_pct <= floor:
