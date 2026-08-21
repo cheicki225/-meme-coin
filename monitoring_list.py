@@ -57,6 +57,7 @@ class DataStore:
                         loaded.setdefault(key, value)
                     self._backfill_wallet_settings(loaded)
                     self._migrate_force_buy_only_once(loaded)
+                    self._migrate_force_profit_trail_enabled(loaded)
                     return loaded
             except (json.JSONDecodeError, OSError) as e:
                 log.error(f"Erreur lecture {self.path}: {e} — réinitialisation.")
@@ -111,6 +112,31 @@ class DataStore:
         state["_migration_buy_only_once_forced_v1"] = True
         if forced_count > 0:
             log.info(f"🔧 Migration ponctuelle : buy_only_once forcé à True sur {forced_count} wallet(s) existant(s).")
+
+    def _migrate_force_profit_trail_enabled(self, state: dict):
+        """
+        MIGRATION PONCTUELLE (demande explicite, 19 août 2026) : même
+        principe que _migrate_force_buy_only_once ci-dessus, pour
+        "profit_trail_enabled" — passé à True par défaut (au lieu de
+        False), mais les wallets existants avaient déjà cette clé à False,
+        donc le backfill (qui ne comble que les clés MANQUANTES) ne
+        suffisait pas. Force ici à True sur tous les wallets existants,
+        UNE SEULE FOIS (flag state["_migration_profit_trail_forced_v1"]) —
+        le bouton Telegram redevient ensuite seul maître du réglage par
+        wallet.
+        """
+        if state.get("_migration_profit_trail_forced_v1"):
+            return
+        wallets = state.get("monitored_dev_wallets", {})
+        forced_count = 0
+        for address, entry in wallets.items():
+            settings = entry.setdefault("settings", {})
+            if not settings.get("profit_trail_enabled"):
+                settings["profit_trail_enabled"] = True
+                forced_count += 1
+        state["_migration_profit_trail_forced_v1"] = True
+        if forced_count > 0:
+            log.info(f"🔧 Migration ponctuelle : profit_trail_enabled forcé à True sur {forced_count} wallet(s) existant(s).")
 
     def _default_state(self) -> dict:
         return {

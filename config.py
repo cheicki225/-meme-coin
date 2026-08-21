@@ -282,7 +282,7 @@ DEFAULT_WALLET_SETTINGS = {
     # profit_trail_gap_pct) — remonté à chaque nouveau sommet, jamais
     # abaissé. profit_trail_tight_arm_pct n'est plus utilisé (gardé dans les
     # settings existants pour compatibilité, sans effet).
-    "profit_trail_enabled": False,
+    "profit_trail_enabled": True,
     "profit_trail_arm_pct": 50,
     "profit_trail_initial_floor_pct": 20,
     "profit_trail_tight_arm_pct": 105,  # DÉPRÉCIÉ — plus utilisé, voir commentaire ci-dessus

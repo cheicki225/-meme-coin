@@ -655,7 +655,10 @@ async def _get_price_points_after(token_mint: str, since_block_time: int,
 
 async def backtest_token_onchain_pathaware(token_mint: str, entry_price_sol: float, entry_block_time: int,
                                             tp_pct: float = None, sl_pct: float = None,
-                                            max_transactions: int = 150) -> dict:
+                                            max_transactions: int = 150, use_profit_trail: bool = True,
+                                            profit_trail_arm_pct: float = None,
+                                            profit_trail_initial_floor_pct: float = None,
+                                            profit_trail_gap_pct: float = None) -> dict:
     """
     MÉTHODE DEMANDÉE, version on-chain (sans dépendance à une API tierce) —
     fonctionne pour un token à N'IMPORTE QUEL stade (bonding curve ou migré),
@@ -663,16 +666,23 @@ async def backtest_token_onchain_pathaware(token_mint: str, entry_price_sol: flo
     par GeckoTerminal (introuvable pour la quasi-totalité des tokens
     analysés ici, encore en bonding curve).
 
-    Compare le prix d'entrée au prix MAXIMUM atteint parmi tous les trades
-    reconstruits après l'achat (résultat = (max_après - entrée) / entrée),
-    plutôt que de parcourir chaque trade dans l'ordre. Puisque le SL est
-    désactivé par défaut (config.SL_PCT=0), cette simplification est
-    exactement équivalente à un parcours chronologique dans le cas courant :
-    sans sortie anticipée, seul "le TP a-t-il été touché à un moment donné"
-    compte, peu importe l'ordre. Si un SL est réactivé (sl_pct > 0), le
-    calcul vérifie séparément si le plus bas post-entrée l'a franchi, sans
-    savoir si ça s'est produit avant ou après le plus haut — limite acceptée
-    explicitement pour cette méthode plus simple.
+    MODIFIÉ (demande explicite, 19 août) : simule maintenant le déroulé
+    CHRONOLOGIQUE réel de la position — Profit Trail (breakeven progressif,
+    activé par défaut depuis ce soir) en priorité, repli sur le SL
+    classique tant qu'il n'est pas armé — au lieu de comparer juste le prix
+    MAXIMUM/MINIMUM atteint sans tenir compte de l'ordre des événements.
+    Avant ce changement, "Analyse de wallet"/"Analyse de dev" (et le calcul
+    de pertes consécutives de wallet_cleanup) ne reflétaient pas ce que le
+    bot aurait RÉELLEMENT fait avec ses réglages de sortie actuels — un
+    wallet pouvait être noté "gagnant" sur un token qui a fini par
+    s'effondrer après son pic, alors que Profit Trail l'aurait fait sortir
+    bien avant, avec un résultat différent. Même logique que
+    paper_trader._check_profit_trail, rejouée ici sur un historique connu
+    au lieu d'un flux en direct.
+
+    use_profit_trail=False retombe sur l'ancien comportement (TP/SL simple,
+    max/min sans ordre chronologique) — gardé pour compatibilité, mais
+    aucun appelant actuel ne désactive ça.
 
     entry_price_sol doit idéalement venir du VRAI prix d'entrée (sol_spent /
     tokens_received de la transaction d'achat elle-même). Si non fourni
@@ -694,6 +704,10 @@ async def backtest_token_onchain_pathaware(token_mint: str, entry_price_sol: flo
     """
     tp_pct = tp_pct if tp_pct is not None else config.TP_PCT
     sl_pct = sl_pct if sl_pct is not None else config.SL_PCT
+    pt_defaults = config.DEFAULT_WALLET_SETTINGS
+    arm_pct = profit_trail_arm_pct if profit_trail_arm_pct is not None else pt_defaults.get("profit_trail_arm_pct", 50)
+    initial_floor = profit_trail_initial_floor_pct if profit_trail_initial_floor_pct is not None else pt_defaults.get("profit_trail_initial_floor_pct", 20)
+    gap_pct = profit_trail_gap_pct if profit_trail_gap_pct is not None else pt_defaults.get("profit_trail_gap_pct", 30)
 
     if not entry_block_time:
         return None
@@ -711,19 +725,57 @@ async def backtest_token_onchain_pathaware(token_mint: str, entry_price_sol: flo
     max_price_after = max(prices)
     min_price_after = min(prices)
     max_gain_pct = ((max_price_after - entry_price_sol) / entry_price_sol) * 100
-    max_drop_pct = ((min_price_after - entry_price_sol) / entry_price_sol) * 100  # négatif
+    max_drop_pct = ((min_price_after - entry_price_sol) / entry_price_sol) * 100  # négatif — gardé pour le potentiel ATH (_compute_ath_potential), qui veut le plafond théorique, pas le résultat simulé
 
-    if max_gain_pct >= tp_pct:
-        return {"token_mint": token_mint, "result_pct": tp_pct, "hit_tp": True, "hit_sl": False,
-                "reason": f"TP atteint (+{tp_pct}%) [MC max après entrée: +{max_gain_pct:.0f}% — on-chain]"}
-    if sl_pct and max_drop_pct <= -sl_pct:
-        return {"token_mint": token_mint, "result_pct": -sl_pct, "hit_tp": False, "hit_sl": True,
-                "reason": f"SL touché (-{sl_pct}%) [MC min après entrée: {max_drop_pct:.0f}% — on-chain]"}
+    if not use_profit_trail:
+        if max_gain_pct >= tp_pct:
+            return {"token_mint": token_mint, "result_pct": tp_pct, "hit_tp": True, "hit_sl": False,
+                    "max_gain_pct": max_gain_pct, "max_drop_pct": max_drop_pct,
+                    "reason": f"TP atteint (+{tp_pct}%) [MC max après entrée: +{max_gain_pct:.0f}% — on-chain]"}
+        if sl_pct and max_drop_pct <= -sl_pct:
+            return {"token_mint": token_mint, "result_pct": -sl_pct, "hit_tp": False, "hit_sl": True,
+                    "max_gain_pct": max_gain_pct, "max_drop_pct": max_drop_pct,
+                    "reason": f"SL touché (-{sl_pct}%) [MC min après entrée: {max_drop_pct:.0f}% — on-chain]"}
+        last_price = points[-1][1]
+        result_pct = ((last_price - entry_price_sol) / entry_price_sol) * 100
+        return {"token_mint": token_mint, "result_pct": result_pct, "hit_tp": False, "hit_sl": False,
+                "max_gain_pct": max_gain_pct, "max_drop_pct": max_drop_pct,
+                "reason": f"Ni TP ni SL — MC max atteint: +{max_gain_pct:.0f}% [on-chain]"}
+
+    # ── Simulation chronologique (Profit Trail prioritaire, repli SL classique) ──
+    armed = False
+    floor = None
+    peak = None
+    for _, price in points:
+        change_pct = ((price - entry_price_sol) / entry_price_sol) * 100
+
+        if not armed and change_pct >= arm_pct:
+            armed = True
+            floor = initial_floor
+            peak = change_pct
+
+        if armed:
+            peak = max(peak, change_pct)
+            new_floor = max(initial_floor, peak - gap_pct)
+            if new_floor > floor:
+                floor = new_floor
+            if change_pct <= floor:
+                return {"token_mint": token_mint, "result_pct": floor, "hit_tp": True, "hit_sl": False,
+                        "max_gain_pct": max_gain_pct, "max_drop_pct": max_drop_pct,
+                        "reason": f"Profit Trail déclenché (plancher +{floor:.0f}%) [on-chain]"}
+        elif sl_pct and change_pct <= -sl_pct:
+            # SL classique — ne s'applique qu'AVANT l'armement du Profit
+            # Trail, comme dans _monitor_position (une fois armé, le
+            # plancher du Profit Trail prend le relais de la protection).
+            return {"token_mint": token_mint, "result_pct": -sl_pct, "hit_tp": False, "hit_sl": True,
+                    "max_gain_pct": max_gain_pct, "max_drop_pct": max_drop_pct,
+                    "reason": f"SL touché (-{sl_pct}%) [MC min après entrée: {max_drop_pct:.0f}% — on-chain]"}
 
     last_price = points[-1][1]
     result_pct = ((last_price - entry_price_sol) / entry_price_sol) * 100
     return {"token_mint": token_mint, "result_pct": result_pct, "hit_tp": False, "hit_sl": False,
-            "reason": f"Ni TP ni SL — MC max atteint: +{max_gain_pct:.0f}% [on-chain]"}
+            "max_gain_pct": max_gain_pct, "max_drop_pct": max_drop_pct,
+            "reason": f"Jamais déclenché — MC max atteint: +{max_gain_pct:.0f}% [on-chain]"}
 
 
 async def check_first_candle_filter(token_mint: str) -> dict:
