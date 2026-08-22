@@ -26,6 +26,7 @@ import websockets
 
 import config
 import rpc_client
+import wallet
 
 log = logging.getLogger("detection")
 
@@ -165,9 +166,24 @@ class NewTokenListener:
             return pump_event.get("mint"), pump_event.get("creator") or parsed.get("feePayer")
 
         # Chemin 2 : fallback générique — le fee payer est presque toujours le dev
+        #
+        # CORRIGÉ suite à un vrai bug trouvé (tokens "So111111..." et
+        # "EPjFWdd5..." vus détectés comme "nouveaux tokens" en conditions
+        # réelles — ce sont respectivement le mint SOL natif et le mint
+        # USDC, jamais de vrais nouveaux tokens Pump.fun) : ce chemin de
+        # repli prenait tokenTransfers[0] sans vérifier lequel des transferts
+        # correspond réellement au nouveau token créé — si la transaction
+        # groupe création+achat, un mouvement SOL/USDC intermédiaire peut
+        # apparaître avant le vrai nouveau mint dans la liste. Exclut
+        # maintenant les mints de quote connus (SOL, USDC, USDT) plutôt que
+        # de prendre le premier transfert sans distinction.
         dev_address = parsed.get("feePayer")
         token_transfers = parsed.get("tokenTransfers", [])
-        token_mint = token_transfers[0].get("mint") if token_transfers else None
+        excluded_mints = {config.SOL_MINT, wallet.USDC_MINT, "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"}  # USDT
+        token_mint = next(
+            (tt.get("mint") for tt in token_transfers if tt.get("mint") not in excluded_mints),
+            None,
+        )
 
         return token_mint, dev_address
 
