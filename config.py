@@ -146,6 +146,23 @@ CIRCUIT_BREAKER_USD = float(os.getenv("CIRCUIT_BREAKER_USD", "150"))
 BACKTEST_MIN_TOKENS = int(os.getenv("BACKTEST_MIN_TOKENS", "10"))  # nb de tokens passés à analyser
 BACKTEST_MIN_RATIO = float(os.getenv("BACKTEST_MIN_RATIO", "3.0"))  # ratio gain/perte minimum (3 pour 1 comme dans la vidéo)
 
+# AJOUTÉ (demande explicite, 19 août) : les 4 critères de qualité utilisés
+# par main._evaluate_new_dev pour juger un nouveau dev auto-détecté —
+# avant un mélange de constantes ci-dessus (BACKTEST_MIN_RATIO,
+# MAX_FIRST_CANDLE_MARKET_CAP plus bas) et de valeurs codées EN DUR
+# directement dans main.py (le "3" tokens minimum, le "0.3" de régularité).
+# Regroupés ici comme DÉFAUT INITIAL uniquement — une fois le bot démarré,
+# c'est state["auto_detection_settings"] (monitoring_list.py) qui fait foi,
+# modifiable depuis Telegram (menu Settings → Détection auto). Ces
+# constantes ne servent donc plus qu'à initialiser un nouveau state vierge.
+DEFAULT_AUTO_DETECTION_SETTINGS = {
+    "filters_enabled": True,   # interrupteur général — False = ajoute tout nouveau dev sans AUCUN filtre
+    "min_tokens_created": 3,   # historique minimum pour juger (était codé en dur "3" dans main.py)
+    "min_ratio": 3.0,          # ratio gain/perte minimum (reprend BACKTEST_MIN_RATIO comme défaut)
+    "min_regularity": 0.3,     # régularité de vente minimum (était codé en dur "0.3" dans main.py)
+    "max_bundle_usd": 15000,   # market cap max de la 1ère bougie avant d'exclure comme "bundle" (reprend MAX_FIRST_CANDLE_MARKET_CAP)
+}
+
 # ── Détection de "montant fixe" pour le schéma exchange ──────────
 FIXED_AMOUNT_TOLERANCE_SOL = float(os.getenv("FIXED_AMOUNT_TOLERANCE_SOL", "0.0005"))
 
