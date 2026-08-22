@@ -1180,6 +1180,7 @@ class SniperTelegramBot:
             [InlineKeyboardButton("🧹 Nettoyage automatique", callback_data="cleanup_settings")],
             [InlineKeyboardButton("📤 Alerte retrait SOL", callback_data="withdrawal_settings")],
             [InlineKeyboardButton("💸 Alerte transfert dev (90%)", callback_data="devtransfer_settings")],
+            [InlineKeyboardButton("🔍 Détection auto — critères", callback_data="menu_autodetect")],
             [InlineKeyboardButton(t("btn_back", lang), callback_data="menu_main")],
         ]
         await self._send_or_edit(query, text, InlineKeyboardMarkup(keyboard), edit=True)
@@ -1269,6 +1270,45 @@ class SniperTelegramBot:
             f"{t('gas_fees_summary', lang)}"
         )
         keyboard = [[InlineKeyboardButton(t("btn_back", lang), callback_data="menu_settings")]]
+        await self._send_or_edit(query, text, InlineKeyboardMarkup(keyboard), edit=True)
+
+    async def show_auto_detection_settings(self, query):
+        """
+        🔍 Détection auto — AJOUTÉ (demande explicite, 19 août) : les 4
+        critères de qualité utilisés par main._evaluate_new_dev pour juger
+        un nouveau dev auto-détecté (historique minimum, ratio gain/perte,
+        régularité de vente, bundle max), + un interrupteur pour tout
+        désactiver d'un coup. Voir config.DEFAULT_AUTO_DETECTION_SETTINGS
+        pour les valeurs par défaut.
+        """
+        s = self.data_store.state.get("auto_detection_settings", dict(config.DEFAULT_AUTO_DETECTION_SETTINGS))
+        enabled = s.get("filters_enabled", True)
+        status = "🟢 ON" if enabled else "🔴 OFF (tout dev ajouté sans filtre)"
+
+        text = (
+            "🔍 *Détection auto — critères de qualité*\n\n"
+            "_Utilisés pour juger un nouveau dev détecté sur Pump.fun avant de "
+            "l'ajouter au monitoring et d'acheter son token._\n\n"
+            f"Filtres : {status}\n\n"
+            f"1️⃣ Historique minimum : `{s.get('min_tokens_created')}` tokens créés\n"
+            f"2️⃣ Ratio gain/perte minimum : `{s.get('min_ratio')}`\n"
+            f"3️⃣ Régularité de vente minimum : `{s.get('min_regularity')}`\n"
+            f"4️⃣ Bundle max (1ère bougie) : `{s.get('max_bundle_usd'):,.0f}$`\n"
+        )
+        if not enabled:
+            text += (
+                "\n⚠️ _Filtres désactivés — tout nouveau dev détecté est ajouté et acheté "
+                "immédiatement, sans aucune vérification. Risqué en LIVE._"
+            )
+
+        keyboard = [
+            [InlineKeyboardButton(f"Filtres : {status}", callback_data="toggle_autodetect_filters")],
+            [InlineKeyboardButton("✏️ Historique minimum", callback_data="editautodetect_min_tokens_created|int")],
+            [InlineKeyboardButton("✏️ Ratio gain/perte minimum", callback_data="editautodetect_min_ratio|float")],
+            [InlineKeyboardButton("✏️ Régularité minimum", callback_data="editautodetect_min_regularity|float")],
+            [InlineKeyboardButton("✏️ Bundle max", callback_data="editautodetect_max_bundle_usd|float")],
+            [InlineKeyboardButton(t("btn_back", lang := self.data_store.state.get("language", "fr")), callback_data="menu_settings")],
+        ]
         await self._send_or_edit(query, text, InlineKeyboardMarkup(keyboard), edit=True)
 
     async def show_notification_settings(self, query):
@@ -2988,6 +3028,22 @@ class SniperTelegramBot:
                 await self.show_advanced_strategies(query, address)
             else:
                 await self.show_protection_config(query, address)
+        elif data == "menu_autodetect":
+            await self.show_auto_detection_settings(query)
+        elif data == "toggle_autodetect_filters":
+            # AJOUTÉ (demande explicite) : complète le toggle déjà affiché
+            # mais jamais branché — voir show_auto_detection_settings.
+            s = self.data_store.state.setdefault("auto_detection_settings", dict(config.DEFAULT_AUTO_DETECTION_SETTINGS))
+            s["filters_enabled"] = not s.get("filters_enabled", True)
+            self.data_store.save()
+            await self.show_auto_detection_settings(query)
+        elif data.startswith("editautodetect_"):
+            # AJOUTÉ (demande explicite) : complète les 4 boutons d'édition
+            # déjà affichés mais jamais branchés. Format : editautodetect_{field}|{value_type}
+            payload = data[len("editautodetect_"):]
+            field, value_type = payload.split("|")
+            user_states[chat_id] = {"awaiting": "edit_autodetect_setting", "field": field, "value_type": value_type}
+            await query.edit_message_text(f"Envoie la nouvelle valeur pour `{field}`.", parse_mode="Markdown")
         elif data.startswith("editset_"):
             # Format : editset_{address}|{field}|{value_type}[|none]
             payload = data[len("editset_"):]
@@ -3540,6 +3596,23 @@ class SniperTelegramBot:
         elif awaiting == "edit_setting":
             await self._apply_setting_edit(update, state, text)
             user_states.pop(chat_id, None)
+
+        elif awaiting == "edit_autodetect_setting":
+            # AJOUTÉ (demande explicite) : applique la valeur saisie pour un
+            # des 4 critères de détection auto (state["auto_detection_settings"],
+            # global — pas par wallet, contrairement à edit_setting).
+            field = state["field"]
+            value_type = state["value_type"]
+            try:
+                value = int(text) if value_type == "int" else float(text)
+            except ValueError:
+                await update.message.reply_text(f"Valeur invalide pour `{field}` — attendu un nombre.", parse_mode="Markdown")
+                return
+            s = self.data_store.state.setdefault("auto_detection_settings", dict(config.DEFAULT_AUTO_DETECTION_SETTINGS))
+            s[field] = value
+            self.data_store.save()
+            user_states.pop(chat_id, None)
+            await update.message.reply_text(f"✅ `{field}` mis à jour : `{value}`.", parse_mode="Markdown")
 
         elif awaiting == "edit_tp":
             try:
