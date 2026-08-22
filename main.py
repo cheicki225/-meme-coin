@@ -443,7 +443,7 @@ class SniperBot:
             ]])
 
         await self.notifier.notify(
-            "rugger_alert",
+            "withdrawal_alert",
             f"📤 *Retrait {unit} détecté*\n\n"
             f"Wallet : `{wallet_address}` ({label})\n"
             f"Type : {type_label}\n"
@@ -520,7 +520,7 @@ class SniperBot:
             ]])
 
         await self.notifier.notify(
-            "rugger_alert",
+            "withdrawal_alert",
             f"💸 *Transfert SOL important détecté*\n\n"
             f"Dev : `{dev_address}` ({label})\n"
             f"Montant : `{amount_sol:.4f}` SOL (`{pct_of_balance:.0f}%` de son solde)\n"

@@ -1278,6 +1278,7 @@ class SniperTelegramBot:
             "buy_confirmed": "📦 Buy Confirmed",
             "sell_success": "📦 Sell Success",
             "rugger_alert": "🛡️ Rugger Alert",
+            "withdrawal_alert": "📤 Retraits détectés",
             "buy_skipped": "📋 Buy Skipped",
             "processing_buy": "📋 Processing Buy",
         }

@@ -324,6 +324,15 @@ DEFAULT_NOTIFICATION_PREFS = {
     "buy_skipped": False,
     "processing_buy": False,
     "rug_scan_alert": True,  # AJOUTÉ avec le scanner de rugs complet (rug_scanner.py)
+    # AJOUTÉ (demande explicite, 19 août) : catégorie DÉDIÉE pour les
+    # alertes de retrait ("Retrait SOL/USDC détecté" + "Transfert SOL
+    # important détecté" / 90% du solde). Avant, ces deux-là partageaient
+    # "rugger_alert" avec des alertes SANS RAPPORT (nouveau wallet
+    # découvert via Protection, avis IA sur un dev auto-ajouté) — les
+    # couper ensemble aurait été un tout-ou-rien imprécis. Voir
+    # main.on_wallet_withdrawal et main.on_dev_transfer_alert (ou
+    # équivalent) pour les deux appels concernés.
+    "withdrawal_alert": True,
 }
 
 # ── Filtre de backtest : rejette les tokens dont la 1ère bougie/bundle est trop haute ─
