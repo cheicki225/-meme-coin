@@ -670,6 +670,15 @@ class SniperTelegramBot:
                 InlineKeyboardButton(f"{t('btn_autosell', lang)}: {as_}", callback_data=f"toggle_as_{self._sid(address)}"),
             ],
             [analyze_btn],
+            [InlineKeyboardButton("🌐 Voir sur GMGN", url=f"https://gmgn.ai/sol/address/{address}")],
+        ]
+        # AJOUTÉ (demande explicite) : lien Solscan direct, réservé aux
+        # Ruggeurs (is_dev_profile) — même principe que le bouton GMGN
+        # au-dessus, mais celui-là seulement pour les wallets dev.
+        if is_dev_profile:
+            keyboard.append([InlineKeyboardButton("🔍 Voir sur Solscan", url=f"https://solscan.io/account/{address}")])
+
+        keyboard += [
             [InlineKeyboardButton(t("btn_buy_config", lang), callback_data=f"buyconfig_{self._sid(address)}")],
             [InlineKeyboardButton(t("btn_sell_config", lang), callback_data=f"sellconfig_{self._sid(address)}")],
             [InlineKeyboardButton(t("btn_more", lang), callback_data=f"ruggermore_{self._sid(address)}")],

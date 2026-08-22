@@ -265,6 +265,21 @@ class SniperBot:
                 source_entry_market_cap = source_price_sol * backtest.PUMPFUN_STANDARD_TOTAL_SUPPLY * sol_rate
             except (ZeroDivisionError, TypeError, ValueError):
                 source_entry_market_cap = None
+        else:
+            # AJOUTÉ (demande explicite, 19 août) : diagnostic pour un vrai
+            # cas signalé où "Market cap (entrée wallet suivi)" n'apparaît
+            # pas dans la notification — l'extraction échoue probablement
+            # pour un schéma de swap plus complexe (routage multi-hop via un
+            # agrégateur type Jupiter, où le mouvement SOL du wallet source
+            # n'est pas directement adjacent au tokenTransfer dans la
+            # transaction — voir _classify_transaction). Ce log précise
+            # LEQUEL des deux montants manque, pour distinguer ce cas d'une
+            # éventuelle vraie régression.
+            log.info(
+                f"ℹ️ Market cap source non calculable pour {label} sur {token_mint[:8]}... "
+                f"(sol_spent={source_sol_spent_lamports}, tokens_received={source_tokens_received}) "
+                f"— probablement un swap routé via plusieurs sauts, pas une erreur bloquante."
+            )
 
         log.info(f"📋 Copy trade détecté : {label} a acheté {token_mint[:8]}... (tx {signature[:12]}...)")
         await self.trader.open_position(

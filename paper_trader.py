@@ -52,10 +52,10 @@ def _build_position_keyboard(token_mint: str):
     except ImportError:
         return None
 
-    # Solscan suit un format d'URL stable et documenté. Axiom (axiom.trade)
-    # n'a pas de doc publique d'URL directe vérifiée par mes soins — à
-    # confirmer/ajuster si le lien ne pointe pas vers la bonne page chez toi.
-    axiom_url = f"https://axiom.trade/meme/{token_mint}"
+    # CORRIGÉ suite à un vrai lien cassé signalé : "/meme/{mint}" ne menait
+    # pas à la bonne page. Format confirmé fonctionnel par Cheicki :
+    # "/t/{mint}?chain=sol".
+    axiom_url = f"https://axiom.trade/t/{token_mint}?chain=sol"
     solscan_url = f"https://solscan.io/token/{token_mint}"
 
     keyboard = [
