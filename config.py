@@ -170,7 +170,7 @@ DEFAULT_WALLET_SETTINGS = {
     "max_market_cap": 6500,  # protection : n'achète pas au-dessus (par défaut demandé pour tous les nouveaux wallets)
     "snipe_delay_s": 0,       # délai avant achat après détection (0 = immédiat, bloc zéro)
     "no_activity_sell_s": 35,  # vend si aucune activité (achat/vente) pendant N secondes — SL "naturel"
-    "buy_only_once": True,    # n'achète qu'une fois par wallet suivi, même s'il rachète le même token
+    "buy_only_once": True,    # MODIFIÉ (19 août) : bloque le RACHAT du même token, plus jamais tout le wallet — voir monitoring_list.has_already_bought
     # AJOUTÉ (demande explicite) : n'achète en copy trade que si le token a
     # moins de N secondes au moment de l'achat détecté — filtre les copy
     # trades sur des tokens qui traînent déjà depuis un moment, pas des
@@ -287,6 +287,11 @@ DEFAULT_WALLET_SETTINGS = {
     "profit_trail_initial_floor_pct": 20,
     "profit_trail_tight_arm_pct": 105,  # DÉPRÉCIÉ — plus utilisé, voir commentaire ci-dessus
     "profit_trail_gap_pct": 30,
+    # AJOUTÉ (demande explicite, 19 août — passé de global à individuel par
+    # wallet) : liste de devs à éviter pour CE wallet Copy Trading précis.
+    # Indépendante du monitoring — un dev bloqué n'a pas besoin d'être un
+    # wallet suivi par le bot. Voir monitoring_list.add_blocked_dev.
+    "blocked_devs": {},                 # {address: {label, added_at}}
 }
 
 # ── Referral (simulé — pas de vrai système de paiement/commission) ─

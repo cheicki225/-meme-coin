@@ -58,6 +58,7 @@ class DataStore:
                     self._backfill_wallet_settings(loaded)
                     self._migrate_force_buy_only_once(loaded)
                     self._migrate_force_profit_trail_enabled(loaded)
+                    self._migrate_reset_legacy_already_bought(loaded)
                     return loaded
             except (json.JSONDecodeError, OSError) as e:
                 log.error(f"Erreur lecture {self.path}: {e} — réinitialisation.")
@@ -138,6 +139,38 @@ class DataStore:
         if forced_count > 0:
             log.info(f"🔧 Migration ponctuelle : profit_trail_enabled forcé à True sur {forced_count} wallet(s) existant(s).")
 
+    def _migrate_reset_legacy_already_bought(self, state: dict):
+        """
+        MIGRATION PONCTUELLE (demande explicite, 19 août 2026) : buy_only_once
+        bloquait avant TOUT nouvel achat d'un wallet dès son premier succès,
+        pour toujours (confirmé voulu à l'origine — voir l'ancien commentaire
+        "même s'il rachète le même token" dans config.py) ; maintenant, ne
+        bloque que le rachat d'un token déjà acheté (voir mark_bought/
+        has_already_bought ci-dessus). Les wallets qui avaient déjà
+        "already_bought": True avant ce changement resteraient bloqués sur
+        TOUT (le repli de compatibilité de has_already_bought traite "on ne
+        sait pas quel token" comme "bloqué partout") — pas le comportement
+        voulu. Réinitialise ici "bought_tokens" à une liste VIDE pour ces
+        wallets, UNE SEULE FOIS (flag state["_migration_legacy_bought_reset_v1"])
+        — ils redeviennent immédiatement éligibles pour copier n'importe quel
+        nouveau token, comme s'ils n'avaient jamais rien acheté. On perd la
+        trace de LEUR ancien achat précis (l'ancien design ne gardait que
+        "oui/non", pas le token), mais c'est sans conséquence : le but est
+        seulement d'éviter un futur RACHAT du même token, et cet ancien achat
+        est déjà terminé (position fermée depuis, confirmé plus tôt ce soir).
+        """
+        if state.get("_migration_legacy_bought_reset_v1"):
+            return
+        wallets = state.get("monitored_dev_wallets", {})
+        reset_count = 0
+        for address, entry in wallets.items():
+            if entry.get("already_bought") and "bought_tokens" not in entry:
+                entry["bought_tokens"] = []
+                reset_count += 1
+        state["_migration_legacy_bought_reset_v1"] = True
+        if reset_count > 0:
+            log.info(f"🔧 Migration ponctuelle : statut buy_only_once réinitialisé sur {reset_count} wallet(s) existant(s) (passage au blocage par token).")
+
     def _default_state(self) -> dict:
         return {
             "monitored_dev_wallets": {},        # {address: {label, scheme, mode, backtest_ratio, settings}}
@@ -156,11 +189,6 @@ class DataStore:
             "referral": dict(config.DEFAULT_REFERRAL_STATE),
             "linked_wallet_groups": {},
             "pending_dev_sell_watch": {},
-            # AJOUTÉ (demande explicite, 19 août) : liste de devs à éviter en
-            # Copy Trading, indépendante du monitoring — un dev bloqué n'a
-            # PAS besoin d'être un wallet suivi par le bot. Voir
-            # add_blocked_dev/remove_blocked_dev/is_dev_blocked ci-dessous.
-            "blocked_devs": {},                 # {address: {label, added_at}}
         }
 
     def save(self):
@@ -273,7 +301,7 @@ class DataStore:
             "mode": mode,
             "backtest_ratio": backtest_ratio,
             "settings": final_settings,
-            "already_bought": False,  # pour buy_only_once
+            "bought_tokens": [],  # MODIFIÉ (demande explicite, 19 août) : liste des tokens déjà achetés pour buy_only_once — avant, "already_bought": bool bloquait TOUT nouvel achat de ce wallet pour toujours dès le premier succès (confirmé voulu à l'origine, mais pas ce que Cheicki veut réellement) ; maintenant, ne bloque que le RACHAT d'un token déjà acheté, pas un nouveau token différent.
             "added_at": now,
             "last_activity_at": now,
             "linked_to_parent": linked_to_parent,
@@ -416,14 +444,35 @@ class DataStore:
         entry = self.state["monitored_dev_wallets"].get(address, {})
         return entry.get("settings", copy.deepcopy(config.DEFAULT_WALLET_SETTINGS))
 
-    def mark_bought(self, address: str):
-        if address in self.state["monitored_dev_wallets"]:
-            self.state["monitored_dev_wallets"][address]["already_bought"] = True
+    def mark_bought(self, address: str, token_mint: str):
+        """
+        MODIFIÉ (demande explicite, 19 août) : marque désormais QUE ce
+        token précis comme acheté pour ce wallet, pas "ce wallet a acheté,
+        point final". Rétrocompatible avec les anciennes entrées qui
+        avaient encore "bought_tokens" absent (créées avant ce changement) —
+        setdefault crée la liste au premier appel plutôt que de planter.
+        """
+        entry = self.state["monitored_dev_wallets"].get(address)
+        if entry:
+            entry.setdefault("bought_tokens", []).append(token_mint)
             self.save()
 
-    def has_already_bought(self, address: str) -> bool:
+    def has_already_bought(self, address: str, token_mint: str) -> bool:
+        """
+        MODIFIÉ (demande explicite, 19 août) : vérifie maintenant si CE
+        token précis a déjà été acheté pour ce wallet — pas "ce wallet
+        a-t-il déjà acheté N'IMPORTE QUOI". Avant ce changement, un wallet
+        qui avait réussi UN SEUL achat devenait bloqué pour toujours, même
+        sur des tokens totalement différents plus tard — pas le comportement
+        voulu (confirmé explicitement). Repli sur l'ancien champ
+        "already_bought" (bool) pour les wallets pas encore migrés vers
+        "bought_tokens" — traité comme "a déjà acheté quelque chose, mais
+        on ne sait pas quoi" plutôt que de perdre l'information silencieusement.
+        """
         entry = self.state["monitored_dev_wallets"].get(address, {})
-        return entry.get("already_bought", False)
+        if "bought_tokens" in entry:
+            return token_mint in entry["bought_tokens"]
+        return entry.get("already_bought", False)  # ancienne donnée, avant la migration
 
     def update_wallet_settings(self, address: str, partial_settings: dict):
         if address not in self.state["monitored_dev_wallets"]:
@@ -665,33 +714,37 @@ class DataStore:
         log.info(f"➕ Protection ajoutée : {label} ({target_type}, {address[:8]}...)")
 
     # ══════════════════════════════════════════════════════════
-    # DEVS BLOQUÉS (Copy Trading)
+    # DEVS BLOQUÉS (Copy Trading) — INDIVIDUEL PAR WALLET
     # ══════════════════════════════════════════════════════════
-    # AJOUTÉ (demande explicite, 19 août) : liste de devs à éviter en Copy
-    # Trading, indépendante du monitoring — un dev bloqué n'a pas besoin
-    # d'être un wallet suivi par le bot (peut être "un dev aléatoire",
-    # jamais ajouté nulle part ailleurs). Voir main.on_copytrade_buy pour
-    # l'application réelle du filtre.
+    # MODIFIÉ (demande explicite, 19 août) : d'abord une liste globale
+    # partagée par tous les wallets, puis précisé — chaque wallet Copy
+    # Trading a maintenant SA PROPRE liste (stockée dans ses settings,
+    # comme buy_only_once ou profit_trail_enabled), indépendante des autres
+    # wallets. Bloquer un dev sur un wallet n'affecte que CE wallet précis.
+    # Un dev bloqué n'a toujours pas besoin d'être lui-même un wallet suivi
+    # par le bot — voir main.on_copytrade_buy pour l'application réelle.
 
-    def add_blocked_dev(self, address: str, label: str = None):
+    def add_blocked_dev(self, wallet_address: str, dev_address: str, label: str = None):
         import time
-        self.state["blocked_devs"][address] = {
-            "label": label or address[:8] + "...",
-            "added_at": time.time(),
-        }
+        settings = self.get_wallet_settings(wallet_address)
+        blocked = settings.setdefault("blocked_devs", {})
+        blocked[dev_address] = {"label": label or dev_address[:8] + "...", "added_at": time.time()}
         self.save()
-        log.info(f"🚫 Dev bloqué ajouté : {address[:8]}...")
+        log.info(f"🚫 Dev bloqué ajouté sur {wallet_address[:8]}... : {dev_address[:8]}...")
 
-    def remove_blocked_dev(self, address: str):
-        self.state["blocked_devs"].pop(address, None)
+    def remove_blocked_dev(self, wallet_address: str, dev_address: str):
+        settings = self.get_wallet_settings(wallet_address)
+        settings.get("blocked_devs", {}).pop(dev_address, None)
         self.save()
-        log.info(f"✅ Dev débloqué : {address[:8]}...")
+        log.info(f"✅ Dev débloqué sur {wallet_address[:8]}... : {dev_address[:8]}...")
 
-    def is_dev_blocked(self, address: str) -> bool:
-        return address in self.state.get("blocked_devs", {})
+    def is_dev_blocked(self, wallet_address: str, dev_address: str) -> bool:
+        settings = self.get_wallet_settings(wallet_address)
+        return dev_address in settings.get("blocked_devs", {})
 
-    def list_blocked_devs(self) -> dict:
-        return self.state.get("blocked_devs", {})
+    def list_blocked_devs(self, wallet_address: str) -> dict:
+        settings = self.get_wallet_settings(wallet_address)
+        return settings.get("blocked_devs", {})
 
     def remove_protection_target(self, label: str):
         self.state["protection_targets"].pop(label, None)

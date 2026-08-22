@@ -145,13 +145,14 @@ class PaperTrader:
             log.warning("🛑 Circuit breaker actif — aucune nouvelle position ouverte.")
             return None
 
-        if settings.get("buy_only_once", True) and self.data_store.has_already_bought(source_wallet):
-            log.info(f"⏭️  {source_wallet[:8]}... déjà acheté une fois (buy_only_once actif), skip.")
+        if settings.get("buy_only_once", True) and self.data_store.has_already_bought(source_wallet, token_mint):
+            log.info(f"⏭️  {source_wallet[:8]}... a déjà acheté {token_mint[:8]}... (buy_only_once actif), skip.")
             if self.notifier:
                 await self.notifier.notify(
                     "buy_skipped",
                     f"⏭️ *Buy Skipped* (buy only once)\nWallet: `{source_wallet[:8]}...`\n"
-                    f"Token: `{token_mint[:8]}...`\nL'adresse a racheté mais on ne suit que le premier achat.",
+                    f"Token: `{token_mint[:8]}...`\nCe wallet a déjà acheté CE token précis — "
+                    f"on ne copie pas un rachat du même token, mais tout nouveau token reste suivi normalement.",
                 )
             return None
 
@@ -403,7 +404,7 @@ class PaperTrader:
 
         self.data_store.state.setdefault("open_positions", []).append(position)
         if settings.get("buy_only_once", True):
-            self.data_store.mark_bought(source_wallet)
+            self.data_store.mark_bought(source_wallet, token_mint)
         self.data_store.save()
 
         log.info(
