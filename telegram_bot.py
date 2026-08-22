@@ -2297,7 +2297,6 @@ class SniperTelegramBot:
             ],
             [InlineKeyboardButton("⚙️ Settings", callback_data="menu_settings")],
             [InlineKeyboardButton("📋 Presets", callback_data="list_presets")],
-            [InlineKeyboardButton("🚫 Devs bloqués (tous les wallets)", callback_data="menu_blockeddevs_global")],
             [InlineKeyboardButton("💾 Backups", callback_data="menu_backups")],
             [InlineKeyboardButton("← Back", callback_data="menu_main")],
         ]
