@@ -182,7 +182,29 @@ class SniperBot:
             return
 
         # Cas 2 : nouveau dev → pipeline complet d'évaluation
-        await self._evaluate_new_dev(dev_address, token_mint)
+        #
+        # CORRIGÉ suite à un vrai bug trouvé (déconnexions WebSocket
+        # systématiques observées en conditions réelles, à chaque évaluation
+        # sans exception) : _evaluate_new_dev peut prendre jusqu'à 70+
+        # secondes (backtest sur plusieurs tokens, chacun décodant jusqu'à 40
+        # transactions). Comme on_new_token était directement awaité DANS la
+        # boucle "async for message in ws" de websocket_listener.py, toute
+        # cette durée bloquait la réception du message suivant ET le
+        # mécanisme de ping/pong interne de la connexion — provoquant un
+        # timeout de keepalive et une reconnexion forcée à chaque fois.
+        # asyncio.create_task() lance maintenant l'évaluation EN PARALLÈLE :
+        # on_new_token (et donc la boucle WebSocket) revient immédiatement,
+        # libre de traiter le message suivant et de répondre aux pings, pendant
+        # que l'évaluation continue en arrière-plan. _run_evaluation_task
+        # capture les exceptions pour qu'elles restent visibles dans les logs
+        # (une tâche asyncio non attendue les avale sinon silencieusement).
+        asyncio.create_task(self._run_evaluation_task(dev_address, token_mint))
+
+    async def _run_evaluation_task(self, dev_address: str, token_mint: str):
+        try:
+            await self._evaluate_new_dev(dev_address, token_mint)
+        except Exception as e:
+            log.error(f"❌ Erreur pendant l'évaluation en arrière-plan de {dev_address[:8]}...: {e}")
 
     async def on_copytrade_buy(self, wallet_address: str, token_mint: str, signature: str,
                                 source_sol_spent_lamports: int = 0, source_tokens_received: float = 0):
