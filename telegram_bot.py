@@ -2305,24 +2305,36 @@ class SniperTelegramBot:
     async def show_blocked_devs_global_menu(self, query):
         """
         🚫 Devs bloqués (tous les wallets) — AJOUTÉ (demande explicite, 19
-        août) : action GROUPÉE — bloque un dev sur TOUS les wallets Copy
-        Trading d'un coup (ajoute la même entrée dans les settings
-        blocked_devs de chacun), complémentaire à l'écran individuel par
-        wallet (show_blocked_devs_menu). Pas une liste séparée : les mêmes
-        données, juste écrites partout en une seule action.
+        août) : action GROUPÉE (bloque un dev sur TOUS les wallets Copy
+        Trading d'un coup) + vue d'ensemble agrégée de ce qui est déjà
+        bloqué, avec suppression individuelle par dev (retire de tous les
+        wallets où il apparaît). Les données restent stockées PAR wallet
+        (voir show_blocked_devs_menu pour la gestion fine par wallet) —
+        cette vue ne fait qu'agréger pour l'affichage, ce n'est pas une
+        liste séparée.
         """
         n_ruggers, n_copytrade = self.data_store.count_wallets_by_mode()
+        aggregated = self.data_store.list_all_blocked_devs_aggregated()
         text = (
             "🚫 *Devs bloqués — tous les wallets*\n\n"
             "_Bloque un dev sur TOUS tes wallets Copy Trading d'un coup, plutôt que "
-            "un par un. Pour gérer la liste d'un wallet précis (voir/retirer), passe "
-            "par sa fiche → •••Plus → Devs bloqués._\n\n"
-            f"`{n_copytrade}` wallet(s) Copy Trading seront concernés."
+            "un par un. Pour gérer la liste d'un wallet précis, passe par sa fiche → "
+            "•••Plus → Devs bloqués._\n\n"
+            f"`{n_copytrade}` wallet(s) Copy Trading au total.\n\n"
         )
-        keyboard = [
-            [InlineKeyboardButton("➕ Bloquer un dev sur tous les wallets", callback_data="addblockeddevall")],
-            [InlineKeyboardButton("← Back", callback_data="menu_main")],
-        ]
+        if aggregated:
+            text += "*Devs actuellement bloqués* (sur au moins un wallet) :\n"
+            for dev_address, info in aggregated.items():
+                text += f"   🚫 `{info['label']}` — bloqué sur `{info['wallet_count']}`/`{n_copytrade}` wallet(s)\n"
+        else:
+            text += "_Aucun dev bloqué pour l'instant._"
+
+        keyboard = [[InlineKeyboardButton("➕ Bloquer un dev sur tous les wallets", callback_data="addblockeddevall")]]
+        for dev_address, info in aggregated.items():
+            keyboard.append([InlineKeyboardButton(
+                f"🗑 Débloquer {info['label']} (partout)", callback_data=f"unblockdevall_{self._sid(dev_address)}",
+            )])
+        keyboard.append([InlineKeyboardButton("← Back", callback_data="menu_main")])
         await self._send_or_edit(query, text, InlineKeyboardMarkup(keyboard), edit=True)
 
     async def show_blocked_devs_menu(self, query, address: str):
@@ -2846,6 +2858,11 @@ class SniperTelegramBot:
                 "🚫 Colle l'adresse du dev à bloquer sur TOUS tes wallets Copy Trading — "
                 "peut être n'importe quelle adresse, pas besoin qu'elle soit déjà suivie par le bot."
             )
+        elif data.startswith("unblockdevall_"):
+            dev_address = data[len("unblockdevall_"):]
+            removed_count = self.data_store.remove_blocked_dev_everywhere(dev_address)
+            await query.answer(f"✅ Débloqué sur {removed_count} wallet(s).")
+            await self.show_blocked_devs_global_menu(query)
         elif data.startswith("walletblockeddevs_"):
             address = data[len("walletblockeddevs_"):]
             await self.show_blocked_devs_menu(query, address)

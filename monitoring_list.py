@@ -746,6 +746,41 @@ class DataStore:
         settings = self.get_wallet_settings(wallet_address)
         return settings.get("blocked_devs", {})
 
+    def list_all_blocked_devs_aggregated(self) -> dict:
+        """
+        AJOUTÉ (demande explicite, 19 août) : vue d'ensemble de tous les
+        devs bloqués, tous wallets Copy Trading confondus — les données
+        restent stockées PAR wallet (voir list_blocked_devs), ceci ne fait
+        qu'agréger pour l'affichage. Retourne {dev_address: {"label":,
+        "wallet_count": int, "wallet_labels": [str, ...]}}.
+        """
+        aggregated = {}
+        for address, entry in self.state.get("monitored_dev_wallets", {}).items():
+            if entry.get("mode") not in ("track_buy", "track_sell"):
+                continue
+            wallet_label = entry.get("label", address[:8] + "...")
+            for dev_address, info in entry.get("settings", {}).get("blocked_devs", {}).items():
+                agg = aggregated.setdefault(dev_address, {"label": info.get("label", dev_address[:8] + "..."), "wallet_count": 0, "wallet_labels": []})
+                agg["wallet_count"] += 1
+                agg["wallet_labels"].append(wallet_label)
+        return aggregated
+
+    def remove_blocked_dev_everywhere(self, dev_address: str):
+        """
+        AJOUTÉ (demande explicite, 19 août) : retire ce dev de la liste des
+        devs bloqués de TOUS les wallets Copy Trading où il apparaît —
+        pendant symétrique de add_blocked_dev_all_wallets côté suppression.
+        """
+        removed_count = 0
+        for address, entry in self.state.get("monitored_dev_wallets", {}).items():
+            blocked = entry.get("settings", {}).get("blocked_devs", {})
+            if dev_address in blocked:
+                del blocked[dev_address]
+                removed_count += 1
+        if removed_count:
+            self.save()
+        return removed_count
+
     def remove_protection_target(self, label: str):
         self.state["protection_targets"].pop(label, None)
         self.save()
