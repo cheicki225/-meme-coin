@@ -526,10 +526,22 @@ class SniperTelegramBot:
                    if e.get("mode", "track_creation") in ("track_creation", "buy_on_dev_sell")
                    and not e.get("linked_to_parent")}
 
+        # CORRIGÉ suite à un vrai signalement (décalage entre "Stats session"
+        # et ce menu, ex: 11 vs 5) : le TITRE affichait len(wallets) — qui
+        # EXCLUT les wallets masqués (linked_to_parent) — alors que ces
+        # wallets masqués comptent bel et bien dans la limite de 30
+        # (MAX_MONITORED_WALLETS). Afficher "5/30" alors que 11 places sont
+        # réellement utilisées donnait une fausse impression de marge
+        # disponible. Le titre compte maintenant TOUS les Ruggeurs (visibles
+        # + masqués), cohérent avec count_wallets_by_mode() (Stats session) —
+        # seule la LISTE affichée en dessous reste filtrée (wallets masqués
+        # toujours cachés individuellement, juste comptés dans le total).
+        n_ruggers_total, _ = self.data_store.count_wallets_by_mode()
+
         auto_buy = "🟢 ON" if state.get("global_auto_buy", True) else "🔴 OFF"
         auto_sell = "🟢 ON" if state.get("global_auto_sell", True) else "🔴 OFF"
 
-        text = t("ruggers_menu_title", lang, count=len(wallets), max=config.MAX_MONITORED_WALLETS)
+        text = t("ruggers_menu_title", lang, count=n_ruggers_total, max=config.MAX_MONITORED_WALLETS)
 
         keyboard = [
             [
