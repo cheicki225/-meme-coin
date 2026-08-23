@@ -77,7 +77,7 @@ class SniperBot:
         else:
             self.trader = PaperTrader(self.data_store, notifier=self.notifier, price_stream=self.position_price_stream)
 
-        self.listener = NewTokenListener(on_new_token=self.on_new_token)
+        self.listener = NewTokenListener(on_new_token=self.on_new_token, data_store=self.data_store)
         self.copytrade_listener = CopyTradeListener(
             self.data_store, on_buy=self.on_copytrade_buy, on_sell=self.on_copytrade_sell,
             on_large_sol_transfer=self.on_dev_large_sol_transfer,

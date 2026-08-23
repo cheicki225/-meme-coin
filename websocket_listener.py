@@ -35,9 +35,30 @@ class NewTokenListener:
     """
     Écoute les créations de tokens Pump.fun en temps réel et notifie
     un callback asynchrone pour chaque nouveau token détecté.
+
+    MODIFIÉ (demande explicite, 19 août — réduction de coût) : deux modes
+    de souscription selon state["auto_detection_settings"]["auto_add_new_devs"] :
+    - True (découverte de nouveaux devs active) : écoute TOUT le programme
+      Pump.fun (comportement d'origine) — nécessaire pour voir des devs
+      encore inconnus.
+    - False (découverte désactivée, cas de Cheicki actuellement) : écoute
+      UNIQUEMENT les wallets déjà dans monitored_dev_wallets (mode
+      track_creation), une souscription par wallet — même principe que
+      copytrade_listener.py (qui surveille déjà individuellement ces mêmes
+      wallets pour l'alerte transfert 90%). Réduit drastiquement le volume
+      d'appels à l'API Enhanced Transactions (le facteur de coût dominant,
+      confirmé par Cheicki via le tableau de coûts Helius) puisqu'on ne
+      traite plus que les transactions de TES wallets, pas toute la
+      plateforme.
+
+    Ce choix se fait à CHAQUE reconnexion (pas en direct pendant qu'une
+    connexion est active) — si tu changes ce réglage en cours de route, ça
+    prend effet à la prochaine reconnexion (généralement dans les
+    5-90s vu la fréquence des reconnexions observées ce soir), pas besoin
+    de redémarrer le bot.
     """
 
-    def __init__(self, on_new_token):
+    def __init__(self, on_new_token, data_store=None):
         """
         on_new_token: fonction async(dict) appelée pour chaque nouveau token.
             Le dict contient : {
@@ -46,9 +67,17 @@ class NewTokenListener:
                 "signature": str,
                 "raw": dict  # transaction parsée complète (Helius)
             }
+        data_store: AJOUTÉ (demande explicite) — instance de
+            monitoring_list.DataStore, nécessaire pour le mode économique
+            par wallet. None = toujours en mode "toute la plateforme"
+            (comportement d'origine), même si auto_add_new_devs est False.
         """
         self.on_new_token = on_new_token
+        self.data_store = data_store
         self._running = False
+        self._ws = None
+        self._subscribed_wallets = set()
+        self._per_wallet_mode = False
 
     async def start(self):
         if not config.HELIUS_WS_URL:
@@ -69,41 +98,97 @@ class NewTokenListener:
     async def stop(self):
         self._running = False
 
+    def _should_use_per_wallet_mode(self) -> bool:
+        if not self.data_store:
+            return False
+        det_settings = self.data_store.state.get("auto_detection_settings", {})
+        return not det_settings.get("auto_add_new_devs", True)
+
+    def _get_tracked_creation_wallets(self) -> set:
+        wallets = set()
+        for address, entry in self.data_store.state.get("monitored_dev_wallets", {}).items():
+            if entry.get("mode", "track_creation") == "track_creation":
+                wallets.add(address)
+        return wallets
+
     async def _listen_once(self):
+        self._per_wallet_mode = self._should_use_per_wallet_mode()
+
         async with websockets.connect(config.HELIUS_WS_URL, ping_interval=20) as ws:
-            # Abonnement aux logs mentionnant le programme Pump.fun
-            subscribe_msg = {
+            self._ws = ws
+
+            if self._per_wallet_mode:
+                self._subscribed_wallets = set()
+                await self._sync_wallet_subscriptions()
+                log.info(
+                    f"✅ Abonné aux logs Pump.fun — mode économique, "
+                    f"{len(self._subscribed_wallets)} wallet(s) suivi(s) seulement "
+                    f"(découverte de nouveaux devs désactivée)."
+                )
+                sync_task = asyncio.create_task(self._periodic_sync())
+            else:
+                subscribe_msg = {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "logsSubscribe",
+                    "params": [
+                        {"mentions": [config.PUMP_FUN_PROGRAM_ID]},
+                        {"commitment": "processed"},
+                    ],
+                }
+                await ws.send(json.dumps(subscribe_msg))
+                log.info("✅ Abonné aux logs Pump.fun — écoute en cours (toute la plateforme)...")
+                sync_task = None
+
+            try:
+                async for message in ws:
+                    try:
+                        data = json.loads(message)
+                        result = data.get("params", {}).get("result", {})
+                        value = result.get("value", {})
+                        signature = value.get("signature")
+                        logs = value.get("logs", [])
+
+                        if not signature:
+                            continue
+
+                        # On ne traite que les logs qui indiquent une INSTRUCTION de création.
+                        # Pump.fun log généralement "Instruction: Create" pour une création de token.
+                        if not any("Instruction: Create" in l for l in logs):
+                            continue
+
+                        await self._handle_creation(signature)
+
+                    except Exception as e:
+                        log.debug(f"Erreur traitement message WS: {e}")
+            finally:
+                if sync_task:
+                    sync_task.cancel()
+
+    async def _periodic_sync(self):
+        while True:
+            await asyncio.sleep(config.COPYTRADE_SYNC_INTERVAL_S)
+            try:
+                await self._sync_wallet_subscriptions()
+            except Exception as e:
+                log.debug(f"Erreur sync detection (mode économique): {e}")
+
+    async def _sync_wallet_subscriptions(self):
+        current = self._get_tracked_creation_wallets()
+        new_wallets = current - self._subscribed_wallets
+
+        for wallet_addr in new_wallets:
+            sub_msg = {
                 "jsonrpc": "2.0",
-                "id": 1,
+                "id": len(self._subscribed_wallets) + 1,
                 "method": "logsSubscribe",
-                "params": [
-                    {"mentions": [config.PUMP_FUN_PROGRAM_ID]},
-                    {"commitment": "processed"},
-                ],
+                "params": [{"mentions": [wallet_addr]}, {"commitment": "processed"}],
             }
-            await ws.send(json.dumps(subscribe_msg))
-            log.info("✅ Abonné aux logs Pump.fun — écoute en cours...")
+            await self._ws.send(json.dumps(sub_msg))
+            self._subscribed_wallets.add(wallet_addr)
 
-            async for message in ws:
-                try:
-                    data = json.loads(message)
-                    result = data.get("params", {}).get("result", {})
-                    value = result.get("value", {})
-                    signature = value.get("signature")
-                    logs = value.get("logs", [])
-
-                    if not signature:
-                        continue
-
-                    # On ne traite que les logs qui indiquent une INSTRUCTION de création.
-                    # Pump.fun log généralement "Instruction: Create" pour une création de token.
-                    if not any("Instruction: Create" in l for l in logs):
-                        continue
-
-                    await self._handle_creation(signature)
-
-                except Exception as e:
-                    log.debug(f"Erreur traitement message WS: {e}")
+        if new_wallets:
+            log.info(f"🔔 {len(new_wallets)} wallet(s) de plus souscrit(s) en détection (mode économique).")
 
     async def _handle_creation(self, signature: str):
         """Récupère les détails parsés de la transaction et notifie le callback."""
