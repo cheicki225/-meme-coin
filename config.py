@@ -433,7 +433,7 @@ DEV_TRANSFER_ALLOW_CASCADE = os.getenv("DEV_TRANSFER_ALLOW_CASCADE", "false").lo
 # monitoring_list.get_cleanup_settings/set_cleanup_settings) — ces valeurs
 # ne servent que de défaut initial.
 WALLET_CLEANUP_ENABLED = os.getenv("WALLET_CLEANUP_ENABLED", "true").lower() == "true"
-WALLET_CLEANUP_INTERVAL_S = int(os.getenv("WALLET_CLEANUP_INTERVAL_S", "3600"))  # 1h entre 2 passages
+WALLET_CLEANUP_INTERVAL_S = int(os.getenv("WALLET_CLEANUP_INTERVAL_S", "14400"))  # MODIFIÉ (demande explicite, 19 août) : 1h -> 4h, réduction de coût RPC
 WALLET_CLEANUP_INACTIVE_DAYS = float(os.getenv("WALLET_CLEANUP_INACTIVE_DAYS", "30"))
 WALLET_CLEANUP_MAX_CONSECUTIVE_LOSSES = int(os.getenv("WALLET_CLEANUP_MAX_CONSECUTIVE_LOSSES", "7"))
 # AJOUTÉ (demande explicite, réduction du coût RPC) : profondeur de
@@ -447,7 +447,7 @@ WALLET_CLEANUP_MAX_CONSECUTIVE_LOSSES = int(os.getenv("WALLET_CLEANUP_MAX_CONSEC
 # wallets × jusqu'à 10 trades dans le pire cas (série de pertes), ça passe
 # le plafond théorique d'environ 43 000 appels RPC par passage à environ
 # 11 500 — une réduction d'environ 73%.
-WALLET_CLEANUP_MAX_TRANSACTIONS_SCANNED = int(os.getenv("WALLET_CLEANUP_MAX_TRANSACTIONS_SCANNED", "40"))
+WALLET_CLEANUP_MAX_TRANSACTIONS_SCANNED = int(os.getenv("WALLET_CLEANUP_MAX_TRANSACTIONS_SCANNED", "20"))  # MODIFIÉ (demande explicite, 19 août) : 40 -> 20, réduction de coût RPC
 
 # ── Buy on Dev Sell — délai max d'attente de la vente du dev après création ─
 BUY_ON_DEV_SELL_TIMEOUT_MIN = float(os.getenv("BUY_ON_DEV_SELL_TIMEOUT_MIN", "30"))
