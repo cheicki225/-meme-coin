@@ -189,6 +189,13 @@ class DataStore:
             "referral": dict(config.DEFAULT_REFERRAL_STATE),
             "linked_wallet_groups": {},
             "pending_dev_sell_watch": {},
+            # AJOUTÉ (demande explicite, 19 août) : critères de qualité pour
+            # l'évaluation automatique d'un nouveau dev détecté (voir
+            # main._evaluate_new_dev) — avant figés en dur (config.py +
+            # valeurs codées en dur dans main.py), maintenant modifiables
+            # depuis Telegram, avec un interrupteur pour tout désactiver
+            # d'un coup.
+            "auto_detection_settings": dict(config.DEFAULT_AUTO_DETECTION_SETTINGS),
         }
 
     def save(self):
@@ -411,6 +418,24 @@ class DataStore:
     def remove_dev_wallet(self, address: str):
         self.state["monitored_dev_wallets"].pop(address, None)
         self.save()
+
+    def remove_auto_detected_wallets(self) -> int:
+        """
+        AJOUTÉ (demande explicite, 19 août) : nettoyage en masse — supprime
+        tous les wallets dont le label commence par "Auto-détecté" (ajoutés
+        par le pipeline de détection automatique de _evaluate_new_dev, PAS
+        ajoutés manuellement par Cheicki). Ne touche à AUCUN wallet ajouté
+        via "➕ Add Rugger"/"➕ Add Copy Trade" ni via un ajout rapide depuis
+        une analyse ("➕ Ajouter en Ruggeur/Copy Trading"). Retourne le
+        nombre de wallets supprimés.
+        """
+        wallets = self.state.get("monitored_dev_wallets", {})
+        to_remove = [addr for addr, entry in wallets.items() if entry.get("label", "").startswith("Auto-détecté")]
+        for addr in to_remove:
+            wallets.pop(addr, None)
+        if to_remove:
+            self.save()
+        return len(to_remove)
 
     def is_dev_monitored(self, address: str) -> bool:
         return address in self.state["monitored_dev_wallets"]

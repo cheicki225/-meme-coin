@@ -1202,11 +1202,31 @@ class PaperTrader:
                 )
 
             # Carte PNL visuelle (comme F Project), en complément du message texte
+            #
+            # CORRIGÉ suite à un vrai signalement ("pourquoi tous les tokens
+            # ont le même nom ?") : token_label prenait TOUJOURS l'adresse du
+            # mint tronquée, jamais le vrai symbole (BAMBI, PIMBA...) — d'où
+            # l'impression que chaque carte se ressemblait. Tente maintenant
+            # de récupérer le vrai symbole via DexScreener (appel léger, pas
+            # de décodage RPC lourd) ; repli sur l'adresse tronquée si le
+            # token n'est pas encore indexé (fréquent pour un token encore en
+            # bonding curve au moment de la fermeture — DexScreener n'indexe
+            # que les tokens migrés, voir les nombreuses notes plus haut dans
+            # ce fichier sur cette même limite).
+            token_label = position["token_mint"][:8] + "..."
+            try:
+                pair_data = await _get_pair_data(position["token_mint"])
+                symbol = (pair_data or {}).get("baseToken", {}).get("symbol")
+                if symbol:
+                    token_label = symbol
+            except Exception:
+                pass  # repli silencieux sur l'adresse tronquée — jamais bloquant pour l'envoi de la carte
+
             try:
                 from pnl_card import build_pnl_card
                 pnl_sol = position.get("total_sol_received", 0) - position.get("total_sol_invested", 0)
                 card_bytes = build_pnl_card(
-                    token_label=position["token_mint"][:8] + "...",
+                    token_label=token_label,
                     result_pct=change_pct,
                     bought_sol=position.get("total_sol_invested", 0),
                     sold_sol=position.get("total_sol_received", 0),

@@ -613,6 +613,15 @@ class SniperBot:
         det_settings = self.data_store.state.get("auto_detection_settings", dict(config.DEFAULT_AUTO_DETECTION_SETTINGS))
 
         if not det_settings.get("filters_enabled", True):
+            # CORRIGÉ suite à un vrai bug trouvé (71 wallets pour une limite
+            # de 30 observés en conditions réelles) : add_dev_wallet ne
+            # vérifie JAMAIS lui-même la limite — c'est à l'appelant de le
+            # faire avant. Ce chemin (filtres désactivés) l'oubliait
+            # entièrement, contrairement au reste du bot (retraits,
+            # transferts dev 90%) qui vérifie correctement.
+            if not self.data_store.has_free_slot():
+                log.info(f"   ⚠️ Limite de wallets atteinte — {dev_address[:8]}... NON ajouté (filtres désactivés).")
+                return
             log.info(f"   ⚠️ Filtres de détection désactivés — ajout direct de {dev_address[:8]}... sans évaluation.")
             self.data_store.add_dev_wallet(
                 dev_address, label="Auto-détecté (filtres désactivés)", scheme="inconnu", backtest_ratio=0.0,
@@ -670,6 +679,12 @@ class SniperBot:
             ai_verdict = await ai_advisor.get_ai_verdict(dev_address, result, regularity, scheme)
             if ai_verdict:
                 log.info(f"   🤖 Avis IA ({ai_verdict['provider']}) : {ai_verdict['verdict']} — {ai_verdict['reasoning']}")
+
+        # CORRIGÉ (même bug que le chemin "filtres désactivés" ci-dessus) :
+        # vérification de la limite manquante ici aussi.
+        if not self.data_store.has_free_slot():
+            log.info(f"   ⚠️ Limite de wallets atteinte — {dev_address[:8]}... NON ajouté malgré un bon ratio ({result['ratio']:.2f}).")
+            return
 
         # 4. Ajout au monitoring avec le TP suggéré par le backtest, + trade immédiat
         #    sur le token qui a déclenché la détection

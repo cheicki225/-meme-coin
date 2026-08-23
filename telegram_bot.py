@@ -1316,6 +1316,7 @@ class SniperTelegramBot:
             [InlineKeyboardButton("✏️ Ratio gain/perte minimum", callback_data="editautodetect_min_ratio|float")],
             [InlineKeyboardButton("✏️ Régularité minimum", callback_data="editautodetect_min_regularity|float")],
             [InlineKeyboardButton("✏️ Bundle max", callback_data="editautodetect_max_bundle_usd|float")],
+            [InlineKeyboardButton("🗑 Supprimer tous les devs auto-détectés", callback_data="askremoveautodetected")],
             [InlineKeyboardButton(t("btn_back", lang := self.data_store.state.get("language", "fr")), callback_data="menu_settings")],
         ]
         await self._send_or_edit(query, text, InlineKeyboardMarkup(keyboard), edit=True)
@@ -3053,6 +3054,28 @@ class SniperTelegramBot:
             s = self.data_store.state.setdefault("auto_detection_settings", dict(config.DEFAULT_AUTO_DETECTION_SETTINGS))
             s["auto_add_new_devs"] = not s.get("auto_add_new_devs", True)
             self.data_store.save()
+            await self.show_auto_detection_settings(query)
+        elif data == "askremoveautodetected":
+            # AJOUTÉ (demande explicite, 19 août) : confirmation avant une
+            # suppression en masse, même principe que askdelete_/askreset_
+            # utilisés partout ailleurs dans le bot pour les actions
+            # destructives.
+            count = sum(
+                1 for e in self.data_store.state.get("monitored_dev_wallets", {}).values()
+                if e.get("label", "").startswith("Auto-détecté")
+            )
+            keyboard = [
+                [InlineKeyboardButton(f"🗑 Oui, supprimer les {count}", callback_data="confirmremoveautodetected")],
+                [InlineKeyboardButton("Annuler", callback_data="menu_autodetect")],
+            ]
+            await query.edit_message_text(
+                f"⚠️ Supprimer les `{count}` wallet(s) auto-détectés (label \"Auto-détecté...\") ? "
+                f"Les wallets ajoutés manuellement par toi ne sont pas concernés.",
+                parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard),
+            )
+        elif data == "confirmremoveautodetected":
+            removed = self.data_store.remove_auto_detected_wallets()
+            await query.answer(f"✅ {removed} wallet(s) supprimé(s).")
             await self.show_auto_detection_settings(query)
         elif data.startswith("editautodetect_"):
             # AJOUTÉ (demande explicite) : complète les 4 boutons d'édition
