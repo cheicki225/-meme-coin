@@ -32,6 +32,7 @@ import asyncio
 import logging
 import copy
 import os
+import time
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -2311,7 +2312,18 @@ class SniperTelegramBot:
             open_count=len(state.get("open_positions", [])), closed_count=len(closed),
             win_rate=(len(wins) / len(closed) * 100) if closed else 0,
         )
-        keyboard = [[InlineKeyboardButton(t("btn_back", lang), callback_data="menu_main")]]
+        # AJOUTÉ (demande explicite, 19 août) : affiche le compteur du
+        # circuit breaker — avant, invisible nulle part dans Telegram, ce
+        # qui rendait un blocage silencieux impossible à diagnostiquer sans
+        # accès direct aux logs Railway.
+        session_losses = state.get("session_losses_usd", 0)
+        breaker_status = "🛑 ACTIF — achats bloqués" if session_losses >= config.CIRCUIT_BREAKER_USD else "🟢 inactif"
+        text += f"\n\n🛑 *Circuit breaker* : {breaker_status}\nPertes comptabilisées : `${session_losses:.2f}` / `${config.CIRCUIT_BREAKER_USD:.0f}`\n_Remise à zéro automatique toutes les 24h._"
+
+        keyboard = [
+            [InlineKeyboardButton("🔄 Réinitialiser le circuit breaker maintenant", callback_data="askresetbreaker")],
+            [InlineKeyboardButton(t("btn_back", lang), callback_data="menu_main")],
+        ]
         await self._send_or_edit(query, text, InlineKeyboardMarkup(keyboard), edit=True)
 
     async def show_global_alerts_toggle(self, query):
@@ -2938,6 +2950,26 @@ class SniperTelegramBot:
             self.data_store.remove_blocked_dev(wallet_address, dev_address)
             await query.answer("✅ Dev débloqué.")
             await self.show_blocked_devs_menu(query, wallet_address)
+        elif data == "askresetbreaker":
+            # AJOUTÉ (demande explicite, 19 août) : réinitialisation manuelle
+            # immédiate du circuit breaker — complète la remise à zéro
+            # automatique quotidienne ajoutée dans paper_trader.py, pour
+            # débloquer tout de suite sans attendre 24h.
+            keyboard = [
+                [InlineKeyboardButton("✅ Oui, réinitialiser", callback_data="confirmresetbreaker")],
+                [InlineKeyboardButton("Annuler", callback_data="menu_sessionstats")],
+            ]
+            await query.edit_message_text(
+                "⚠️ Remettre le compteur de pertes de session à 0$ ? "
+                "Les achats reprendront immédiatement si c'est ce qui les bloquait.",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+            )
+        elif data == "confirmresetbreaker":
+            self.data_store.state["session_losses_usd"] = 0.0
+            self.data_store.state["session_losses_reset_at"] = time.time()
+            self.data_store.save()
+            await query.answer("✅ Circuit breaker réinitialisé.")
+            await self.show_session_stats(query)
         elif data == "menu_backups":
             await self.show_backups_menu(query)
         elif data == "backupnow":

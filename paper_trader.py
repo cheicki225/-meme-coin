@@ -141,6 +141,21 @@ class PaperTrader:
                 )
             return None
 
+        # CORRIGÉ suite à un vrai bug trouvé (achats bloqués silencieusement,
+        # sans AUCUN moyen de le savoir ni de le réinitialiser) : malgré son
+        # nom "pertes de SESSION", session_losses_usd ne se remettait JAMAIS
+        # à zéro nulle part dans le code — ni au redémarrage, ni chaque jour,
+        # ni via un bouton Telegram. Une fois 150$ de pertes CUMULÉES DEPUIS
+        # LA TOUTE PREMIÈRE UTILISATION DU BOT atteints, plus AUCUN achat
+        # n'était plus jamais possible, en silence, sans qu'aucun message
+        # n'explique pourquoi côté Telegram. Remise à zéro automatique
+        # quotidienne ajoutée ici, cohérente avec le nom "session".
+        last_reset = state.get("session_losses_reset_at", 0)
+        if time.time() - last_reset >= 86400:  # 24h
+            state["session_losses_usd"] = 0.0
+            state["session_losses_reset_at"] = time.time()
+            self.data_store.save()
+
         if state.get("session_losses_usd", 0) >= config.CIRCUIT_BREAKER_USD:
             log.warning("🛑 Circuit breaker actif — aucune nouvelle position ouverte.")
             return None
