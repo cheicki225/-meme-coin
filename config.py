@@ -161,6 +161,15 @@ DEFAULT_AUTO_DETECTION_SETTINGS = {
     "min_ratio": 3.0,          # ratio gain/perte minimum (reprend BACKTEST_MIN_RATIO comme défaut)
     "min_regularity": 0.3,     # régularité de vente minimum (était codé en dur "0.3" dans main.py)
     "max_bundle_usd": 15000,   # market cap max de la 1ère bougie avant d'exclure comme "bundle" (reprend MAX_FIRST_CANDLE_MARKET_CAP)
+    # AJOUTÉ (demande explicite, 19 août) : distinct de "filters_enabled" —
+    # celui-ci contrôle si le pipeline d'évaluation de NOUVEAUX devs (Cas 2
+    # dans main.on_new_token) tourne DU TOUT. False = achète UNIQUEMENT les
+    # créations des Ruggeurs déjà dans ta liste (Cas 1, jamais affecté par
+    # ce réglage) — aucun nouveau dev inconnu n'est jamais ajouté ni acheté,
+    # peu importe son historique. "filters_enabled=False" fait l'INVERSE
+    # (accepte tout le monde sans filtre) — les deux réglages sont
+    # indépendants, ne pas les confondre.
+    "auto_add_new_devs": True,
 }
 
 # ── Détection de "montant fixe" pour le schéma exchange ──────────

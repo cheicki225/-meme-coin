@@ -1284,24 +1284,33 @@ class SniperTelegramBot:
         s = self.data_store.state.get("auto_detection_settings", dict(config.DEFAULT_AUTO_DETECTION_SETTINGS))
         enabled = s.get("filters_enabled", True)
         status = "🟢 ON" if enabled else "🔴 OFF (tout dev ajouté sans filtre)"
+        auto_add = s.get("auto_add_new_devs", True)
+        auto_add_status = "🟢 ON" if auto_add else "🔴 OFF (uniquement tes Ruggeurs déjà suivis)"
 
         text = (
             "🔍 *Détection auto — critères de qualité*\n\n"
             "_Utilisés pour juger un nouveau dev détecté sur Pump.fun avant de "
             "l'ajouter au monitoring et d'acheter son token._\n\n"
-            f"Filtres : {status}\n\n"
+            f"Ajout de nouveaux devs : {auto_add_status}\n"
+            f"Filtres (si ajout activé) : {status}\n\n"
             f"1️⃣ Historique minimum : `{s.get('min_tokens_created')}` tokens créés\n"
             f"2️⃣ Ratio gain/perte minimum : `{s.get('min_ratio')}`\n"
             f"3️⃣ Régularité de vente minimum : `{s.get('min_regularity')}`\n"
             f"4️⃣ Bundle max (1ère bougie) : `{s.get('max_bundle_usd'):,.0f}$`\n"
         )
-        if not enabled:
+        if not auto_add:
+            text += (
+                "\n⚠️ _Aucun nouveau dev inconnu n'est ajouté ni acheté — seuls tes Ruggeurs "
+                "déjà dans la liste déclenchent un achat sur leurs nouvelles créations._"
+            )
+        elif not enabled:
             text += (
                 "\n⚠️ _Filtres désactivés — tout nouveau dev détecté est ajouté et acheté "
                 "immédiatement, sans aucune vérification. Risqué en LIVE._"
             )
 
         keyboard = [
+            [InlineKeyboardButton(f"Ajout de nouveaux devs : {auto_add_status}", callback_data="toggle_autodetect_addnew")],
             [InlineKeyboardButton(f"Filtres : {status}", callback_data="toggle_autodetect_filters")],
             [InlineKeyboardButton("✏️ Historique minimum", callback_data="editautodetect_min_tokens_created|int")],
             [InlineKeyboardButton("✏️ Ratio gain/perte minimum", callback_data="editautodetect_min_ratio|float")],
@@ -3035,6 +3044,14 @@ class SniperTelegramBot:
             # mais jamais branché — voir show_auto_detection_settings.
             s = self.data_store.state.setdefault("auto_detection_settings", dict(config.DEFAULT_AUTO_DETECTION_SETTINGS))
             s["filters_enabled"] = not s.get("filters_enabled", True)
+            self.data_store.save()
+            await self.show_auto_detection_settings(query)
+        elif data == "toggle_autodetect_addnew":
+            # AJOUTÉ (demande explicite, 19 août) : distinct du toggle
+            # ci-dessus — celui-ci coupe l'ajout de NOUVEAUX devs inconnus
+            # entièrement, sans toucher aux Ruggeurs déjà suivis.
+            s = self.data_store.state.setdefault("auto_detection_settings", dict(config.DEFAULT_AUTO_DETECTION_SETTINGS))
+            s["auto_add_new_devs"] = not s.get("auto_add_new_devs", True)
             self.data_store.save()
             await self.show_auto_detection_settings(query)
         elif data.startswith("editautodetect_"):

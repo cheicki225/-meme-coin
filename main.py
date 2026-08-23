@@ -181,6 +181,15 @@ class SniperBot:
             # track_buy / track_sell : géré par copytrade_listener, pas ici.
             return
 
+        # AJOUTÉ (demande explicite, 19 août) : si auto_add_new_devs=False,
+        # n'évalue même pas ce nouveau dev — achète UNIQUEMENT les créations
+        # des Ruggeurs déjà dans la liste (Cas 1 ci-dessus, jamais affecté).
+        # Distinct de filters_enabled=False (qui fait l'inverse : accepte
+        # tout le monde). Voir config.DEFAULT_AUTO_DETECTION_SETTINGS.
+        det_settings = self.data_store.state.get("auto_detection_settings", dict(config.DEFAULT_AUTO_DETECTION_SETTINGS))
+        if not det_settings.get("auto_add_new_devs", True):
+            return
+
         # Cas 2 : nouveau dev → pipeline complet d'évaluation
         #
         # CORRIGÉ suite à un vrai bug trouvé (déconnexions WebSocket
@@ -591,6 +600,34 @@ class SniperBot:
         """Trace les fonds, backteste l'historique, et décide d'ajouter au monitoring."""
         log.info(f"🔍 Évaluation du nouveau dev {dev_address[:8]}...")
 
+        # AJOUTÉ (demande explicite, 19 août) : les 4 critères ci-dessous
+        # étaient un mélange de constantes config.py figées et de valeurs
+        # codées en dur ("3", "0.3") — maintenant lus depuis
+        # state["auto_detection_settings"], modifiables depuis Telegram
+        # (menu Settings → Détection auto). filters_enabled=False court-
+        # circuite TOUT le reste de cette fonction : le dev est ajouté
+        # directement, sans historique, sans ratio, sans régularité.
+        # ⚠️ Interrupteur dangereux si activé en LIVE — ajoute littéralement
+        # n'importe quel nouveau dev détecté sur toute la plateforme
+        # Pump.fun, sans aucun filtre de qualité.
+        det_settings = self.data_store.state.get("auto_detection_settings", dict(config.DEFAULT_AUTO_DETECTION_SETTINGS))
+
+        if not det_settings.get("filters_enabled", True):
+            log.info(f"   ⚠️ Filtres de détection désactivés — ajout direct de {dev_address[:8]}... sans évaluation.")
+            self.data_store.add_dev_wallet(
+                dev_address, label="Auto-détecté (filtres désactivés)", scheme="inconnu", backtest_ratio=0.0,
+            )
+            await self.trader.open_position(
+                current_token_mint, dev_address,
+                reason="Nouveau dev — filtres de détection désactivés"
+            )
+            return
+
+        min_tokens_created = det_settings.get("min_tokens_created", 3)
+        min_ratio = det_settings.get("min_ratio", config.BACKTEST_MIN_RATIO)
+        min_regularity = det_settings.get("min_regularity", 0.3)
+        max_bundle_usd = det_settings.get("max_bundle_usd", config.MAX_FIRST_CANDLE_MARKET_CAP)
+
         # 1. Traçage des fonds (identifie le schéma)
         trace = await fund_tracer.classify_scheme(dev_address)
         scheme = trace.get("scheme", "inconnu")
@@ -598,17 +635,17 @@ class SniperBot:
 
         # 2. Historique des tokens créés
         past_tokens = await wallet_history.get_created_tokens(dev_address)
-        if len(past_tokens) < 3:
-            log.info(f"   ⏭️  Historique insuffisant ({len(past_tokens)} tokens) — pas assez de données pour juger.")
+        if len(past_tokens) < min_tokens_created:
+            log.info(f"   ⏭️  Historique insuffisant ({len(past_tokens)} tokens, min {min_tokens_created}) — pas assez de données pour juger.")
             return
 
         # 3. Backtest sur l'historique (inclut désormais le filtre "bundle > 15k"
         #    et la suggestion de TP basée sur la médiane des gains observés)
-        result = await backtest.backtest_wallet(past_tokens)
+        result = await backtest.backtest_wallet(past_tokens, min_ratio=min_ratio, max_bundle_usd=max_bundle_usd)
 
         if not result["should_monitor"]:
             log.info(
-                f"   ❌ Dev rejeté — ratio {result['ratio']:.2f} < {config.BACKTEST_MIN_RATIO} "
+                f"   ❌ Dev rejeté — ratio {result['ratio']:.2f} < {min_ratio} "
                 f"(résultat cumulé {result['total_result_pct']:+.1f}%, "
                 f"{result['skipped_bundle']} tokens exclus pour bundle trop haut)"
             )
@@ -617,9 +654,9 @@ class SniperBot:
         # 3bis. Régularité de vente — reproduit "on veut un dev qui vend toujours
         # au même point" (voir analysis/wallet_history.py pour la méthode et ses limites)
         regularity = await wallet_history.check_sell_regularity(dev_address, past_tokens)
-        if regularity["regularity_score"] < 0.3:
+        if regularity["regularity_score"] < min_regularity:
             log.info(
-                f"   ❌ Dev rejeté — trop irrégulier (score {regularity['regularity_score']:.2f}), "
+                f"   ❌ Dev rejeté — trop irrégulier (score {regularity['regularity_score']:.2f} < {min_regularity}), "
                 f"comportement pas assez prévisible pour un TP fixe fiable."
             )
             return
