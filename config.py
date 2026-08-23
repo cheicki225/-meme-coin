@@ -433,8 +433,8 @@ DEV_TRANSFER_ALLOW_CASCADE = os.getenv("DEV_TRANSFER_ALLOW_CASCADE", "false").lo
 # monitoring_list.get_cleanup_settings/set_cleanup_settings) — ces valeurs
 # ne servent que de défaut initial.
 WALLET_CLEANUP_ENABLED = os.getenv("WALLET_CLEANUP_ENABLED", "true").lower() == "true"
-WALLET_CLEANUP_INTERVAL_S = int(os.getenv("WALLET_CLEANUP_INTERVAL_S", "14400"))  # MODIFIÉ (demande explicite, 19 août) : 1h -> 4h, réduction de coût RPC
-WALLET_CLEANUP_INACTIVE_DAYS = float(os.getenv("WALLET_CLEANUP_INACTIVE_DAYS", "30"))
+WALLET_CLEANUP_INTERVAL_S = int(os.getenv("WALLET_CLEANUP_INTERVAL_S", "86400"))  # MODIFIÉ (demande explicite, 19 août) : 4h -> 1 fois par jour
+WALLET_CLEANUP_INACTIVE_DAYS = float(os.getenv("WALLET_CLEANUP_INACTIVE_DAYS", "15"))  # MODIFIÉ (demande explicite, 19 août) : 30 -> 15 jours
 WALLET_CLEANUP_MAX_CONSECUTIVE_LOSSES = int(os.getenv("WALLET_CLEANUP_MAX_CONSECUTIVE_LOSSES", "7"))
 # AJOUTÉ (demande explicite, réduction du coût RPC) : profondeur de
 # décodage on-chain utilisée par _count_consecutive_losses pour reconstruire
