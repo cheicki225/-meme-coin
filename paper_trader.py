@@ -533,22 +533,26 @@ class PaperTrader:
     # SURVEILLANCE DE POSITION
     # ══════════════════════════════════════════════════════════
 
-    async def _monitor_position(self, position: dict, poll_interval: int = 15, max_duration_s: int = 3600):
+    async def _monitor_position(self, position: dict, poll_interval: int = 1, max_duration_s: int = 3600):
         settings = position["settings"]
         elapsed = 0
         no_activity_elapsed = 0
 
-        # ── Intervalle de sondage adaptatif ──────────────────────────────
-        # Front Run Sell et Auto-Sell on Big Buy sont sensibles à la latence
-        # (best-effort documenté : détection par polling, pas un vrai flux
-        # temps réel). Un sondage plus rapide (5s au lieu de 15s) réduit
-        # concrètement la fenêtre de réaction — reste du polling, pas du
-        # temps réel, mais 3x plus réactif quand ces fonctions sont actives.
+        # MODIFIÉ (demande explicite, 19 août — "intervalle en MS comme en
+        # LIVE") : descendu de 15s (5s en mode rapide) à 1s uniformément.
+        # Solana produit un nouveau bloc toutes les ~400-800ms — de VRAIES
+        # millisecondes n'apporteraient rien de plus, le flux WebSocket ne
+        # pousse jamais plus vite que ce rythme. Sûr côté coût : quand le
+        # prix WS est à jour (cas normal), ce cycle ne fait AUCUN appel
+        # réseau (voir plus bas, ws_price_fresh) — seul le cas de repli
+        # (WebSocket indisponible) ferait un appel par seconde au lieu d'un
+        # toutes les 5-15s, un coût borné et acceptable plutôt qu'un vrai
+        # risque d'explosion.
         fast_checks_active = bool(settings.get("front_run_sell_enabled")) or bool(settings.get("auto_sell_big_buy_levels"))
-        effective_poll_interval = 5 if fast_checks_active else poll_interval
+        effective_poll_interval = poll_interval
         if fast_checks_active:
             log.info(
-                f"⚡ Sondage accéléré (5s) activé sur {position['token_mint'][:8]}... "
+                f"⚡ Sondage rapide (1s) actif sur {position['token_mint'][:8]}... "
                 f"(Front Run Sell et/ou Auto-Sell on Big Buy actifs)"
             )
 
