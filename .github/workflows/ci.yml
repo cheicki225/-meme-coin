@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip && pip install -r requirements.txt
+
+      - name: Compile Python sources
+        run: python -m compileall -q .
+
+      - name: Verify PAPER mode is the default
+        run: |
+          python - <<'PY'
+          import os
+          os.environ.pop("TRADING_MODE", None)
+          import config
+          assert config.TRADING_MODE.upper() == "PAPER", config.TRADING_MODE
+          print("Default trading mode: PAPER")
+          PY
