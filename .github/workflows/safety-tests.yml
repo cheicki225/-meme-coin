@@ -19,4 +19,4 @@ jobs:
       - name: Install test dependency
         run: python -m pip install --upgrade pip pytest
       - name: Run safety tests
-        run: python -m pytest -q tests/test_safety_guard.py tests/test_safety_runtime.py
+        run: python -m pytest -q tests/test_safety_guard.py tests/test_safety_runtime.py tests/test_intent_reconciliation.py
