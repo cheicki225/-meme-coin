@@ -21,7 +21,7 @@ def test_valid_order():
     [
         (0.6, SNAPSHOT, "max position"),
         (0.1, SafetySnapshot(2.0, 0.0, 3), "open positions"),
-        (0.1, SafetySnapshot(2.0, -1.0, 0), "daily loss"),
+        (0.1, SafetySnapshot(2.0, -1.0, 0), "Daily loss"),
         (0.1, SafetySnapshot(0.1, 0.0, 0, 0.0), "reserve"),
     ],
 )
