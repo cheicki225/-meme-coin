@@ -15,6 +15,7 @@ Le prochain cycle de _monitor_position retentera automatiquement.
 
 import logging
 import asyncio
+import os
 
 import config
 import jupiter_executor
@@ -24,6 +25,7 @@ log = logging.getLogger("live_trader")
 
 from backtest import get_sol_usd_rate
 from paper_trader import PaperTrader
+from safety_runtime import mark_intent, preflight_buy, reserve_intent
 
 
 async def _get_token_decimals(mint: str) -> int:
@@ -38,6 +40,10 @@ async def _get_token_decimals(mint: str) -> int:
     except (KeyError, TypeError, ValueError):
         log.warning(f"Décimales introuvables pour {mint[:8]}..., valeur par défaut 6 utilisée.")
         return 6
+
+
+def _truthy(value) -> bool:
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
 class LiveTrader(PaperTrader):
@@ -58,6 +64,103 @@ class LiveTrader(PaperTrader):
         import wallet
         return wallet.load_keypair()
 
+    async def _get_wallet_balance_sol(self, keypair) -> float:
+        """Lit le solde confirmé du wallet d'exécution. Échec = achat bloqué."""
+        pubkey = str(keypair.pubkey())
+        payload = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getBalance",
+            "params": [pubkey, {"commitment": "confirmed"}],
+        }
+        result = await rpc_client.rpc_post(payload, timeout=10)
+        try:
+            lamports = int(result["value"])
+        except (KeyError, TypeError, ValueError):
+            raise ValueError("Unable to verify execution wallet balance") from None
+        if lamports < 0:
+            raise ValueError("Invalid execution wallet balance")
+        return lamports / 1_000_000_000
+
+    async def _build_live_safety_state(self, keypair) -> dict:
+        """Construit un snapshot conservateur à partir de l'état + solde RPC."""
+        state = self.data_store.state
+        balance_sol = await self._get_wallet_balance_sol(keypair)
+        open_positions = state.get("open_positions", []) or []
+
+        exposure_sol = 0.0
+        for position in open_positions:
+            if not isinstance(position, dict):
+                continue
+            try:
+                exposure_sol += max(0.0, float(position.get("total_sol_invested", 0.0)))
+            except (TypeError, ValueError):
+                raise ValueError("Invalid persisted position exposure") from None
+
+        if "daily_pnl_sol" in state:
+            daily_pnl_sol = float(state["daily_pnl_sol"])
+        else:
+            losses_usd = float(state.get("session_losses_usd", 0.0))
+            sol_usd = float(await get_sol_usd_rate())
+            if sol_usd <= 0:
+                raise ValueError("Unable to verify SOL/USD rate for safety snapshot")
+            daily_pnl_sol = -(max(0.0, losses_usd) / sol_usd)
+
+        return {
+            "balance_sol": balance_sol,
+            "daily_pnl_sol": daily_pnl_sol,
+            "open_positions": open_positions,
+            "already_exposed_sol": exposure_sol,
+        }
+
+    def _emergency_stop_enabled(self, settings: dict) -> bool:
+        """Source indépendante via env + config + réglage runtime."""
+        return (
+            _truthy(os.getenv("BOT_EMERGENCY_STOP", "0"))
+            or bool(getattr(config, "EMERGENCY_STOP", False))
+            or bool(settings.get("emergency_stop", False))
+        )
+
+    async def _reserve_live_buy_intent(
+        self,
+        *,
+        token_mint: str,
+        entry_price: float,
+        amount_sol: float,
+        settings: dict,
+        keypair,
+    ):
+        """Préflight + persistance AVANT tout envoi réseau vers Jupiter/Jito."""
+        source_wallet = str(keypair.pubkey())
+        safety_state = await self._build_live_safety_state(keypair)
+
+        # Le prix d'entrée fait partie de l'événement : un retry du même signal
+        # produit la même clé, tandis qu'un DCA à un autre prix reste distinct.
+        event_id = f"{token_mint}:{entry_price:.12g}"
+        intent = preflight_buy(
+            token_mint=token_mint,
+            amount_sol=amount_sol,
+            source_wallet=source_wallet,
+            settings=settings,
+            state=safety_state,
+            event_id=event_id,
+            emergency_stop=self._emergency_stop_enabled(settings),
+        )
+        reserve_intent(self.data_store.state, intent)
+        # Fail-closed : si la persistance échoue, aucune transaction n'est envoyée.
+        self.data_store.save()
+        return intent
+
+    def _mark_live_intent(self, intent, status: str, *, signature=None, error=None):
+        mark_intent(
+            self.data_store.state,
+            intent.idempotency_key,
+            status,
+            signature=signature,
+            error=error,
+        )
+        self.data_store.save()
+
     async def _execute_buy(self, token_mint: str, entry_price: float, settings: dict) -> dict:
         if settings.get("multibuy_enabled") and settings.get("multibuy_wallet_labels"):
             return await self._execute_multibuy(token_mint, entry_price, settings)
@@ -69,10 +172,28 @@ class LiveTrader(PaperTrader):
         use_jito = settings.get("use_jito", False)
 
         try:
+            intent = await self._reserve_live_buy_intent(
+                token_mint=token_mint,
+                entry_price=entry_price,
+                amount_sol=buy_amount_sol,
+                settings=settings,
+                keypair=keypair,
+            )
+        except (ValueError, TypeError) as e:
+            log.error(f"🛑 Achat LIVE bloqué par le safety preflight sur {token_mint[:8]}...: {e}")
+            if self.notifier:
+                await self.notifier.notify(
+                    "buy_failed",
+                    f"🛑 *Buy Blocked* (LIVE safety)\nToken: `{token_mint[:8]}...`\nRaison: {e}",
+                )
+            return None
+
+        try:
             result = await jupiter_executor.execute_swap(
                 config.SOL_MINT, token_mint, amount_lamports, slippage_bps, keypair=keypair, use_jito=use_jito
             )
         except jupiter_executor.SwapError as e:
+            self._mark_live_intent(intent, "failed", error=str(e))
             log.error(f"❌ Achat LIVE échoué sur {token_mint[:8]}...: {e}")
             if self.notifier:
                 await self.notifier.notify(
@@ -80,6 +201,14 @@ class LiveTrader(PaperTrader):
                     f"❌ *Buy Failed* (LIVE)\nToken: `{token_mint[:8]}...`\nErreur: {e}",
                 )
             return None
+        except Exception as e:
+            # Ambigu : on ne sait pas si le provider a reçu/envoyé la tx.
+            # Garder l'intent bloqué empêche un double achat après redémarrage.
+            self._mark_live_intent(intent, "unknown", error=str(e))
+            log.exception(f"🛑 État d'achat LIVE ambigu sur {token_mint[:8]}... — retry automatique bloqué.")
+            return None
+
+        self._mark_live_intent(intent, "confirmed", signature=result.get("signature"))
 
         decimals = await _get_token_decimals(token_mint)
         units_received = result["output_amount"] / (10 ** decimals)
@@ -129,6 +258,14 @@ class LiveTrader(PaperTrader):
             log.warning("MultiBuy activé mais aucun wallet configuré — achat annulé.")
             return None
 
+        try:
+            max_position_sol = float(settings.get("max_position_sol", 0.5))
+            if total_amount_sol <= 0 or total_amount_sol > max_position_sol:
+                raise ValueError("MultiBuy total exceeds max position size")
+        except (TypeError, ValueError) as e:
+            log.error(f"🛑 MultiBuy bloqué par le safety preflight: {e}")
+            return None
+
         split_amount_sol = total_amount_sol / n
         amount_lamports = int(split_amount_sol * 1_000_000_000)
 
@@ -145,10 +282,23 @@ class LiveTrader(PaperTrader):
                 continue
 
             try:
+                intent = await self._reserve_live_buy_intent(
+                    token_mint=token_mint,
+                    entry_price=entry_price,
+                    amount_sol=split_amount_sol,
+                    settings=settings,
+                    keypair=keypair,
+                )
+            except (ValueError, TypeError) as e:
+                log.error(f"🛑 [MultiBuy {i+1}/{n}] '{label}' bloqué par safety: {e}")
+                continue
+
+            try:
                 result = await jupiter_executor.execute_swap(
                     config.SOL_MINT, token_mint, amount_lamports, slippage_bps,
                     keypair=keypair, use_jito=settings.get("use_jito", False),
                 )
+                self._mark_live_intent(intent, "confirmed", signature=result.get("signature"))
                 units = result["output_amount"] / (10 ** decimals)
                 sol_spent = result["input_amount"] / 1_000_000_000
                 total_units += units
@@ -156,7 +306,13 @@ class LiveTrader(PaperTrader):
                 signatures.append(result["signature"])
                 log.info(f"💰 [MultiBuy {i+1}/{n}] '{label}' : {sol_spent:.4f} SOL -> {units:.2f} tokens")
             except jupiter_executor.SwapError as e:
+                self._mark_live_intent(intent, "failed", error=str(e))
                 log.error(f"❌ [MultiBuy {i+1}/{n}] échec sur '{label}': {e}")
+            except Exception as e:
+                self._mark_live_intent(intent, "unknown", error=str(e))
+                log.exception(
+                    f"🛑 [MultiBuy {i+1}/{n}] état ambigu sur '{label}' — retry automatique bloqué."
+                )
 
             if i < n - 1:
                 await asyncio.sleep(delay_s)
@@ -182,7 +338,7 @@ class LiveTrader(PaperTrader):
             "units": total_units,
             "cost_basis_usd": cost_basis_usd,
             "actual_price": actual_price,
-            "signature": signatures[0] if signatures else None,  # signature principale pour l'affichage
+            "signature": signatures[0] if signatures else None,
         }
 
     async def _execute_sell(self, token_mint: str, units: float, current_price: float, settings: dict) -> dict:
