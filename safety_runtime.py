@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import time
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any, Mapping, MutableMapping
 
 from safety_guard import OrderLimits, SafetySnapshot, validate_order
 
@@ -92,3 +92,54 @@ def preflight_buy(
         created_at=time.time(),
         idempotency_key=key,
     )
+
+
+def reserve_intent(state: MutableMapping[str, Any], intent: OrderIntent) -> None:
+    """Persist a pending order intent before any network submission.
+
+    A pending/confirmed/unknown intent is never submitted twice. Failed intents
+    may be retried intentionally because the executor reported a definite failure.
+    """
+    registry = state.setdefault("safety_order_intents", {})
+    if not isinstance(registry, dict):
+        raise ValueError("Invalid safety order registry")
+
+    existing = registry.get(intent.idempotency_key)
+    if isinstance(existing, dict) and existing.get("status") in {"pending", "confirmed", "unknown"}:
+        raise ValueError("Duplicate or unresolved order intent")
+
+    registry[intent.idempotency_key] = {
+        "side": intent.side,
+        "token_mint": intent.token_mint,
+        "amount_sol": intent.amount_sol,
+        "source_wallet": intent.source_wallet,
+        "created_at": intent.created_at,
+        "status": "pending",
+    }
+
+
+def mark_intent(
+    state: MutableMapping[str, Any],
+    idempotency_key: str,
+    status: str,
+    *,
+    signature: str | None = None,
+    error: str | None = None,
+) -> None:
+    """Update a persisted order intent after submission/confirmation."""
+    if status not in {"pending", "confirmed", "failed", "unknown"}:
+        raise ValueError("Invalid order intent status")
+
+    registry = state.get("safety_order_intents")
+    if not isinstance(registry, dict):
+        raise ValueError("Missing safety order registry")
+    record = registry.get(idempotency_key)
+    if not isinstance(record, dict):
+        raise ValueError("Unknown order intent")
+
+    record["status"] = status
+    record["updated_at"] = time.time()
+    if signature:
+        record["signature"] = signature
+    if error:
+        record["error"] = error[:500]
