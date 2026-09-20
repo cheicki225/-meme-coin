@@ -18,7 +18,8 @@ This checklist is required before enabling LIVE trading.
 - Live safety snapshot reads confirmed wallet balance and persisted open-position exposure.
 - Independent emergency-stop source via `BOT_EMERGENCY_STOP` plus config/runtime setting.
 - Ambiguous executor failures are kept blocked to prevent duplicate buys after restart.
-- Automated pytest checks in GitHub Actions include guard + runtime/idempotency tests.
+- Network-free reconciliation helpers list unresolved intents and apply explicit operator-confirmed resolutions.
+- Automated pytest checks in GitHub Actions include guard + runtime/idempotency + reconciliation tests.
 
 ## Required before LIVE activation
 
@@ -29,7 +30,7 @@ This checklist is required before enabling LIVE trading.
 - [x] Add an explicit, independently verified emergency-stop source.
 - [ ] Add mocked RPC/Jupiter integration tests for `live_trader.py`.
 - [ ] Add fail-closed validation for malformed/partial Jupiter responses.
-- [ ] Add reconciliation tooling for intents left in `unknown` state.
+- [x] Add network-free reconciliation helpers for intents left in `unknown` state.
 - [ ] Run the complete repository test suite.
 - [ ] Run PAPER mode soak testing before any LIVE transaction.
 - [ ] Keep LIVE disabled until all unchecked items above are completed.
