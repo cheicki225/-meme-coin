@@ -7,6 +7,7 @@ before constructing/sending an order; it fails closed when configuration is unsa
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import isfinite
 from typing import Optional
 
 
@@ -24,6 +25,16 @@ class SafetySnapshot:
     daily_pnl_sol: float
     open_positions: int
     already_exposed_sol: float = 0.0
+
+
+def _finite(value: object, label: str) -> float:
+    try:
+        number = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        raise ValueError(f"Invalid {label}") from None
+    if not isfinite(number):
+        raise ValueError(f"Invalid {label}")
+    return number
 
 
 def validate_order(
@@ -48,16 +59,29 @@ def validate_order(
         raise ValueError("Emergency stop is enabled")
     if not idempotency_key or not idempotency_key.strip():
         raise ValueError("Missing idempotency key")
-    if amount_sol <= 0:
+
+    amount = _finite(amount_sol, "order amount")
+    max_position = _finite(limits.max_position_sol, "max position")
+    max_daily_loss = _finite(limits.max_daily_loss_sol, "max daily loss")
+    reserve = _finite(limits.min_balance_reserve_sol, "minimum reserve")
+    balance = _finite(snapshot.balance_sol, "balance")
+    daily_pnl = _finite(snapshot.daily_pnl_sol, "daily P&L")
+    exposure = _finite(snapshot.already_exposed_sol, "existing exposure")
+
+    if amount <= 0:
         raise ValueError("Order amount must be positive")
-    if amount_sol > limits.max_position_sol:
+    if max_position <= 0 or max_daily_loss < 0 or reserve < 0:
+        raise ValueError("Invalid safety limits")
+    if snapshot.open_positions < 0 or limits.max_open_positions < 0:
+        raise ValueError("Invalid position count")
+    if amount > max_position:
         raise ValueError("Order exceeds max position size")
     if snapshot.open_positions >= limits.max_open_positions:
         raise ValueError("Maximum number of open positions reached")
-    if snapshot.daily_pnl_sol <= -abs(limits.max_daily_loss_sol):
+    if daily_pnl <= -max_daily_loss:
         raise ValueError("Daily loss limit reached")
-    remaining = snapshot.balance_sol - snapshot.already_exposed_sol - amount_sol
-    if remaining < limits.min_balance_reserve_sol:
+    remaining = balance - exposure - amount
+    if remaining < reserve:
         raise ValueError("Minimum SOL reserve would be breached")
 
 
@@ -67,6 +91,6 @@ def safe_float(value: object, default: float) -> float:
         number = float(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return default
-    if number != number or number in (float("inf"), float("-inf")):
+    if not isfinite(number):
         return default
     return number
