@@ -30,6 +30,18 @@ def test_limits_fail_closed(amount, snapshot, message):
         validate_order(amount, LIMITS, snapshot, idempotency_key="token:signature")
 
 
+def test_invalid_numeric_values_fail_closed():
+    with pytest.raises(ValueError, match="Invalid order amount"):
+        validate_order(float("nan"), LIMITS, SNAPSHOT, idempotency_key="x")
+    with pytest.raises(ValueError, match="Invalid safety limits"):
+        validate_order(
+            0.1,
+            OrderLimits(max_position_sol=0.0, max_daily_loss_sol=1.0, max_open_positions=3),
+            SNAPSHOT,
+            idempotency_key="x",
+        )
+
+
 def test_emergency_stop_and_idempotency():
     with pytest.raises(ValueError, match="Emergency"):
         validate_order(0.1, LIMITS, SNAPSHOT, emergency_stop=True, idempotency_key="x")
