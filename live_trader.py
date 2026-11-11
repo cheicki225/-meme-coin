@@ -48,6 +48,18 @@ def _truthy(value) -> bool:
 
 
 class LiveTrader(PaperTrader):
+    def _persist_safety_state(self):
+        """Persist a safety-critical LIVE state transition or fail closed.
+
+        DataStore.save_or_raise performs an atomic fsync+replace. The fallback
+        keeps lightweight test doubles and external compatible stores usable.
+        """
+        saver = getattr(self.data_store, "save_or_raise", None)
+        if callable(saver):
+            saver()
+        else:
+            self.data_store.save()
+
     def _get_execution_keypair(self):
         """
         Retourne le keypair à utiliser pour une exécution simple (non-MultiBuy) :
@@ -155,7 +167,7 @@ class LiveTrader(PaperTrader):
         )
         reserve_intent(self.data_store.state, intent)
         # Fail-closed : si la persistance échoue, aucune transaction n'est envoyée.
-        self.data_store.save()
+        self._persist_safety_state()
         return intent
 
     def _mark_live_intent(self, intent, status: str, *, signature=None, error=None):
@@ -166,7 +178,7 @@ class LiveTrader(PaperTrader):
             signature=signature,
             error=error,
         )
-        self.data_store.save()
+        self._persist_safety_state()
 
     def _persist_confirmed_buy_reconciliation(self, *, intent, token_mint, source_wallet, result, error):
         """Keep a confirmed swap recoverable when local accounting cannot finish."""
@@ -185,7 +197,7 @@ class LiveTrader(PaperTrader):
             "created_at": time.time(),
             "error": str(error)[:500],
         }
-        self.data_store.save()
+        self._persist_safety_state()
         log.critical(
             f"CONFIRMED BUY REQUIRES ACCOUNTING RECONCILIATION: token={token_mint} "
             f"signature={signature}; further buys for this token are blocked."
@@ -465,7 +477,7 @@ class LiveTrader(PaperTrader):
             "source_wallet": str(keypair.pubkey()),
             "created_at": time.time(),
         }
-        self.data_store.save()
+        self._persist_safety_state()
 
         try:
             result = await jupiter_executor.execute_swap(
@@ -483,7 +495,7 @@ class LiveTrader(PaperTrader):
             }
             pending_registry[token_mint]["status"] = "unknown"
             pending_registry[token_mint]["error"] = str(e)[:500]
-            self.data_store.save()
+            self._persist_safety_state()
             log.critical(
                 f"🛑 Vente LIVE ambiguë sur {token_mint[:8]}...; token bloqué jusqu'à réconciliation: {e}"
             )
@@ -492,7 +504,7 @@ class LiveTrader(PaperTrader):
             # SwapError denotes a definite rejected/failed execution; only this
             # explicit outcome releases the pre-send reservation.
             pending_registry.pop(token_mint, None)
-            self.data_store.save()
+            self._persist_safety_state()
             log.error(f"❌ Vente LIVE échouée sur {token_mint[:8]}...: {e}")
             return None
         except Exception as e:
@@ -511,7 +523,7 @@ class LiveTrader(PaperTrader):
             }
             pending_registry[token_mint]["status"] = "unknown"
             pending_registry[token_mint]["error"] = str(e)[:500]
-            self.data_store.save()
+            self._persist_safety_state()
             log.exception(
                 f"🛑 Vente LIVE à résultat inconnu sur {token_mint[:8]}...; "
                 "nouvel envoi bloqué jusqu'à réconciliation."
@@ -529,7 +541,7 @@ class LiveTrader(PaperTrader):
             "output_amount_raw": result.get("output_amount"),
             "confirmed_at": time.time(),
         })
-        self.data_store.save()
+        self._persist_safety_state()
         try:
             raw_output = result.get("output_amount")
             raw_input = result.get("input_amount")
@@ -558,7 +570,7 @@ class LiveTrader(PaperTrader):
                 "created_at": time.time(),
                 "error": str(e)[:500],
             }
-            self.data_store.save()
+            self._persist_safety_state()
             log.critical(
                 f"CONFIRMED SELL REQUIRES ACCOUNTING RECONCILIATION: token={token_mint} "
                 f"signature={signature}; further sells for this token are blocked."
@@ -591,5 +603,5 @@ class LiveTrader(PaperTrader):
             log.critical("Sell intent is not confirmed; reservation retained.")
             return False
         registry.pop(token_mint, None)
-        self.data_store.save()
+        self._persist_safety_state()
         return True
