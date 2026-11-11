@@ -97,3 +97,28 @@ def test_token_decimals_rejects_boolean_or_out_of_range(monkeypatch):
     monkeypatch.setattr(live_trader.rpc_client, "rpc_post", invalid)
     with pytest.raises(ValueError, match="Décimales SPL invalides"):
         asyncio.run(live_trader._get_token_decimals("TokenMint"))
+
+
+def test_ambiguous_sell_timeout_blocks_repeated_sell(monkeypatch):
+    async def decimals(*args, **kwargs):
+        return 6
+
+    async def execute(*args, **kwargs):
+        raise live_trader.jupiter_executor.SwapOutcomeUnknown("signature timeout")
+
+    monkeypatch.setattr(live_trader, "_get_token_decimals", decimals)
+    monkeypatch.setattr(live_trader.jupiter_executor, "execute_swap", execute)
+    trader = _trader({"open_positions": []})
+    trader._get_execution_keypair = lambda: FakeKeypair()
+
+    first = asyncio.run(trader._execute_sell("TokenMint", 100.0, 1.0, {}))
+    assert first is None
+    assert trader.data_store.state["safety_unresolved_sell_tokens"]["TokenMint"]["status"] == "unknown"
+    assert trader.data_store.saved is True
+
+    async def must_not_execute(*args, **kwargs):
+        raise AssertionError("an unresolved sell must never be submitted again")
+
+    monkeypatch.setattr(live_trader.jupiter_executor, "execute_swap", must_not_execute)
+    second = asyncio.run(trader._execute_sell("TokenMint", 100.0, 1.0, {}))
+    assert second is None
