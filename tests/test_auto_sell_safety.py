@@ -99,3 +99,31 @@ def test_copy_sell_rejects_invalid_percentage():
     trader._close_remaining = must_not_sell
     for value in (0, -1, 101, float("nan"), float("inf")):
         assert asyncio.run(trader.copy_sell(position, 1.0, value)) is False
+
+def test_full_partial_close_finalizes_only_after_closed_position_is_persisted():
+    trader = PaperTrader.__new__(PaperTrader)
+    trader.data_store = Store()
+    trader.notifier = None
+    position = _position()
+    position["tp_levels_hit"] = []
+    trader.data_store.state["open_positions"].append(position)
+    observed = []
+
+    async def execute(token, units, price, settings):
+        return {"proceeds_usd": 50.0, "sol_received": 0.25, "signature": "sig"}
+
+    def finalize(token, result):
+        observed.append((
+            token,
+            result["signature"],
+            position["status"],
+            position in trader.data_store.state["closed_positions"],
+            position in trader.data_store.state["open_positions"],
+            trader.data_store.saved,
+        ))
+
+    trader._execute_sell = execute
+    trader._finalize_sell_accounting = finalize
+    asyncio.run(trader._partial_close(position, 1.0, 100.0, 1.0, 0))
+
+    assert observed == [("MintA", "sig", "closed", True, False, True)]
