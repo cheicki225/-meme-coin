@@ -31,3 +31,29 @@ def test_resolve_intent_rejects_invalid_status_and_unknown_key():
         resolve_intent(state, "key", status="pending")
     with pytest.raises(ValueError):
         resolve_intent(state, "missing", status="failed")
+
+
+
+def test_resolve_intent_cannot_downgrade_terminal_intent():
+    state = {"safety_order_intents": {"key": {"status": "confirmed", "signature": "sig"}}}
+    with pytest.raises(ValueError, match="Only pending or unknown"):
+        resolve_intent(state, "key", status="failed")
+    assert state["safety_order_intents"]["key"]["status"] == "confirmed"
+
+
+def test_unknown_is_not_a_resolution_outcome():
+    state = {"safety_order_intents": {"key": {"status": "pending"}}}
+    with pytest.raises(ValueError, match="establish confirmed or failed"):
+        resolve_intent(state, "key", status="unknown")
+    assert state["safety_order_intents"]["key"]["status"] == "pending"
+
+
+def test_malformed_created_at_does_not_break_unresolved_intent_listing():
+    state = {
+        "safety_order_intents": {
+            "bad": {"status": "unknown", "created_at": "not-a-timestamp"},
+            "good": {"status": "pending", "created_at": 10},
+        }
+    }
+    result = list_unresolved_intents(state)
+    assert {item["idempotency_key"] for item in result} == {"bad", "good"}
