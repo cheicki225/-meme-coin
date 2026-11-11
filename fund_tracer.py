@@ -412,8 +412,10 @@ async def _count_distinct_outgoing_recipients(address: str, sample_size: int = 5
             if not isinstance(instruction, dict):
                 continue
             parsed = instruction.get("parsed")
-            if (instruction.get("program") != "system"
-                    and instruction.get("programId") != "11111111111111111111111111111111"):
+            if instruction.get("program") != "system":
+                continue
+            program_id = instruction.get("programId")
+            if program_id is not None and program_id != "11111111111111111111111111111111":
                 continue
             if not isinstance(parsed, dict) or parsed.get("type") not in {"transfer", "transferWithSeed"}:
                 continue
