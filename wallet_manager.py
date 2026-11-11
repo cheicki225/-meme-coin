@@ -167,6 +167,7 @@ class WalletManager:
             bool(self.data_store.state.get("pending_transactions")),
             amount_sol,
             config.MAX_MANUAL_TRANSFER_SOL,
+            execution_enabled=getattr(config, "LIVE_EXECUTION_ENABLED", False),
         )
         try:
             destination_key = Pubkey.from_string(destination)
