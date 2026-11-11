@@ -37,6 +37,7 @@ from position_price_stream import PositionPriceStream
 import wallet
 from wallet_collector_service import WalletCollectorService
 from execution_recovery import classify_pending_transactions
+from rpc_health_monitor import RpcHealthMonitor
 
 # CORRIGÉ suite à un vrai crash en boucle signalé : logging.FileHandler()
 # ne crée JAMAIS le dossier parent de LOG_FILE tout seul — si config.LOG_FILE
@@ -90,6 +91,7 @@ class SniperBot:
         self.wallet_cleanup = WalletCleanup(self.data_store, notifier=self.notifier)
         self.telegram_bot = SniperTelegramBot(self.data_store, self.notifier, self.trader)
         self.wallet_collector = WalletCollectorService(self.data_store, notifier=self.notifier)
+        self.rpc_health_monitor = RpcHealthMonitor(self.notifier)
 
     async def _recover_pending_transactions(self):
         pending = self.data_store.state.get("pending_transactions", [])
@@ -150,7 +152,8 @@ class SniperBot:
         # temporairement via config.DETECTION_ENABLED (voir config.py).
         # Le reste (Telegram, Protection, Copy Trading) continue de tourner.
         tasks = [self.protection_scanner.start(), self.copytrade_listener.start(), self.rug_scanner.start(),
-                 self.wallet_cleanup.start(), self.position_price_stream.start()]
+                 self.wallet_cleanup.start(), self.position_price_stream.start(),
+                 self.rpc_health_monitor.start()]
         if config.WALLET_COLLECTOR_ENABLED:
             tasks.append(self.wallet_collector.start())
         if config.DETECTION_ENABLED:
