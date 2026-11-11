@@ -459,6 +459,8 @@ class PaperTrader:
             "entry_time": time.time(),
             "cost_basis_usd": cost_basis_usd,
             "units": units,
+            "token_decimals": buy_result.get("token_decimals"),
+            "fee_lamports": int(buy_result.get("fee_lamports", 0)),
             "settings": settings,
             "ath_market_cap": market_cap,
             "tp_levels_hit": [],
@@ -470,7 +472,7 @@ class PaperTrader:
             "buy_mode": buy_mode,
             "simulated_fees_sol": simulated_fee_sol,
             "tx_signatures": [buy_signature] if buy_signature else [],
-            "total_sol_invested": settings.get("buy_amount_sol", 0.1),
+            "total_sol_invested": buy_result.get("sol_cashflow", settings.get("buy_amount_sol", 0.1)),
             "total_sol_received": 0.0,
             "mc_trailing_armed": False,
             "profit_trail_armed": False,
@@ -1179,6 +1181,7 @@ class PaperTrader:
         position["total_sol_received"] = position.get("total_sol_received", 0) + (proceeds / await get_sol_usd_rate())
         if sell_signature:
             position.setdefault("tx_signatures", []).append(sell_signature)
+        position["fee_lamports"] = int(position.get("fee_lamports", 0)) + int(sell_result.get("fee_lamports", 0))
         if tp_index is not None:
             position["tp_levels_hit"].append(tp_index)
 
@@ -1189,6 +1192,10 @@ class PaperTrader:
             "sell_ratio": sell_ratio, "result_pct": change_pct, "pnl_usd": pnl_usd, "time": time.time(),
         })
         self.data_store.save()
+        if sell_signature:
+            self.data_store.resolve_pending_transaction(
+                sell_signature, {"position_updated": position["token_mint"], "pnl_usd": pnl_usd}
+            )
 
         log.info(
             f"✅ [{config.TRADING_MODE}] Vente partielle sur {position['token_mint']} "
@@ -1229,6 +1236,7 @@ class PaperTrader:
         position["cost_basis_usd"] = 0
         if sell_signature:
             position.setdefault("tx_signatures", []).append(sell_signature)
+        position["fee_lamports"] = int(position.get("fee_lamports", 0)) + int(sell_result.get("fee_lamports", 0))
 
         state = self.data_store.state
         state["open_positions"] = [p for p in state.get("open_positions", []) if p is not position]
@@ -1239,6 +1247,17 @@ class PaperTrader:
             state["session_losses_usd"] = state.get("session_losses_usd", 0) + abs(pnl_usd)
 
         self.data_store.save()
+        if sell_signature:
+            self.data_store.resolve_pending_transaction(
+                sell_signature, {"position_closed": position["token_mint"], "pnl_usd": pnl_usd}
+            )
+        if state.get("session_losses_usd", 0) >= config.CIRCUIT_BREAKER_USD:
+            self.data_store.activate_emergency_stop("session loss limit reached")
+            if self.notifier:
+                await self.notifier.notify(
+                    "risk_alert",
+                    f"🛑 *Limite de pertes atteinte*\nPertes de session: ${state.get('session_losses_usd', 0):.2f}. Arrêt d'urgence activé.",
+                )
 
         just_paused = self.data_store.record_trade_result(position["source_wallet"], is_win=(pnl_usd >= 0))
 
