@@ -16,5 +16,10 @@ def test_manual_transfer_policy_fails_closed(mode, stop, pending, amount, maximu
 
 
 def test_manual_transfer_policy_accepts_bounded_live_amount():
-    validate_manual_transfer("LIVE", False, False, 0.05, 0.1)
+    validate_manual_transfer("LIVE", False, False, 0.05, 0.1, execution_enabled=True)
 
+
+
+def test_manual_transfer_requires_second_live_opt_in():
+    with pytest.raises(ValueError, match="LIVE_EXECUTION_ENABLED"):
+        validate_manual_transfer("LIVE", False, False, 0.05, 0.1)
