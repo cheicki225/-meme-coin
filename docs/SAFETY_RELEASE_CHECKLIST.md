@@ -83,7 +83,7 @@ LIVE must remain disabled while this checklist has unchecked items.
 
 `intent_reconciliation.list_unaccounted_confirmed_buys(state)` lists confirmed LIVE buys whose position has not been durably accounted, including the associated raw swap evidence when available. Before recovery, verify the transaction signature and wallet token/SOL balance on-chain, calculate the received units and cost basis, then build the complete open-position record with matching `token_mint`, `source_wallet`, and `tx_signatures`.
 
-Call `resolve_confirmed_buy_accounting(state, idempotency_key, position=..., note="...verified evidence...")` only after that verification. Immediately persist with `DataStore.save_or_raise()`; if persistence fails, the old durable state continues to block further buys for that mint. Do not mark a confirmed buy accounted without including its signature in the reconciled position.
+Call `resolve_confirmed_buy_accounting_durable(data_store, idempotency_key, position=..., note="...verified evidence...")` only after that verification. This wrapper snapshots in-memory state, applies the recovery, and calls `DataStore.save_or_raise()` before returning; if persistence fails, it restores the in-memory state so the running process remains blocked. Do not mark a confirmed buy accounted without including its signature in the reconciled position.
 
 ## Operator sell-intent recovery
 
