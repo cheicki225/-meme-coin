@@ -1238,7 +1238,6 @@ class PaperTrader:
             "sell_ratio": sell_ratio, "result_pct": change_pct, "pnl_usd": pnl_usd, "time": time.time(),
         })
         self.data_store.save()
-        self._finalize_sell_accounting(position["token_mint"], sell_result)
 
         log.info(
             f"✅ [{config.TRADING_MODE}] Vente partielle sur {position['token_mint']} "
@@ -1250,6 +1249,10 @@ class PaperTrader:
             state["open_positions"] = [p for p in state.get("open_positions", []) if p is not position]
             state.setdefault("closed_positions", []).append(position)
             self.data_store.save()
+
+        # Release the LIVE reservation only after the final position state
+        # (including a fully closed position) has been durably persisted.
+        self._finalize_sell_accounting(position["token_mint"], sell_result)
 
     async def _close_remaining(self, position: dict, exit_price: float, change_pct: float, close_reason: str):
         if position["units"] <= 0:
