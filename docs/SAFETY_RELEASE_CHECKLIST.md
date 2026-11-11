@@ -36,7 +36,7 @@ This checklist is required before enabling LIVE trading.
 - Unexpected LIVE sell execution errors are persisted as `unknown`; no automatic retry is permitted until the transaction is reconciled.
 - Partial sell ratios and token unit amounts are validated before execution.
 - When GoPlus checks are enabled, missing credentials, API errors, malformed responses, and unindexed tokens fail closed. An enabled developer-behavior filter also blocks if its required data cannot be obtained.
-- GoPlus `is_open_source` is treated as source verification, not as proof that mint/freeze authorities were renounced.
+- The GoPlus adapter parses the documented Solana schema (mintable/freezable/closable authorities, default account state, non-transferability, transfer hooks/fees, creator risk and DEX TVL); it does not infer EVM honeypot or ownership-renunciation properties from unrelated fields.
 
 Known limitations (not represented as completed capabilities):
 - SPL migration detection is heuristic and does not prove common ownership; it intentionally does not auto-add destinations.
