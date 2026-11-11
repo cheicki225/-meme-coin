@@ -102,3 +102,31 @@ def test_confirmed_intent_keeps_signature():
     record = state["safety_order_intents"][intent.idempotency_key]
     assert record["status"] == "confirmed"
     assert record["signature"] == "abc123"
+
+
+
+def test_terminal_intent_cannot_be_downgraded_by_executor():
+    state = {}
+    intent = preflight_buy(
+        token_mint="mint", amount_sol=0.1, source_wallet="wallet",
+        settings={"max_position_sol": 0.5},
+        state={"balance_sol": 2.0, "open_positions": []}, event_id="terminal",
+    )
+    reserve_intent(state, intent)
+    mark_intent(state, intent.idempotency_key, "confirmed", signature="sig")
+    with pytest.raises(ValueError, match="Only pending"):
+        mark_intent(state, intent.idempotency_key, "failed", error="late error")
+    assert state["safety_order_intents"][intent.idempotency_key]["status"] == "confirmed"
+
+
+def test_corrupt_existing_intent_fails_closed():
+    state = {"safety_order_intents": {}}
+    intent = preflight_buy(
+        token_mint="mint", amount_sol=0.1, source_wallet="wallet",
+        settings={"max_position_sol": 0.5},
+        state={"balance_sol": 2.0, "open_positions": []}, event_id="corrupt",
+    )
+    state["safety_order_intents"][intent.idempotency_key] = "not-a-record"
+    with pytest.raises(ValueError, match="Corrupt"):
+        reserve_intent(state, intent)
+    assert state["safety_order_intents"][intent.idempotency_key] == "not-a-record"
