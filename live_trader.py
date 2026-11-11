@@ -422,13 +422,20 @@ class LiveTrader(PaperTrader):
             return None
 
         unresolved_sells = self.data_store.state.get("safety_unresolved_sell_tokens", {})
-        if isinstance(unresolved_sells, dict) and token_mint in unresolved_sells:
+        unaccounted_sells = self.data_store.state.get("safety_unaccounted_confirmed_sells", {})
+        if ((isinstance(unresolved_sells, dict) and token_mint in unresolved_sells)
+                or (isinstance(unaccounted_sells, dict) and any(
+                    isinstance(item, dict) and item.get("token_mint") == token_mint
+                    for item in unaccounted_sells.values()
+                ))):
             log.critical(
-                f"🛑 Vente bloquée pour {token_mint[:8]}...: une vente précédente a un résultat inconnu; "
-                "réconciliation requise avant tout nouvel essai."
+                f"🛑 Vente bloquée pour {token_mint[:8]}...: une vente précédente est ambiguë "
+                "ou confirmée mais non comptabilisée; réconciliation requise."
             )
             return None
 
+        if not math.isfinite(float(units)) or units <= 0:
+            return None
         decimals = await _get_token_decimals(token_mint)
         amount_raw = int(units * (10 ** decimals))
         if amount_raw <= 0:
@@ -460,12 +467,48 @@ class LiveTrader(PaperTrader):
             log.error(f"❌ Vente LIVE échouée sur {token_mint[:8]}...: {e}")
             return None
 
-        sol_received = result["output_amount"] / 1_000_000_000
-        proceeds_usd = sol_received * await get_sol_usd_rate()
+        # Le swap est confirmé. Si le prix ou les montants ne peuvent pas être
+        # comptabilisés, conserver la preuve et bloquer toute nouvelle vente
+        # de ce mint : le prochain poll ne doit jamais renvoyer les mêmes tokens.
+        signature = result.get("signature")
+        try:
+            raw_output = result.get("output_amount")
+            raw_input = result.get("input_amount")
+            if (not isinstance(raw_output, int) or isinstance(raw_output, bool) or raw_output <= 0
+                    or not isinstance(raw_input, int) or isinstance(raw_input, bool) or raw_input <= 0):
+                raise ValueError("Montants bruts du swap de vente confirmée invalides")
+            sol_received = raw_output / 1_000_000_000
+            sol_usd = float(await get_sol_usd_rate())
+            if not math.isfinite(sol_usd) or sol_usd <= 0:
+                raise ValueError("Taux SOL/USD indisponible après vente confirmée")
+            proceeds_usd = sol_received * sol_usd
+            if not math.isfinite(proceeds_usd) or proceeds_usd <= 0:
+                raise ValueError("Produit de vente calculé invalide")
+        except Exception as e:
+            registry = self.data_store.state.setdefault("safety_unaccounted_confirmed_sells", {})
+            key = signature or f"{token_mint}:{time.time_ns()}"
+            registry[key] = {
+                "status": "needs_accounting_reconciliation",
+                "token_mint": token_mint,
+                "source_wallet": str(keypair.pubkey()),
+                "signature": signature,
+                "units_requested": units,
+                "input_amount_raw": result.get("input_amount"),
+                "output_amount_raw": result.get("output_amount"),
+                "token_decimals": decimals,
+                "created_at": time.time(),
+                "error": str(e)[:500],
+            }
+            self.data_store.save()
+            log.critical(
+                f"CONFIRMED SELL REQUIRES ACCOUNTING RECONCILIATION: token={token_mint} "
+                f"signature={signature}; further sells for this token are blocked."
+            )
+            return None
 
         log.info(
             f"💰 [LIVE] Vente réelle confirmée : tokens -> {sol_received:.4f} SOL "
-            f"(impact prix {result['price_impact_pct']:.2f}%) — tx {result['signature']}"
+            f"(impact prix {result.get('price_impact_pct', 0):.2f}%) — tx {signature}"
         )
 
-        return {"proceeds_usd": proceeds_usd, "signature": result["signature"]}
+        return {"proceeds_usd": proceeds_usd, "signature": signature}
