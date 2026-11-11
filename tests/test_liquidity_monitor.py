@@ -61,3 +61,29 @@ def test_position_monitor_emits_one_alert_per_drop_episode_and_resets_on_recover
 
     next_drop = update_position_liquidity(position, _pair(4000), sampled_at=5)
     assert next_drop["alert"] is True
+
+
+
+def test_position_monitor_alerts_once_when_pool_address_changes():
+    position = {"token_mint": "MintA"}
+    baseline = update_position_liquidity(position, _pair(10000, "PoolA"), sampled_at=1)
+    assert baseline["status"] == "baseline"
+
+    migration = update_position_liquidity(position, _pair(10000, "PoolB"), sampled_at=2)
+    assert migration["status"] == "pool_changed"
+    assert migration["alert"] is True
+    assert position["liquidity_monitor"]["last_snapshot"]["pair_address"] == "PoolB"
+
+    unchanged_pool = update_position_liquidity(position, _pair(10000, "PoolB"), sampled_at=3)
+    assert unchanged_pool["status"] == "ok"
+    assert unchanged_pool["alert"] is False
+
+
+def test_position_monitor_does_not_overwrite_baseline_when_observation_is_invalid():
+    position = {"token_mint": "MintA"}
+    update_position_liquidity(position, _pair(10000), sampled_at=1)
+
+    invalid = update_position_liquidity(position, _pair("inf"), sampled_at=2)
+    assert invalid["status"] == "unavailable"
+    assert invalid["alert"] is False
+    assert position["liquidity_monitor"]["last_snapshot"]["liquidity_usd"] == 10000
