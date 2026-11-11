@@ -27,9 +27,9 @@ def test_protection_signature_cache_has_hard_size_bound(monkeypatch):
     monkeypatch.setattr(protection_scanner, "_SIGNATURE_CACHE_MAX_SIZE", 3)
     scanner = ProtectionScanner.__new__(ProtectionScanner)
     scanner._recent_signatures = {
-        "old-1": 1.0,
-        "old-2": 2.0,
-        "old-3": 3.0,
+        "old-1": time.time(),
+        "old-2": time.time(),
+        "old-3": time.time(),
     }
 
     assert scanner._already_processed("new-signature") is False
