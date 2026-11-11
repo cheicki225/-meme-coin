@@ -208,6 +208,7 @@ DEFAULT_WALLET_SETTINGS = {
     # ── Ajouts F Project (menu Ruggers / Config par Rugger) ──
     "auto_buy": True,
     "auto_sell": True,
+    "copy_sell_pct": 100.0,          # part de la position vendue à chaque vente du wallet source (1-100)
     "max_consecutive_losses": 3,   # coupe l'auto-buy après N pertes d'affilée (0 = désactivé)
     "protection_enabled": True,
     "protection_mode": "last_transfer",  # "last_transfer" ou "exchange_pattern"
