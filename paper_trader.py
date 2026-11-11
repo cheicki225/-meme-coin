@@ -1160,6 +1160,25 @@ class PaperTrader:
     # FERMETURE DE POSITION (partielle / totale)
     # ══════════════════════════════════════════════════════════
 
+    async def copy_sell(self, position: dict, price: float, sell_pct: float = 100.0) -> bool:
+        """Applique un pourcentage de vente miroir à une position existante."""
+        try:
+            sell_pct = float(sell_pct)
+        except (TypeError, ValueError):
+            return False
+        if not math.isfinite(sell_pct) or not 0 < sell_pct <= 100:
+            log.warning("Copy Sell ignoré : copy_sell_pct doit être dans ]0, 100].")
+            return False
+        if position.get("units", 0) <= 0:
+            return False
+        change_pct = self._pnl_pct(position, price)
+        before = float(position["units"])
+        if sell_pct >= 100:
+            await self._close_remaining(position, price, change_pct, "COPY_SELL")
+        else:
+            await self._partial_close(position, price, change_pct, sell_pct / 100.0, tp_index=None)
+        return float(position.get("units", before)) < before
+
     async def _partial_close(self, position: dict, exit_price: float, change_pct: float,
                               sell_ratio: float, tp_index):
         try:
