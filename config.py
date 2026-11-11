@@ -162,6 +162,7 @@ BUDGET_USD = float(os.getenv("BUDGET_USD", "500"))
 CIRCUIT_BREAKER_USD = float(os.getenv("CIRCUIT_BREAKER_USD", "150"))
 MAX_OPEN_EXPOSURE_USD = float(os.getenv("MAX_OPEN_EXPOSURE_USD", "250"))
 MAX_OPEN_POSITIONS = int(os.getenv("MAX_OPEN_POSITIONS", "10"))
+MAX_MANUAL_TRANSFER_SOL = float(os.getenv("MAX_MANUAL_TRANSFER_SOL", "0.1"))
 
 # ── Backtest / validation avant ajout au monitoring ──────────────
 BACKTEST_MIN_TOKENS = int(os.getenv("BACKTEST_MIN_TOKENS", "10"))  # nb de tokens passés à analyser
