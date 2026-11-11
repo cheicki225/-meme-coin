@@ -367,17 +367,86 @@ def _extract_transfer_source(tx: dict, target_wallet: str) -> dict:
         return None
 
 
-async def _count_distinct_outgoing_recipients(address: str, sample_size: int = 50) -> int:
-    """Estime le nombre de destinataires distincts financés par cette adresse récemment."""
-    signatures = await _get_all_signatures(address, max_pages=1)
-    signatures = signatures[:sample_size]
+def _extract_outgoing_recipients(tx: dict, source_address: str) -> set:
+    """
+    Extrait les destinataires des transferts SOL explicites initiés par
+    source_address. Utilise les instructions System Program parsées, plutôt
+    que les variations de soldes (qui incluent frais, rent et autres CPI).
+
+    Les instructions de premier niveau et les innerInstructions sont prises
+    en compte. Les transferts non parsés ou ambigus sont ignorés.
+    """
+    if not isinstance(tx, dict):
+        return set()
+
+    try:
+        message = tx.get("transaction", {}).get("message", {})
+        instructions = list(message.get("instructions") or [])
+    except (AttributeError, TypeError):
+        instructions = []
+
+    meta = tx.get("meta") or {}
+    if isinstance(meta, dict):
+        for group in meta.get("innerInstructions") or []:
+            if isinstance(group, dict):
+                instructions.extend(group.get("instructions") or [])
 
     recipients = set()
-    for sig_info in signatures:
-        tx = await _get_transaction(sig_info["signature"])
-        if not tx:
+    for instruction in instructions:
+        if not isinstance(instruction, dict):
             continue
-        info = _extract_transfer_source(tx, address)
-        # Ici on cherche plutôt les sorties, logique simplifiée : à raffiner
-        # avec une vraie analyse des postBalances pour chaque destinataire.
+        parsed = instruction.get("parsed")
+        if not isinstance(parsed, dict):
+            continue
+
+        # jsonParsed représente normalement le System Program par "system".
+        # Le contrôle du type et de la source évite de compter les transferts
+        # entrants, les transferts d'autres wallets ou les instructions SPL.
+        if instruction.get("program") != "system":
+            continue
+        if parsed.get("type") != "transfer":
+            continue
+
+        info = parsed.get("info")
+        if not isinstance(info, dict) or info.get("source") != source_address:
+            continue
+
+        destination = info.get("destination")
+        if isinstance(destination, str) and destination and destination != source_address:
+            recipients.add(destination)
+
+    return recipients
+
+
+async def _count_distinct_outgoing_recipients(address: str, sample_size: int = 50) -> int:
+    """
+    Compte les destinataires distincts de transferts SOL sortants parmi les
+    dernières transactions du wallet. Les doublons sont dédupliqués entre
+    transactions; les instructions internes sont aussi analysées.
+
+    Cette mesure est un indice de wallet centralisateur, pas une preuve à elle
+    seule qu'il s'agit d'un wallet "mère". Le seuil de classification doit
+    rester conservateur.
+    """
+    if not isinstance(sample_size, int) or sample_size <= 0:
+        return 0
+
+    signatures = await _get_all_signatures(address, max_pages=1)
+    if not isinstance(signatures, list) or not signatures:
+        return 0
+
+    recipients = set()
+    for sig_info in signatures[:sample_size]:
+        if not isinstance(sig_info, dict):
+            continue
+        signature = sig_info.get("signature")
+        if not signature:
+            continue
+        try:
+            tx = await _get_transaction(signature)
+        except Exception as exc:
+            log.debug("Impossible de lire la transaction %s: %s", signature, exc)
+            continue
+        recipients.update(_extract_outgoing_recipients(tx, address))
+
     return len(recipients)

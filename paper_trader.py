@@ -25,6 +25,7 @@ import time
 import random
 import logging
 import asyncio
+import math
 
 import config
 import rpc_client
@@ -33,6 +34,7 @@ import wallet_history
 import position_price_stream
 from backtest import _get_pair_data, get_bonding_curve_price, get_sol_usd_rate, get_live_price_and_market_cap
 import security as security_check
+import liquidity_monitor
 
 log = logging.getLogger("paper_trader")
 
@@ -104,11 +106,25 @@ class PaperTrader:
         units = cost_basis_usd / entry_price
         return {"units": units, "cost_basis_usd": cost_basis_usd, "actual_price": entry_price, "signature": None}
 
+    def _finalize_sell_accounting(self, token_mint: str, sell_result: dict) -> None:
+        """Finalize LIVE sell reservation after local position/accounting state is durable."""
+        intent_id = sell_result.get("sell_intent_id") if isinstance(sell_result, dict) else None
+        finalize = getattr(self, "_finalize_sell_intent", None)
+        if intent_id and callable(finalize):
+            finalize(token_mint, intent_id)
+
     async def _execute_sell(self, token_mint: str, units: float, current_price: float, settings: dict) -> dict:
         """Version PAPER : conversion directe au prix coté, aucun slippage simulé.
         Retourne None seulement si la vente doit être annulée (jamais en PAPER)."""
         proceeds_usd = units * current_price
-        return {"proceeds_usd": proceeds_usd, "signature": None}
+        sol_usd = float(await get_sol_usd_rate())
+        if not math.isfinite(sol_usd) or sol_usd <= 0:
+            raise ValueError("SOL/USD rate unavailable for paper sell accounting")
+        return {
+            "proceeds_usd": proceeds_usd,
+            "sol_received": proceeds_usd / sol_usd,
+            "signature": None,
+        }
 
     # ══════════════════════════════════════════════════════════
     # OUVERTURE DE POSITION
@@ -342,6 +358,9 @@ class PaperTrader:
         hold_max = settings.get("dev_holding_max_pct")
         if not skip_speed and (dev_min is not None or dev_max is not None or hold_min is not None or hold_max is not None):
             dev_stats = await self._check_dev_behavior(source_wallet, token_mint, entry_price)
+            if not dev_stats:
+                log.warning(f"🛑 Filtres comportement dev actifs mais données indisponibles pour {token_mint[:8]}... — achat bloqué.")
+                return None
             if dev_stats:
                 if dev_min is not None and dev_stats["dev_buy_sol"] < dev_min:
                     log.info(f"⏭️  Achat dev {dev_stats['dev_buy_sol']:.2f} SOL < min {dev_min}, achat refusé.")
@@ -359,7 +378,19 @@ class PaperTrader:
         # ── Vérification sécurité GoPlus (si activée pour ce wallet) ──
         if settings.get("security_check_enabled"):
             security = await security_check.check_token_security(token_mint)
-            if security.get("is_honeypot"):
+            if security.get("error"):
+                log.warning(
+                    f"🛑 Vérification anti-rug indisponible ({security.get('error')}) "
+                    f"pour {token_mint[:8]}... — achat bloqué (fail-closed)."
+                )
+                if self.notifier:
+                    await self.notifier.notify(
+                        "buy_skipped",
+                        f"🛑 *Buy Skipped* — vérification anti-rug indisponible\n"
+                        f"Token: `{token_mint[:8]}...`\nRaison: `{security.get('error')}`",
+                    )
+                return None
+            if security.get("is_honeypot") is True:
                 log.warning(f"🚨 Honeypot détecté sur {token_mint[:8]}... — achat annulé.")
                 if self.notifier:
                     await self.notifier.notify(
@@ -567,6 +598,7 @@ class PaperTrader:
         last_ws_price_usd = None
         last_ws_market_cap = None
         last_ws_ts = 0.0
+        last_liquidity_check = 0.0
 
         try:
             while elapsed < max_duration_s and position["units"] > 0:
@@ -640,6 +672,51 @@ class PaperTrader:
 
                 if price <= 0:
                     continue
+
+                # Read-only liquidity surveillance: sample at a bounded cadence,
+                # independently of the price WebSocket. This is an alert only;
+                # it never submits a sell or claims to prove a rug.
+                if settings.get("liquidity_monitor_enabled", config.LIQUIDITY_MONITOR_ENABLED):
+                    now = time.time()
+                    if now - last_liquidity_check >= 60:
+                        last_liquidity_check = now
+                        try:
+                            liquidity_pair = data or await _get_pair_data(
+                                position["token_mint"], retries=1, retry_delay_s=0
+                            )
+                            liquidity_result = liquidity_monitor.update_position_liquidity(
+                                position,
+                                liquidity_pair,
+                                threshold_pct=settings.get("liquidity_drop_alert_pct", 40),
+                                sampled_at=now,
+                            )
+                            if liquidity_result.get("snapshot"):
+                                # Persist the baseline so comparisons survive process restarts.
+                                self.data_store.save()
+                            if liquidity_result.get("alert"):
+                                status = liquidity_result.get("status")
+                                if status == "liquidity_drop":
+                                    detail = (
+                                        f"baisse estimée de {liquidity_result.get('drop_pct', 0):.1f}% "
+                                        f"({liquidity_result.get('previous_liquidity_usd', 0):.0f}$ -> "
+                                        f"{liquidity_result.get('current_liquidity_usd', 0):.0f}$)"
+                                    )
+                                else:
+                                    detail = "adresse du pool DexScreener différente du dernier relevé"
+                                log.warning(
+                                    f"⚠️ Alerte liquidité {position['token_mint'][:8]}...: {detail}. "
+                                    "Vérification manuelle requise; aucune vente automatique."
+                                )
+                                if self.notifier:
+                                    await self.notifier.notify(
+                                        "liquidity_alert",
+                                        f"⚠️ *Alerte liquidité*\nToken: `{position['token_mint'][:8]}...`\n"
+                                        f"Signal: {detail}.\n"
+                                        "_Indicateur DexScreener heuristique; vérifie le pool on-chain. "
+                                        "Aucune vente automatique n'a été envoyée._",
+                                    )
+                        except Exception as exc:
+                            log.debug("Liquidity monitor unavailable for %s: %s", position["token_mint"][:8], exc)
 
                 position["ath_market_cap"] = max(position["ath_market_cap"], market_cap)
                 change_pct = self._pnl_pct(position, price)
@@ -873,35 +950,83 @@ class PaperTrader:
     # ══════════════════════════════════════════════════════════
 
     async def sell_initials(self, position: dict, price: float) -> bool:
-        """Vend exactement de quoi récupérer la mise investie (cost_basis_usd), garde le reste."""
-        if position.get("initials_sold"):
+        """Vend réellement une partie de la position pour tenter de récupérer la mise."""
+        if position.get("initials_sold") or position.get("units", 0) <= 0:
+            return False
+        try:
+            price = float(price)
+            units = float(position["units"])
+            cost_basis = float(position["cost_basis_usd"])
+        except (KeyError, TypeError, ValueError):
+            return False
+        if not all(math.isfinite(v) for v in (price, units, cost_basis)) or price <= 0 or units <= 0 or cost_basis <= 0:
             return False
 
-        current_value = position["units"] * price
-        if current_value <= position["cost_basis_usd"]:
-            return False  # pas encore en profit, rien à récupérer
+        current_value = units * price
+        if current_value <= cost_basis:
+            return False
 
-        units_to_sell = position["cost_basis_usd"] / price
-        proceeds = units_to_sell * price  # == cost_basis_usd, par construction
+        units_to_sell = min(units, cost_basis / price)
+        sell_ratio = units_to_sell / units
+        sell_result = await self._execute_sell(
+            position["token_mint"], units_to_sell, price, position["settings"]
+        )
+        if sell_result is None:
+            return False
 
-        position["units"] -= units_to_sell
-        recovered = position["cost_basis_usd"]
-        position["cost_basis_usd"] = 0  # le reste devient un moonbag à coût nul
-        position["initials_sold"] = True
+        try:
+            proceeds = float(sell_result["proceeds_usd"])
+            sol_received = float(sell_result["sol_received"])
+        except (KeyError, TypeError, ValueError):
+            position["status"] = "needs_accounting_reconciliation"
+            position["accounting_error"] = "missing_sell_proceeds"
+            self.data_store.save()
+            return False
+        if not math.isfinite(proceeds) or proceeds < 0 or not math.isfinite(sol_received) or sol_received < 0:
+            position["status"] = "needs_accounting_reconciliation"
+            position["accounting_error"] = "invalid_sell_proceeds"
+            self.data_store.save()
+            return False
+
+        remaining_cost = cost_basis * (1 - sell_ratio)
+        if proceeds >= cost_basis:
+            pnl_usd = proceeds - cost_basis
+            position["cost_basis_usd"] = 0.0
+            position["initials_sold"] = True
+        else:
+            cost_removed = cost_basis * sell_ratio
+            pnl_usd = proceeds - cost_removed
+            position["cost_basis_usd"] = remaining_cost
+
+        position["units"] = max(0.0, units - units_to_sell)
+        position["total_sol_received"] = position.get("total_sol_received", 0.0) + sol_received
+        if sell_result.get("signature"):
+            position.setdefault("tx_signatures", []).append(sell_result["signature"])
 
         state = self.data_store.state
+        state["total_pnl_usd"] = state.get("total_pnl_usd", 0.0) + pnl_usd
         state.setdefault("trades", []).append({
-            "token_mint": position["token_mint"], "type": "sell_initials",
-            "recovered_usd": recovered, "time": time.time(),
+            "token_mint": position["token_mint"],
+            "type": "sell_initials",
+            "sell_ratio": sell_ratio,
+            "recovered_usd": proceeds,
+            "pnl_usd": pnl_usd,
+            "time": time.time(),
+            "signature": sell_result.get("signature"),
         })
         self.data_store.save()
+        self._finalize_sell_accounting(position["token_mint"], sell_result)
 
-        log.info(f"💰 [PAPER] Sell Initials sur {position['token_mint'][:8]}... — {recovered:.2f}$ récupérés.")
+        log.info(
+            f"💰 [{config.TRADING_MODE}] Sell Initials sur {position['token_mint'][:8]}... "
+            f"— produit {proceeds:.2f}$, récupération de mise {'complète' if position.get('initials_sold') else 'partielle'}."
+        )
         if self.notifier:
             await self.notifier.notify(
                 "sell_success",
                 f"💰 *Sell Initials*\nToken: `{position['token_mint'][:8]}...`\n"
-                f"Mise récupérée: {recovered:.2f}$\nLe reste est en free-ride (coût nul).",
+                f"Produit: {proceeds:.2f}$\n"
+                f"{'Mise récupérée — le solde devient free-ride.' if position.get('initials_sold') else 'Récupération partielle; coût restant conservé.'}",
             )
         return True
 
@@ -1090,9 +1215,38 @@ class PaperTrader:
     # FERMETURE DE POSITION (partielle / totale)
     # ══════════════════════════════════════════════════════════
 
+    async def copy_sell(self, position: dict, price: float, sell_pct: float = 100.0) -> bool:
+        """Applique un pourcentage de vente miroir à une position existante."""
+        try:
+            sell_pct = float(sell_pct)
+        except (TypeError, ValueError):
+            return False
+        if not math.isfinite(sell_pct) or not 0 < sell_pct <= 100:
+            log.warning("Copy Sell ignoré : copy_sell_pct doit être dans ]0, 100].")
+            return False
+        if position.get("units", 0) <= 0:
+            return False
+        change_pct = self._pnl_pct(position, price)
+        before = float(position["units"])
+        if sell_pct >= 100:
+            await self._close_remaining(position, price, change_pct, "COPY_SELL")
+        else:
+            await self._partial_close(position, price, change_pct, sell_pct / 100.0, tp_index=None)
+        return float(position.get("units", before)) < before
+
     async def _partial_close(self, position: dict, exit_price: float, change_pct: float,
                               sell_ratio: float, tp_index):
+        try:
+            sell_ratio = float(sell_ratio)
+        except (TypeError, ValueError):
+            log.error("Vente partielle refusée : sell_ratio invalide.")
+            return
+        if not math.isfinite(sell_ratio) or not 0 < sell_ratio <= 1:
+            log.error("Vente partielle refusée : sell_ratio doit être dans ]0, 1].")
+            return
         units_sold = position["units"] * sell_ratio
+        if not math.isfinite(units_sold) or units_sold <= 0:
+            return
 
         sell_result = await self._execute_sell(position["token_mint"], units_sold, exit_price, position["settings"])
         if sell_result is None:
@@ -1104,14 +1258,21 @@ class PaperTrader:
                 )
             return
 
-        proceeds = sell_result["proceeds_usd"]
+        proceeds = float(sell_result["proceeds_usd"])
+        sol_received = float(sell_result["sol_received"])
+        if not math.isfinite(proceeds) or proceeds < 0 or not math.isfinite(sol_received) or sol_received < 0:
+            log.critical("Vente confirmée mais montants comptables invalides; position bloquée pour réconciliation.")
+            position["status"] = "needs_accounting_reconciliation"
+            position["accounting_error"] = "invalid_sell_proceeds"
+            self.data_store.save()
+            return
         sell_signature = sell_result.get("signature")
         cost_removed = position["cost_basis_usd"] * sell_ratio
         pnl_usd = proceeds - cost_removed
 
         position["units"] -= units_sold
         position["cost_basis_usd"] -= cost_removed
-        position["total_sol_received"] = position.get("total_sol_received", 0) + (proceeds / await get_sol_usd_rate())
+        position["total_sol_received"] = position.get("total_sol_received", 0) + sol_received
         if sell_signature:
             position.setdefault("tx_signatures", []).append(sell_signature)
         if tp_index is not None:
@@ -1136,6 +1297,10 @@ class PaperTrader:
             state.setdefault("closed_positions", []).append(position)
             self.data_store.save()
 
+        # Release the LIVE reservation only after the final position state
+        # (including a fully closed position) has been durably persisted.
+        self._finalize_sell_accounting(position["token_mint"], sell_result)
+
     async def _close_remaining(self, position: dict, exit_price: float, change_pct: float, close_reason: str):
         if position["units"] <= 0:
             return
@@ -1150,7 +1315,14 @@ class PaperTrader:
                 )
             return
 
-        proceeds = sell_result["proceeds_usd"]
+        proceeds = float(sell_result["proceeds_usd"])
+        sol_received = float(sell_result["sol_received"])
+        if not math.isfinite(proceeds) or proceeds < 0 or not math.isfinite(sol_received) or sol_received < 0:
+            log.critical("Vente confirmée mais montants comptables invalides; position bloquée pour réconciliation.")
+            position["status"] = "needs_accounting_reconciliation"
+            position["accounting_error"] = "invalid_sell_proceeds"
+            self.data_store.save()
+            return
         sell_signature = sell_result.get("signature")
         pnl_usd = proceeds - position["cost_basis_usd"]
 
@@ -1159,7 +1331,7 @@ class PaperTrader:
         position["exit_time"] = time.time()
         position["result_pct"] = change_pct
         position["close_reason"] = close_reason
-        position["total_sol_received"] = position.get("total_sol_received", 0) + (proceeds / await get_sol_usd_rate())
+        position["total_sol_received"] = position.get("total_sol_received", 0) + sol_received
         position["units"] = 0
         position["cost_basis_usd"] = 0
         if sell_signature:
@@ -1174,6 +1346,7 @@ class PaperTrader:
             state["session_losses_usd"] = state.get("session_losses_usd", 0) + abs(pnl_usd)
 
         self.data_store.save()
+        self._finalize_sell_accounting(position["token_mint"], sell_result)
 
         just_paused = self.data_store.record_trade_result(position["source_wallet"], is_win=(pnl_usd >= 0))
 

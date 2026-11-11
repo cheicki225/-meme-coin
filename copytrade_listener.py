@@ -36,6 +36,7 @@ d'agrégation) plutôt qu'un nativeTransfer direct sur le wallet lui-même.
 import asyncio
 import json
 import logging
+import math
 import time
 import websockets
 
@@ -63,7 +64,7 @@ _SIGNATURE_CACHE_TTL_S = 120  # largement suffisant pour absorber un doublon ré
 
 
 class CopyTradeListener:
-    def __init__(self, data_store, on_buy, on_sell, on_large_sol_transfer=None, on_withdrawal=None):
+    def __init__(self, data_store, on_buy, on_sell, on_large_sol_transfer=None, on_withdrawal=None, on_dev_token_transfer=None):
         """
         data_store: instance de monitoring_list.DataStore
         on_buy: async(wallet_address: str, token_mint: str, signature: str)
@@ -81,6 +82,7 @@ class CopyTradeListener:
         self.on_sell = on_sell
         self.on_large_sol_transfer = on_large_sol_transfer
         self.on_withdrawal = on_withdrawal
+        self.on_dev_token_transfer = on_dev_token_transfer
         self._running = False
         self._ws = None
         self._subscribed_wallets = set()
@@ -241,6 +243,7 @@ class CopyTradeListener:
         # transférer son SOL SANS que ce soit un swap.
         if self._creation_mode_wallets:
             await self._check_large_sol_transfer(parsed, signature, is_swap_related)
+            await self._check_dev_token_transfers(parsed, signature, is_swap_related)
 
         # AJOUTÉ suite à une demande explicite : alerte retrait SOL, TOUS
         # wallets surveillés (pas juste track_creation), seuil en montant
@@ -312,6 +315,33 @@ class CopyTradeListener:
                     f"{amount_sol:.4f} SOL ({pct_transferred:.0f}% de son solde) vers {to_account[:8]}..."
                 )
                 await self.on_large_sol_transfer(from_account, to_account, amount_sol, pct_transferred, signature)
+
+    async def _check_dev_token_transfers(self, parsed: dict, signature: str, is_swap_related: bool = False):
+        """Signale les transferts SPL sortants des wallets dev comme candidats de migration.
+
+        Un transfert isolé n'est pas une preuve de migration : on conserve des
+        preuves distinctes (mints/signatures) et on ne déclenche aucune action
+        automatique sur le wallet destinataire.
+        """
+        if is_swap_related or not self.on_dev_token_transfer:
+            return
+        for transfer in parsed.get("tokenTransfers", []) or []:
+            if not isinstance(transfer, dict):
+                continue
+            source = transfer.get("fromUserAccount")
+            destination = transfer.get("toUserAccount")
+            mint = transfer.get("mint")
+            if source not in self._creation_mode_wallets or not destination or destination == source:
+                continue
+            if not mint or mint in (config.SOL_MINT, wallet.USDC_MINT):
+                continue
+            try:
+                amount = float(transfer.get("tokenAmount", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(amount) or amount <= 0:
+                continue
+            await self.on_dev_token_transfer(source, destination, mint, amount, signature)
 
     async def _check_withdrawal(self, parsed: dict, signature: str, is_swap_related: bool = False):
         """

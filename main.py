@@ -17,6 +17,7 @@ import asyncio
 import logging
 import os
 import sys
+import time
 
 import config
 from websocket_listener import NewTokenListener
@@ -82,6 +83,7 @@ class SniperBot:
             self.data_store, on_buy=self.on_copytrade_buy, on_sell=self.on_copytrade_sell,
             on_large_sol_transfer=self.on_dev_large_sol_transfer,
             on_withdrawal=self.on_wallet_withdrawal,
+            on_dev_token_transfer=self.on_dev_token_transfer,
         )
         self.protection_scanner = ProtectionScanner(self.data_store, notifier=self.notifier)
         self.rug_scanner = RugScanner(self.data_store, notifier=self.notifier)
@@ -318,6 +320,89 @@ class SniperBot:
             reason=f"Copy trade — achat détecté chez {label}",
             source_entry_market_cap=source_entry_market_cap,
         )
+
+    async def on_dev_token_transfer(self, source_wallet: str, destination: str, token_mint: str,
+                                    amount: float, signature: str):
+        """Enregistre les transferts SPL d'un dev comme indices de migration potentielle.
+
+        Pas d'ajout automatique du destinataire : plusieurs transferts distincts
+        augmentent le niveau de suspicion, mais une migration doit être vérifiée
+        manuellement avant de modifier les wallets surveillés.
+        """
+        source_entry = self.data_store.state.get("monitored_dev_wallets", {}).get(source_wallet, {})
+        if source_entry.get("mode", "track_creation") != "track_creation":
+            return
+
+        registry = self.data_store.state.setdefault("dev_migration_candidates", {})
+        if not isinstance(registry, dict):
+            log.error("Registre de migration corrompu — candidat ignoré par sécurité.")
+            return
+        key = f"{source_wallet}:{destination}"
+        candidate = registry.setdefault(key, {
+            "source_wallet": source_wallet,
+            "destination": destination,
+            "token_mints": [],
+            "signatures": [],
+            "transfer_count": 0,
+            "first_seen": time.time(),
+            "last_seen": time.time(),
+            "status": "candidate",
+        })
+        if not isinstance(candidate, dict):
+            log.error("Entrée de migration corrompue — candidat ignoré par sécurité.")
+            return
+        if not isinstance(candidate.get("signatures"), list):
+            candidate["signatures"] = []
+        if not isinstance(candidate.get("token_mints"), list):
+            candidate["token_mints"] = []
+        if not isinstance(candidate.get("transfer_events"), list):
+            candidate["transfer_events"] = []
+        event_key = f"{signature}:{token_mint}"
+        if event_key in candidate["transfer_events"]:
+            return
+        try:
+            candidate["transfer_count"] = max(0, int(candidate.get("transfer_count", 0) or 0))
+        except (TypeError, ValueError, OverflowError):
+            candidate["transfer_count"] = 0
+        previous_status = candidate.get("status", "candidate")
+        candidate["transfer_count"] += 1
+        candidate["last_seen"] = time.time()
+        if token_mint not in candidate["token_mints"]:
+            candidate["token_mints"].append(token_mint)
+        candidate["token_mints"] = candidate["token_mints"][:10]
+        if signature not in candidate["signatures"]:
+            candidate["signatures"].append(signature)
+        candidate["signatures"] = candidate["signatures"][-50:]
+        candidate["transfer_events"].append(event_key)
+        candidate["transfer_events"] = candidate["transfer_events"][-100:]
+
+        # Deux mints distincts ou trois transactions indépendantes constituent
+        # un signal plus fort, mais toujours heuristique (pas une preuve).
+        suspected = len(candidate["token_mints"]) >= 2 or len(candidate["signatures"]) >= 3
+        candidate["status"] = "suspected_migration" if suspected else "candidate"
+        should_notify = (
+            candidate.get("last_notified_status") != candidate["status"]
+            and (candidate["transfer_count"] == 1 or suspected)
+        )
+        if should_notify:
+            candidate["last_notified_status"] = candidate["status"]
+        self.data_store.save()
+
+        log.warning(
+            "Developer SPL transfer: %s -> %s mint=%s amount=%s status=%s",
+            source_wallet[:8], destination[:8], token_mint[:8], amount, candidate["status"],
+        )
+        if self.notifier and should_notify:
+            label = "⚠️ Migration potentielle" if suspected else "🔎 Transfert SPL à surveiller"
+            await self.notifier.notify(
+                "rugger_alert",
+                f"{label}\nDev source: `{source_wallet[:8]}...`\n"
+                f"Wallet destinataire: `{destination}`\n"
+                f"Mint transféré: `{token_mint[:8]}...`\n"
+                f"Transferts distincts: {candidate['transfer_count']} | Mints distincts: {len(candidate['token_mints'])}\n"
+                f"Signature: `{signature[:16]}...`\n"
+                "_Indice heuristique uniquement : destinataire non ajouté automatiquement._",
+            )
 
     async def on_wallet_withdrawal(self, wallet_address: str, destination: str, amount: float, asset: str = "SOL", signature: str = None):
         """
@@ -579,8 +664,13 @@ class SniperBot:
                     log.info(f"📋 Copy sell détecté : {label} a vendu {token_mint[:8]}... — clôture miroir.")
                     data = await backtest._get_pair_data(token_mint)
                     price = float(data.get("priceUsd", position["entry_price"]) or position["entry_price"])
-                    change_pct = self.trader._pnl_pct(position, price)
-                    await self.trader._close_remaining(position, price, change_pct, "COPY_SELL")
+                    sell_pct = position.get("settings", {}).get("copy_sell_pct", 100.0)
+                    sold = await self.trader.copy_sell(position, price, sell_pct)
+                    if sold:
+                        log.info(
+                            f"📋 Copy Sell exécuté sur {token_mint[:8]}... "
+                            f"({sell_pct}% de la position restante)."
+                        )
             return
 
         if mode == "buy_on_dev_sell":

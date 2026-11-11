@@ -1715,8 +1715,12 @@ class SniperTelegramBot:
         msg = await update.message.reply_text(f"🛡️ Vérification sécurité de `{token_mint[:12]}...`...", parse_mode="Markdown")
 
         result = await security.check_token_security(token_mint)
-        if not result:
-            await msg.edit_text("❌ Impossible de récupérer les données de sécurité (pas de clé GoPlus configurée, ou erreur réseau).")
+        if result.get("error"):
+            await msg.edit_text(
+                "🛑 Vérification anti-rug indisponible — token non validé.\n"
+                f"Raison: {result.get('error')}\n"
+                "Aucune conclusion de sécurité ne peut être tirée."
+            )
             return
 
         risk_icon = "🔴" if result.get("is_risky") else "🟢"
