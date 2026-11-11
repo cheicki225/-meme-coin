@@ -399,6 +399,22 @@ class PaperTrader:
                     )
                 return None
             min_score = settings.get("min_security_score", 60)
+            # GoPlus peut fournir un score élevé tout en signalant une autorité
+            # dangereuse (mint/freeze/closable, hook malveillant, etc.).
+            # Ne jamais ignorer is_risky au seul motif que le score dépasse le seuil.
+            if not security_check.token_security_allows_buy(security, min_score):
+                log.info(
+                    f"⏭️  Token marqué risqué ou données de sécurité non fiables "
+                    f"(score={security.get('security_score')}, risky={security.get('is_risky')}) "
+                    f"pour {token_mint[:8]}..., achat refusé."
+                )
+                if self.notifier:
+                    await self.notifier.notify(
+                        "buy_skipped",
+                        f"⏭️ *Buy Skipped* — Token risqué ou vérification incomplète\n"
+                        f"Token: `{token_mint[:8]}...`\nScore: {security.get('security_score')}/100",
+                    )
+                return None
             if security.get("security_score", 50) < min_score:
                 log.info(
                     f"⏭️  Score sécurité {security.get('security_score')} < {min_score} "
