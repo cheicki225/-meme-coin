@@ -6,6 +6,7 @@ an operator or a provider-specific adapter that can verify chain state.
 
 from __future__ import annotations
 
+import copy
 import math
 import time
 from typing import Any, Mapping
@@ -139,13 +140,25 @@ def resolve_confirmed_buy_accounting(
         if not math.isfinite(value) or value <= 0:
             raise ValueError(f"Invalid reconciled position {field}")
 
-    already_present = any(
-        isinstance(item, dict)
-        and isinstance(item.get("tx_signatures"), list)
-        and signature in item["tx_signatures"]
-        for item in positions
+    existing_position = next(
+        (
+            item for item in positions
+            if isinstance(item, dict)
+            and isinstance(item.get("tx_signatures"), list)
+            and signature in item["tx_signatures"]
+        ),
+        None,
     )
-    if not already_present:
+    if existing_position is not None:
+        # Idempotency is valid only when the existing position belongs to
+        # this exact mint and wallet. A reused/corrupt signature must not
+        # silently mark a different position as accounted.
+        if (
+            existing_position.get("token_mint") != record.get("token_mint")
+            or existing_position.get("source_wallet") != record.get("source_wallet")
+        ):
+            raise ValueError("Transaction signature already belongs to another position")
+    else:
         positions.append(dict(position))
 
     record["accounting_status"] = "accounted"
@@ -229,3 +242,34 @@ def resolve_sell_intent(
     pending[token_mint] = confirmed
     unresolved.pop(token_mint, None)
     unaccounted[token_mint] = dict(confirmed)
+
+
+
+def resolve_confirmed_buy_accounting_durable(
+    data_store: Any,
+    idempotency_key: str,
+    *,
+    position: Mapping[str, Any],
+    note: str,
+) -> None:
+    """Resolve a confirmed buy and durably save it as one in-memory transaction.
+
+    The store must expose state and save_or_raise(). If persistence raises,
+    restore the in-memory snapshot so the running process cannot accidentally
+    treat an unpersisted reconciliation as complete.
+    """
+    state = getattr(data_store, "state", None)
+    saver = getattr(data_store, "save_or_raise", None)
+    if not isinstance(state, dict) or not callable(saver):
+        raise TypeError("A DataStore with state and save_or_raise() is required")
+
+    snapshot = copy.deepcopy(state)
+    try:
+        resolve_confirmed_buy_accounting(
+            state, idempotency_key, position=position, note=note,
+        )
+        saver()
+    except Exception:
+        state.clear()
+        state.update(snapshot)
+        raise
