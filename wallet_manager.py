@@ -30,6 +30,7 @@ from solders.keypair import Keypair
 
 import config
 import rpc_client
+from manual_transfer_safety import validate_manual_transfer
 
 log = logging.getLogger("wallet_manager")
 
@@ -151,7 +152,6 @@ class WalletManager:
     async def send_sol(self, label: str, destination: str, amount_sol: float) -> str:
         """Send a capped native SOL transfer only in explicitly enabled LIVE mode."""
         import base64
-        import math
         import time
         from solders.pubkey import Pubkey
         from solders.system_program import transfer, TransferParams
@@ -161,18 +161,13 @@ class WalletManager:
         import jupiter_executor
         from transaction_accounting import account_confirmed_sol_transfer
 
-        if config.TRADING_MODE.upper() != "LIVE":
-            raise ValueError("Manual SOL transfers are disabled while TRADING_MODE=PAPER.")
-        if self.data_store.state.get("emergency_stop"):
-            raise ValueError("Emergency stop is active; manual SOL transfers are blocked.")
-        if self.data_store.state.get("pending_transactions"):
-            raise ValueError("A transaction signature is unresolved; reconcile it before transferring.")
-        if not isinstance(amount_sol, (int, float)) or isinstance(amount_sol, bool) or not math.isfinite(amount_sol):
-            raise ValueError("Transfer amount must be a finite number.")
-        if amount_sol <= 0 or amount_sol > config.MAX_MANUAL_TRANSFER_SOL:
-            raise ValueError(
-                f"Transfer amount must be greater than zero and at most {config.MAX_MANUAL_TRANSFER_SOL:g} SOL."
-            )
+        validate_manual_transfer(
+            config.TRADING_MODE,
+            bool(self.data_store.state.get("emergency_stop")),
+            bool(self.data_store.state.get("pending_transactions")),
+            amount_sol,
+            config.MAX_MANUAL_TRANSFER_SOL,
+        )
         try:
             destination_key = Pubkey.from_string(destination)
         except Exception as exc:
