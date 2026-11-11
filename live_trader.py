@@ -511,4 +511,4 @@ class LiveTrader(PaperTrader):
             f"(impact prix {result.get('price_impact_pct', 0):.2f}%) — tx {signature}"
         )
 
-        return {"proceeds_usd": proceeds_usd, "signature": signature}
+        return {"proceeds_usd": proceeds_usd, "sol_received": sol_received, "signature": signature}
