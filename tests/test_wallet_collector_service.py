@@ -57,11 +57,12 @@ def test_collector_alerts_failures_without_exposing_provider_errors(monkeypatch)
     monkeypatch.setattr(config, "WALLET_COLLECTOR_MAX_WALLETS_PER_CYCLE", 1, raising=False)
     monkeypatch.setattr(config, "WALLET_COLLECTOR_SIGNATURES_PER_WALLET", 10, raising=False)
     monkeypatch.setattr(config, "WALLET_ACTIVITY_DB_FILE", "wallets.sqlite3", raising=False)
+    monkeypatch.setattr(service.time, "monotonic", lambda: 0.0)
     collector = service.WalletCollectorService(store, notifier)
     result = asyncio.run(collector.run_once())
+    asyncio.run(collector.run_once())
 
     assert result["status"] == "partial"
     assert notifier.messages[0][0] == "collector_alert"
     assert "signature_fetch_failed" in notifier.messages[0][1]
     assert len(notifier.messages) == 1
-
