@@ -18,6 +18,8 @@ This checklist is required before enabling LIVE trading.
 - Live safety snapshot reads confirmed wallet balance and persisted open-position exposure.
 - Independent emergency-stop source via `BOT_EMERGENCY_STOP` plus config/runtime setting.
 - Ambiguous executor failures are kept blocked to prevent duplicate buys after restart.
+- Confirmation timeouts are explicitly classified as `unknown` (not definite failures); the live buy and MultiBuy paths persist that state and do not retry automatically.
+- SPL token decimals are verified strictly; missing, malformed, boolean, or out-of-range metadata blocks conversion rather than assuming 6 decimals.
 - Network-free reconciliation helpers list unresolved intents and apply explicit operator-confirmed resolutions.
 - Automated pytest checks in GitHub Actions include guard + runtime/idempotency + reconciliation tests.
 
@@ -30,6 +32,8 @@ This checklist is required before enabling LIVE trading.
 - [x] Add an explicit, independently verified emergency-stop source.
 - [x] Add mocked RPC integration tests for the LIVE safety preflight (emergency stop + malformed balance fail closed).
 - [x] Add fail-closed validation for malformed/inconsistent Jupiter quotes before transaction build/sign/send, with tests.
+- [x] Treat post-submission confirmation timeouts as ambiguous and block automatic buy retries, with tests.
+- [x] Fail closed when SPL token decimals cannot be verified, with tests.
 - [x] Add network-free reconciliation helpers for intents left in `unknown` state.
 - [ ] Run the complete repository test suite (the dedicated `tests/` CI suite passes; root-level/manual checks remain to be audited).
 - [ ] Run PAPER mode soak testing before any LIVE transaction.
