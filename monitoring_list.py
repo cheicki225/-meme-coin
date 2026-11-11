@@ -21,8 +21,10 @@ import copy
 import glob
 import json
 import logging
+import math
 import os
 import shutil
+import tempfile
 import time
 
 import config
@@ -52,6 +54,8 @@ class DataStore:
             try:
                 with open(self.path, "r", encoding="utf-8") as f:
                     loaded = json.load(f)
+                    if not isinstance(loaded, dict):
+                        raise ValueError("Persisted bot state must be a JSON object")
                     default = self._default_state()
                     for key, value in default.items():
                         loaded.setdefault(key, value)
@@ -59,11 +63,53 @@ class DataStore:
                     self._migrate_force_buy_only_once(loaded)
                     self._migrate_force_profit_trail_enabled(loaded)
                     self._migrate_reset_legacy_already_bought(loaded)
+                    if str(getattr(config, "TRADING_MODE", "PAPER")).upper() == "LIVE":
+                        self._validate_live_persisted_state(loaded)
                     return loaded
-            except (json.JSONDecodeError, OSError) as e:
-                log.error(f"Erreur lecture {self.path}: {e} — réinitialisation.")
+            except (json.JSONDecodeError, OSError, ValueError) as e:
+                log.error(f"Erreur lecture {self.path}: {e}")
+                if str(getattr(config, "TRADING_MODE", "PAPER")).upper() == "LIVE":
+                    raise RuntimeError(
+                        "LIVE startup blocked: persisted bot state is unreadable; "
+                        "restore a verified backup before trading."
+                    ) from e
+                log.warning("Mode PAPER : chargement d'un état vierge après erreur de lecture.")
 
         return self._default_state()
+
+    def _validate_live_persisted_state(self, state: dict):
+        """Reject malformed persisted trading state instead of starting LIVE partially blind."""
+        if not isinstance(state.get("open_positions"), list):
+            raise ValueError("open_positions must be a list")
+        if any(not isinstance(item, dict) for item in state["open_positions"]):
+            raise ValueError("open_positions contains a malformed record")
+
+        registry_names = (
+            "safety_order_intents",
+            "safety_pending_sell_tokens",
+            "safety_unresolved_sell_tokens",
+            "safety_unaccounted_confirmed_buys",
+            "safety_unaccounted_confirmed_sells",
+        )
+        for name in registry_names:
+            registry = state.get(name, {})
+            if not isinstance(registry, dict):
+                raise ValueError(f"{name} must be an object")
+            if any(not isinstance(record, dict) for record in registry.values()):
+                raise ValueError(f"{name} contains a malformed record")
+
+        intents = state.get("safety_order_intents", {})
+        for record in intents.values():
+            status = record.get("status")
+            if status not in {"pending", "confirmed", "failed", "unknown"}:
+                raise ValueError("Persisted order intent has an invalid status")
+            if record.get("side") == "buy" and status in {"pending", "confirmed", "unknown"}:
+                try:
+                    amount = float(record.get("amount_sol"))
+                except (TypeError, ValueError):
+                    raise ValueError("Persisted buy intent has an invalid amount") from None
+                if not math.isfinite(amount) or amount <= 0:
+                    raise ValueError("Persisted buy intent has an invalid amount")
 
     def _backfill_wallet_settings(self, state: dict):
         """
@@ -198,31 +244,54 @@ class DataStore:
             "auto_detection_settings": dict(config.DEFAULT_AUTO_DETECTION_SETTINGS),
         }
 
-    def save(self):
-        # CORRIGÉ suite à une question explicite sur la persistance des
-        # données : cette fonction n'a jamais créé le dossier parent de
-        # self.path avant d'écrire. Si DATA_FILE pointe vers un chemin de
-        # volume (ex: /app/data/sniper_data.json) et que ce dossier n'existe
-        # pas encore, l'écriture échouait SILENCIEUSEMENT (juste une ligne
-        # de log, aucun plantage visible) — les données n'étaient alors
-        # JAMAIS réellement sauvegardées, sans que rien ne le signale
-        # clairement dans l'usage normal du bot.
-        try:
-            parent_dir = os.path.dirname(self.path)
-            if parent_dir:
-                os.makedirs(parent_dir, exist_ok=True)
-            with open(self.path, "w", encoding="utf-8") as f:
-                json.dump(self.state, f, indent=2, ensure_ascii=False)
-        except OSError as e:
-            log.error(f"Erreur sauvegarde {self.path}: {e}")
-            return
+    def save_or_raise(self):
+        """Atomically persist the complete state or raise; never report a false success.
 
-        # Backup périodique (pas à chaque save() — save() est appelé très
-        # fréquemment, un backup à chaque fois serait excessif en I/O disque)
+        LIVE order intents rely on this method before a transaction is submitted.
+        The temporary file lives beside the destination so os.replace stays on
+        the same filesystem. fsync makes the file contents durable before rename.
+        """
+        parent_dir = os.path.dirname(os.path.abspath(self.path))
+        os.makedirs(parent_dir, exist_ok=True)
+        temp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=parent_dir,
+                prefix=os.path.basename(self.path) + ".", suffix=".tmp",
+                delete=False,
+            ) as f:
+                temp_path = f.name
+                json.dump(self.state, f, indent=2, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_path, self.path)
+            temp_path = None
+            # Persist the directory entry as well as file contents. If this
+            # fails, LIVE callers receive the error and must not submit.
+            directory_fd = os.open(parent_dir, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        finally:
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.unlink(temp_path)
+                except OSError:
+                    log.exception("Impossible de nettoyer le fichier temporaire %s", temp_path)
+
+        # Backups are best-effort; the primary atomic state write has succeeded.
         now = time.time()
         if now - self._last_backup_time >= BACKUP_INTERVAL_S:
             self._create_backup(reason="periodic")
             self._last_backup_time = now
+
+    def save(self):
+        """Backward-compatible best-effort save for non-critical state updates."""
+        try:
+            self.save_or_raise()
+        except OSError as e:
+            log.error(f"Erreur sauvegarde {self.path}: {e}")
 
     def _create_backup(self, reason: str = "periodic"):
         """Copie horodatée de sniper_data.json dans backups/, avec rotation

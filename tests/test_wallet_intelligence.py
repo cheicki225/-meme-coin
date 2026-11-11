@@ -41,3 +41,18 @@ def test_invalid_values_and_relationships_do_not_inflate_score():
     assert result["recommendation"] == "insufficient_data"
     assert "shared_funder_relationship" in result["risk_flags"]
     assert "co_buy_relationship" in result["risk_flags"]
+
+
+def test_known_malicious_relationship_overrides_excellent_metrics():
+    metrics = {
+        "realized_pnl_pct": 120, "win_rate": 0.85, "profit_factor": 2.5,
+        "consistency": 0.9, "early_entry_rate": 0.8, "sell_discipline": 0.9,
+        "sample_counts": {name: 40 for name in (
+            "realized_pnl_pct", "win_rate", "profit_factor", "consistency",
+            "early_entry_rate", "sell_discipline"
+        )},
+    }
+    result = score_wallet(metrics, {"known_malicious_link": True})
+    assert result["score"] >= 70
+    assert result["recommendation"] == "avoid"
+    assert "known_malicious_link" in result["risk_flags"]

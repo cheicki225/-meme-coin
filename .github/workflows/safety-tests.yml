@@ -2,9 +2,9 @@ name: Safety Guard Tests
 
 on:
   push:
-    branches: [main, 'improvements/**']
+    branches: [main, 'improvements/**', 'nextgen/**']
   pull_request:
-    branches: [main]
+    branches: [main, 'improvements/**']
 
 jobs:
   tests:

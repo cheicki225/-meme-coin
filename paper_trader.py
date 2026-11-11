@@ -399,6 +399,22 @@ class PaperTrader:
                     )
                 return None
             min_score = settings.get("min_security_score", 60)
+            # GoPlus peut fournir un score élevé tout en signalant une autorité
+            # dangereuse (mint/freeze/closable, hook malveillant, etc.).
+            # Ne jamais ignorer is_risky au seul motif que le score dépasse le seuil.
+            if not security_check.token_security_allows_buy(security, min_score):
+                log.info(
+                    f"⏭️  Token marqué risqué ou données de sécurité non fiables "
+                    f"(score={security.get('security_score')}, risky={security.get('is_risky')}) "
+                    f"pour {token_mint[:8]}..., achat refusé."
+                )
+                if self.notifier:
+                    await self.notifier.notify(
+                        "buy_skipped",
+                        f"⏭️ *Buy Skipped* — Token risqué ou vérification incomplète\n"
+                        f"Token: `{token_mint[:8]}...`\nScore: {security.get('security_score')}/100",
+                    )
+                return None
             if security.get("security_score", 50) < min_score:
                 log.info(
                     f"⏭️  Score sécurité {security.get('security_score')} < {min_score} "
@@ -451,7 +467,16 @@ class PaperTrader:
         self.data_store.state.setdefault("open_positions", []).append(position)
         if settings.get("buy_only_once", True):
             self.data_store.mark_bought(source_wallet, token_mint)
-        self.data_store.save()
+        # A real confirmed swap must never be treated as accounted if the
+        # position JSON could not be durably committed.
+        durable_saver = getattr(self.data_store, "save_or_raise", None)
+        if buy_signature and callable(durable_saver):
+            durable_saver()
+        else:
+            self.data_store.save()
+        finalize_buy = getattr(self, "_finalize_buy_accounting", None)
+        if buy_signature and callable(finalize_buy):
+            finalize_buy(token_mint, buy_result)
 
         log.info(
             f"📈 [{config.TRADING_MODE}] Position ouverte sur {token_mint} @ ${actual_entry_price:.8f} "

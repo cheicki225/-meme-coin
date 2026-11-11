@@ -48,6 +48,18 @@ def _truthy(value) -> bool:
 
 
 class LiveTrader(PaperTrader):
+    def _persist_safety_state(self):
+        """Persist a safety-critical LIVE state transition or fail closed.
+
+        DataStore.save_or_raise performs an atomic fsync+replace. The fallback
+        keeps lightweight test doubles and external compatible stores usable.
+        """
+        saver = getattr(self.data_store, "save_or_raise", None)
+        if callable(saver):
+            saver()
+        else:
+            self.data_store.save()
+
     def _get_execution_keypair(self):
         """
         Retourne le keypair à utiliser pour une exécution simple (non-MultiBuy) :
@@ -98,6 +110,26 @@ class LiveTrader(PaperTrader):
             except (TypeError, ValueError):
                 raise ValueError("Invalid persisted position exposure") from None
 
+        # Reserve funds for orders that may already have reached the chain but
+        # are not yet represented by a durable position. Otherwise a second
+        # mint could consume the same apparent wallet balance after a timeout.
+        intents = state.get("safety_order_intents", {})
+        if not isinstance(intents, dict):
+            raise ValueError("Invalid persisted order-intent registry")
+        for intent in intents.values():
+            if not isinstance(intent, dict):
+                raise ValueError("Invalid persisted order-intent record")
+            if (intent.get("side") == "buy"
+                    and intent.get("status") in {"pending", "unknown", "confirmed"}
+                    and intent.get("accounting_status") != "accounted"):
+                try:
+                    reserved = float(intent.get("amount_sol"))
+                except (TypeError, ValueError):
+                    raise ValueError("Invalid unresolved buy reservation") from None
+                if not math.isfinite(reserved) or reserved <= 0:
+                    raise ValueError("Invalid unresolved buy reservation")
+                exposure_sol += reserved
+
         if "daily_pnl_sol" in state:
             daily_pnl_sol = float(state["daily_pnl_sol"])
         else:
@@ -122,6 +154,24 @@ class LiveTrader(PaperTrader):
             or bool(settings.get("emergency_stop", False))
         )
 
+    def _finalize_buy_accounting(self, token_mint: str, buy_result: dict):
+        """Mark confirmed buy intents accounted only after the position is durable."""
+        registry = self.data_store.state.get("safety_order_intents", {})
+        if not isinstance(registry, dict):
+            raise ValueError("Corrupt buy intent registry during accounting finalization")
+        intent_ids = buy_result.get("buy_intent_ids") or [buy_result.get("buy_intent_id")]
+        intent_ids = [item for item in intent_ids if isinstance(item, str) and item]
+        if not intent_ids:
+            raise ValueError("Missing buy intent identity during accounting finalization")
+        for intent_id in intent_ids:
+            record = registry.get(intent_id)
+            if (not isinstance(record, dict) or record.get("status") != "confirmed"
+                    or record.get("token_mint") != token_mint):
+                raise ValueError("Confirmed buy intent mismatch; accounting remains blocked")
+            record["accounting_status"] = "accounted"
+            record["accounted_at"] = time.time()
+        self._persist_safety_state()
+
     async def _reserve_live_buy_intent(
         self,
         *,
@@ -130,9 +180,31 @@ class LiveTrader(PaperTrader):
         amount_sol: float,
         settings: dict,
         keypair,
+        group_id: str | None = None,
     ):
         """Préflight + persistance AVANT tout envoi réseau vers Jupiter/Jito."""
         source_wallet = str(keypair.pubkey())
+        intent_registry = self.data_store.state.get("safety_order_intents", {})
+        if not isinstance(intent_registry, dict):
+            raise ValueError("Corrupt buy intent registry; refusing LIVE buy")
+        if any(
+            isinstance(item, dict)
+            and item.get("side") == "buy"
+            and item.get("token_mint") == token_mint
+            and item.get("status") in {"pending", "unknown", "confirmed"}
+            and not (
+                group_id
+                and item.get("group_id") == group_id
+                and item.get("status") == "confirmed"
+                and item.get("accounting_status") == "awaiting_accounting"
+            )
+            and (
+                item.get("status") != "confirmed"
+                or item.get("accounting_status") != "accounted"
+            )
+            for item in intent_registry.values()
+        ):
+            raise ValueError("A confirmed buy for this token still requires position accounting")
         unresolved_buys = self.data_store.state.get("safety_unaccounted_confirmed_buys", {})
         if isinstance(unresolved_buys, dict) and any(
             isinstance(item, dict) and item.get("token_mint") == token_mint
@@ -154,8 +226,12 @@ class LiveTrader(PaperTrader):
             emergency_stop=self._emergency_stop_enabled(settings),
         )
         reserve_intent(self.data_store.state, intent)
+        if group_id:
+            self.data_store.state["safety_order_intents"][intent.idempotency_key][
+                "group_id"
+            ] = group_id
         # Fail-closed : si la persistance échoue, aucune transaction n'est envoyée.
-        self.data_store.save()
+        self._persist_safety_state()
         return intent
 
     def _mark_live_intent(self, intent, status: str, *, signature=None, error=None):
@@ -166,7 +242,11 @@ class LiveTrader(PaperTrader):
             signature=signature,
             error=error,
         )
-        self.data_store.save()
+        if status == "confirmed" and getattr(intent, "side", "buy") == "buy":
+            self.data_store.state["safety_order_intents"][intent.idempotency_key][
+                "accounting_status"
+            ] = "awaiting_accounting"
+        self._persist_safety_state()
 
     def _persist_confirmed_buy_reconciliation(self, *, intent, token_mint, source_wallet, result, error):
         """Keep a confirmed swap recoverable when local accounting cannot finish."""
@@ -185,7 +265,7 @@ class LiveTrader(PaperTrader):
             "created_at": time.time(),
             "error": str(error)[:500],
         }
-        self.data_store.save()
+        self._persist_safety_state()
         log.critical(
             f"CONFIRMED BUY REQUIRES ACCOUNTING RECONCILIATION: token={token_mint} "
             f"signature={signature}; further buys for this token are blocked."
@@ -281,6 +361,8 @@ class LiveTrader(PaperTrader):
             "cost_basis_usd": cost_basis_usd,
             "actual_price": actual_price,
             "signature": result["signature"],
+            "buy_intent_id": intent.idempotency_key,
+            "buy_intent_ids": [intent.idempotency_key],
         }
 
     async def _execute_multibuy(self, token_mint: str, entry_price: float, settings: dict) -> dict:
@@ -323,6 +405,7 @@ class LiveTrader(PaperTrader):
         total_sol_spent = 0.0
         signatures = []
         confirmed_legs = []
+        group_id = f"multibuy:{token_mint}:{entry_price:.12g}:{time.time_ns()}"
         decimals = await _get_token_decimals(token_mint)
 
         for i, label in enumerate(wallet_labels):
@@ -339,6 +422,7 @@ class LiveTrader(PaperTrader):
                     amount_sol=split_amount_sol,
                     settings=settings,
                     keypair=keypair,
+                    group_id=group_id,
                 )
             except (ValueError, TypeError) as e:
                 log.error(f"🛑 [MultiBuy {i+1}/{n}] '{label}' bloqué par safety: {e}")
@@ -415,6 +499,7 @@ class LiveTrader(PaperTrader):
             "cost_basis_usd": cost_basis_usd,
             "actual_price": actual_price,
             "signature": signatures[0] if signatures else None,
+            "buy_intent_ids": [leg[0].idempotency_key for leg in confirmed_legs],
         }
 
     async def _execute_sell(self, token_mint: str, units: float, current_price: float, settings: dict) -> dict:
@@ -465,7 +550,7 @@ class LiveTrader(PaperTrader):
             "source_wallet": str(keypair.pubkey()),
             "created_at": time.time(),
         }
-        self.data_store.save()
+        self._persist_safety_state()
 
         try:
             result = await jupiter_executor.execute_swap(
@@ -483,7 +568,7 @@ class LiveTrader(PaperTrader):
             }
             pending_registry[token_mint]["status"] = "unknown"
             pending_registry[token_mint]["error"] = str(e)[:500]
-            self.data_store.save()
+            self._persist_safety_state()
             log.critical(
                 f"🛑 Vente LIVE ambiguë sur {token_mint[:8]}...; token bloqué jusqu'à réconciliation: {e}"
             )
@@ -492,7 +577,7 @@ class LiveTrader(PaperTrader):
             # SwapError denotes a definite rejected/failed execution; only this
             # explicit outcome releases the pre-send reservation.
             pending_registry.pop(token_mint, None)
-            self.data_store.save()
+            self._persist_safety_state()
             log.error(f"❌ Vente LIVE échouée sur {token_mint[:8]}...: {e}")
             return None
         except Exception as e:
@@ -511,7 +596,7 @@ class LiveTrader(PaperTrader):
             }
             pending_registry[token_mint]["status"] = "unknown"
             pending_registry[token_mint]["error"] = str(e)[:500]
-            self.data_store.save()
+            self._persist_safety_state()
             log.exception(
                 f"🛑 Vente LIVE à résultat inconnu sur {token_mint[:8]}...; "
                 "nouvel envoi bloqué jusqu'à réconciliation."
@@ -529,7 +614,7 @@ class LiveTrader(PaperTrader):
             "output_amount_raw": result.get("output_amount"),
             "confirmed_at": time.time(),
         })
-        self.data_store.save()
+        self._persist_safety_state()
         try:
             raw_output = result.get("output_amount")
             raw_input = result.get("input_amount")
@@ -558,7 +643,7 @@ class LiveTrader(PaperTrader):
                 "created_at": time.time(),
                 "error": str(e)[:500],
             }
-            self.data_store.save()
+            self._persist_safety_state()
             log.critical(
                 f"CONFIRMED SELL REQUIRES ACCOUNTING RECONCILIATION: token={token_mint} "
                 f"signature={signature}; further sells for this token are blocked."
@@ -590,6 +675,12 @@ class LiveTrader(PaperTrader):
         if record.get("status") != "confirmed_awaiting_accounting":
             log.critical("Sell intent is not confirmed; reservation retained.")
             return False
-        registry.pop(token_mint, None)
-        self.data_store.save()
+        removed = registry.pop(token_mint, None)
+        try:
+            self._persist_safety_state()
+        except Exception:
+            # Keep the in-memory lock if durable release failed. Otherwise the
+            # running process could submit the same sell again before restart.
+            registry[token_mint] = record if removed is None else removed
+            raise
         return True

@@ -194,3 +194,20 @@ async def check_token_security(token_mint: str) -> dict:
         "dex_liquidity_usd": max(liquidity_values) if liquidity_values else None,
         "risk_flags": risk_flags,
     }
+
+
+
+def token_security_allows_buy(result: dict, min_score: float = 60) -> bool:
+    """Fail closed unless the provider returned complete, explicitly non-risky data."""
+    if not isinstance(result, dict) or result.get("error") is not None:
+        return False
+    if result.get("is_risky") is not False or result.get("is_honeypot") is True:
+        return False
+    try:
+        score = float(result.get("security_score"))
+        threshold = float(min_score)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    if not math.isfinite(score) or not math.isfinite(threshold):
+        return False
+    return score >= threshold

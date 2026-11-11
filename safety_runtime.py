@@ -65,6 +65,13 @@ def preflight_buy(
     emergency_stop: bool = False,
 ) -> OrderIntent:
     """Fail closed before a buy is allowed to proceed."""
+    if not isinstance(token_mint, str) or not token_mint.strip():
+        raise ValueError("Missing token mint")
+    if not isinstance(source_wallet, str) or not source_wallet.strip():
+        raise ValueError("Missing source wallet")
+    if event_id is not None and (not isinstance(event_id, str) or not event_id.strip()):
+        raise ValueError("Invalid order event id")
+
     key = make_idempotency_key(
         side="buy",
         token_mint=token_mint,

@@ -300,3 +300,246 @@ def test_unexpected_sell_execution_error_is_persisted_as_unknown(monkeypatch):
     assert record["status"] == "unknown"
     assert "provider connection dropped" in record["error"]
     assert trader.data_store.saved is True
+
+
+
+def test_live_buy_reservation_aborts_when_durable_save_fails(monkeypatch):
+    monkeypatch.setenv("BOT_EMERGENCY_STOP", "0")
+
+    class FailingStore(FakeStore):
+        def save_or_raise(self):
+            raise OSError("disk is read-only")
+
+    async def rpc_balance(*args, **kwargs):
+        return {"value": 5_000_000_000}
+
+    monkeypatch.setattr(live_trader.rpc_client, "rpc_post", rpc_balance)
+    trader = _trader({"open_positions": [], "daily_pnl_sol": 0.0})
+    trader.data_store = FailingStore(trader.data_store.state)
+
+    with pytest.raises(OSError, match="read-only"):
+        asyncio.run(trader._reserve_live_buy_intent(
+            token_mint="TokenMint",
+            entry_price=1.0,
+            amount_sol=0.1,
+            settings={"max_position_sol": 0.5},
+            keypair=FakeKeypair(),
+        ))
+    # Intent exists in memory, but no caller can proceed to Jupiter because
+    # reservation persistence raised before _reserve_live_buy_intent returned.
+    assert trader.data_store.state["safety_order_intents"]
+    assert trader.data_store.saved is False
+
+
+
+def test_confirmed_buy_requires_accounting_before_another_buy(monkeypatch):
+    trader = _trader({
+        "safety_order_intents": {
+            "buy:old": {
+                "side": "buy",
+                "token_mint": "TokenMint",
+                "source_wallet": "WalletPubkey",
+                "status": "confirmed",
+                "accounting_status": "awaiting_accounting",
+            }
+        }
+    })
+    trader._get_execution_keypair = lambda: FakeKeypair()
+
+    async def rpc_balance(*args, **kwargs):
+        return {"value": 5_000_000_000}
+
+    monkeypatch.setattr(live_trader.rpc_client, "rpc_post", rpc_balance)
+    with pytest.raises(ValueError, match="position accounting"):
+        asyncio.run(trader._reserve_live_buy_intent(
+            token_mint="TokenMint",
+            entry_price=2.0,  # a different signal price must not bypass recovery
+            amount_sol=0.1,
+            settings={"max_position_sol": 0.5},
+            keypair=FakeKeypair(),
+        ))
+
+
+def test_buy_accounting_finalization_requires_confirmed_matching_intent():
+    trader = _trader({
+        "safety_order_intents": {
+            "buy:one": {
+                "side": "buy",
+                "token_mint": "TokenMint",
+                "status": "confirmed",
+                "accounting_status": "awaiting_accounting",
+            }
+        }
+    })
+    trader._finalize_buy_accounting("TokenMint", {"buy_intent_ids": ["buy:one"]})
+    assert trader.data_store.state["safety_order_intents"]["buy:one"]["accounting_status"] == "accounted"
+    assert trader.data_store.saved is True
+
+
+def test_buy_accounting_finalization_rejects_wrong_token():
+    trader = _trader({
+        "safety_order_intents": {
+            "buy:one": {
+                "side": "buy",
+                "token_mint": "OtherMint",
+                "status": "confirmed",
+                "accounting_status": "awaiting_accounting",
+            }
+        }
+    })
+    with pytest.raises(ValueError, match="mismatch"):
+        trader._finalize_buy_accounting("TokenMint", {"buy_intent_ids": ["buy:one"]})
+
+
+
+def test_multibuy_group_can_reserve_multiple_wallet_legs(monkeypatch):
+    monkeypatch.setenv("BOT_EMERGENCY_STOP", "0")
+
+    class WalletKeypair:
+        def __init__(self, address):
+            self.address = address
+
+        def pubkey(self):
+            return self.address
+
+    async def rpc_balance(*args, **kwargs):
+        return {"value": 5_000_000_000}
+
+    monkeypatch.setattr(live_trader.rpc_client, "rpc_post", rpc_balance)
+    trader = _trader({"open_positions": [], "daily_pnl_sol": 0.0})
+    group = "multibuy:TokenMint:test-run"
+
+    first = asyncio.run(trader._reserve_live_buy_intent(
+        token_mint="TokenMint", entry_price=1.0, amount_sol=0.05,
+        settings={"max_position_sol": 0.5}, keypair=WalletKeypair("wallet-1"),
+        group_id=group,
+    ))
+    trader._mark_live_intent(first, "confirmed", signature="sig-1")
+
+    second = asyncio.run(trader._reserve_live_buy_intent(
+        token_mint="TokenMint", entry_price=1.0, amount_sol=0.05,
+        settings={"max_position_sol": 0.5}, keypair=WalletKeypair("wallet-2"),
+        group_id=group,
+    ))
+    assert second.idempotency_key != first.idempotency_key
+    assert len(trader.data_store.state["safety_order_intents"]) == 2
+
+
+def test_new_multibuy_group_is_blocked_by_unaccounted_confirmed_leg(monkeypatch):
+    monkeypatch.setenv("BOT_EMERGENCY_STOP", "0")
+
+    async def rpc_balance(*args, **kwargs):
+        return {"value": 5_000_000_000}
+
+    monkeypatch.setattr(live_trader.rpc_client, "rpc_post", rpc_balance)
+    trader = _trader({
+        "open_positions": [],
+        "daily_pnl_sol": 0.0,
+        "safety_order_intents": {
+            "buy:prior": {
+                "side": "buy", "token_mint": "TokenMint",
+                "status": "confirmed", "accounting_status": "awaiting_accounting",
+                "group_id": "old-multibuy",
+            }
+        },
+    })
+    with pytest.raises(ValueError, match="position accounting"):
+        asyncio.run(trader._reserve_live_buy_intent(
+            token_mint="TokenMint", entry_price=1.0, amount_sol=0.05,
+            settings={"max_position_sol": 0.5}, keypair=FakeKeypair(),
+            group_id="new-multibuy",
+        ))
+
+
+
+def test_ambiguous_multibuy_leg_stops_remaining_group_legs(monkeypatch):
+    monkeypatch.setenv("BOT_EMERGENCY_STOP", "0")
+
+    async def rpc_balance(*args, **kwargs):
+        return {"value": 5_000_000_000}
+
+    monkeypatch.setattr(live_trader.rpc_client, "rpc_post", rpc_balance)
+    trader = _trader({
+        "open_positions": [],
+        "daily_pnl_sol": 0.0,
+        "safety_order_intents": {
+            "buy:ambiguous": {
+                "side": "buy", "token_mint": "TokenMint",
+                "status": "unknown", "group_id": "same-group",
+            }
+        },
+    })
+    with pytest.raises(ValueError, match="position accounting"):
+        asyncio.run(trader._reserve_live_buy_intent(
+            token_mint="TokenMint", entry_price=1.0, amount_sol=0.05,
+            settings={"max_position_sol": 0.5}, keypair=FakeKeypair(),
+            group_id="same-group",
+        ))
+
+
+
+def test_sell_reservation_stays_locked_when_release_persistence_fails():
+    class FailingStore(FakeStore):
+        def save_or_raise(self):
+            raise OSError("disk unavailable")
+
+    state = {
+        "safety_pending_sell_tokens": {
+            "TokenMint": {
+                "intent_id": "sell-1",
+                "status": "confirmed_awaiting_accounting",
+                "signature": "verified-sig",
+            }
+        }
+    }
+    trader = _trader(state)
+    trader.data_store = FailingStore(state)
+
+    with pytest.raises(OSError, match="disk unavailable"):
+        trader._finalize_sell_intent("TokenMint", "sell-1")
+
+    assert state["safety_pending_sell_tokens"]["TokenMint"]["status"] == "confirmed_awaiting_accounting"
+
+
+
+def test_live_exposure_includes_unresolved_buy_reservations(monkeypatch):
+    async def rpc_balance(*args, **kwargs):
+        return {"value": 5_000_000_000}
+
+    monkeypatch.setattr(live_trader.rpc_client, "rpc_post", rpc_balance)
+    trader = _trader({
+        "open_positions": [{"total_sol_invested": 0.2}],
+        "daily_pnl_sol": 0.0,
+        "safety_order_intents": {
+            "pending": {"side": "buy", "status": "pending", "amount_sol": 0.1},
+            "unknown": {"side": "buy", "status": "unknown", "amount_sol": 0.15},
+            "confirmed": {
+                "side": "buy", "status": "confirmed",
+                "accounting_status": "awaiting_accounting", "amount_sol": 0.05,
+            },
+            "accounted": {
+                "side": "buy", "status": "confirmed",
+                "accounting_status": "accounted", "amount_sol": 0.4,
+            },
+            "failed": {"side": "buy", "status": "failed", "amount_sol": 0.3},
+        },
+    })
+
+    snapshot = asyncio.run(trader._build_live_safety_state(FakeKeypair()))
+    assert snapshot["already_exposed_sol"] == pytest.approx(0.5)
+
+
+def test_corrupt_unresolved_buy_reservation_fails_closed(monkeypatch):
+    async def rpc_balance(*args, **kwargs):
+        return {"value": 5_000_000_000}
+
+    monkeypatch.setattr(live_trader.rpc_client, "rpc_post", rpc_balance)
+    trader = _trader({
+        "open_positions": [],
+        "daily_pnl_sol": 0.0,
+        "safety_order_intents": {
+            "unknown": {"side": "buy", "status": "unknown", "amount_sol": float("nan")}
+        },
+    })
+    with pytest.raises(ValueError, match="unresolved buy reservation"):
+        asyncio.run(trader._build_live_safety_state(FakeKeypair()))
