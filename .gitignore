@@ -3,3 +3,5 @@ sniper_data.json
 sniper_bot.log
 __pycache__/
 *.pyc
+# Local execution telemetry (never commit runtime metrics)
+data/execution_metrics.jsonl
