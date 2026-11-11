@@ -105,8 +105,11 @@ def reserve_intent(state: MutableMapping[str, Any], intent: OrderIntent) -> None
         raise ValueError("Invalid safety order registry")
 
     existing = registry.get(intent.idempotency_key)
-    if isinstance(existing, dict) and existing.get("status") in {"pending", "confirmed", "unknown"}:
-        raise ValueError("Duplicate or unresolved order intent")
+    if existing is not None:
+        if not isinstance(existing, dict):
+            raise ValueError("Corrupt order intent record; refusing duplicate submission")
+        if existing.get("status") != "failed":
+            raise ValueError("Duplicate or unresolved order intent")
 
     registry[intent.idempotency_key] = {
         "side": intent.side,
@@ -136,6 +139,8 @@ def mark_intent(
     record = registry.get(idempotency_key)
     if not isinstance(record, dict):
         raise ValueError("Unknown order intent")
+    if record.get("status") != "pending":
+        raise ValueError("Only pending intents can be updated by the executor")
 
     record["status"] = status
     record["updated_at"] = time.time()
