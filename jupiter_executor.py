@@ -18,6 +18,7 @@ pas recalculé côté client (pour refléter le vrai slippage exécuté).
 import asyncio
 import base64
 import logging
+import math
 
 import aiohttp
 from solders.transaction import VersionedTransaction
@@ -165,11 +166,35 @@ async def execute_swap(input_mint: str, output_mint: str, amount_lamports: int, 
         keypair = wallet.load_keypair()
     user_pubkey = str(keypair.pubkey())
 
+    if not isinstance(amount_lamports, int) or isinstance(amount_lamports, bool) or amount_lamports <= 0:
+        raise SwapError("Montant de swap invalide")
+    if not isinstance(slippage_bps, int) or isinstance(slippage_bps, bool) or not 1 <= slippage_bps <= 10_000:
+        raise SwapError("Slippage bps invalide")
+
     quote = await get_quote(input_mint, output_mint, amount_lamports, slippage_bps)
-    if not quote or "outAmount" not in quote:
-        raise SwapError(f"Devis Jupiter invalide : {quote}")
+    if not isinstance(quote, dict):
+        raise SwapError("Devis Jupiter invalide : réponse non objet")
+    try:
+        quoted_input = int(quote["inAmount"])
+        quoted_output = int(quote["outAmount"])
+        impact = float(quote.get("priceImpactPct", 0))
+    except (KeyError, TypeError, ValueError, OverflowError):
+        raise SwapError("Devis Jupiter incomplet ou mal formé") from None
+    if (
+        isinstance(quote.get("inAmount"), bool)
+        or isinstance(quote.get("outAmount"), bool)
+        or quoted_input != amount_lamports
+        or quoted_output <= 0
+        or not math.isfinite(impact)
+        or impact < 0
+    ):
+        raise SwapError("Devis Jupiter incohérent ou non sûr")
+    if quote.get("inputMint") != input_mint or quote.get("outputMint") != output_mint:
+        raise SwapError("Les mints du devis Jupiter ne correspondent pas à la demande")
 
     swap_tx_b64 = await _build_swap_transaction(quote, user_pubkey)
+    if not isinstance(swap_tx_b64, str) or not swap_tx_b64.strip():
+        raise SwapError("Transaction Jupiter absente ou mal formée")
     signed_bytes, signature, blockhash = _sign_transaction(swap_tx_b64, keypair)
 
     if use_jito and config.JITO_ENABLED:
