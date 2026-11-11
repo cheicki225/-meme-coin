@@ -25,6 +25,8 @@ except ImportError:
 #         tant que le bot n'a pas été validé sur plusieurs semaines)
 # LIVE  = exécution réelle via Jupiter (à activer uniquement plus tard)
 TRADING_MODE = os.getenv("TRADING_MODE", "PAPER")
+# LIVE swaps and manual transfers require a second explicit opt-in.
+LIVE_EXECUTION_ENABLED = os.getenv("LIVE_EXECUTION_ENABLED", "false").lower() == "true"
 
 # ── Accès RPC / WebSocket Solana ────────────────────────────────
 HELIUS_API_KEY = os.getenv("HELIUS_API_KEY", "")
