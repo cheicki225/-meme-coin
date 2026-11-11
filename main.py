@@ -334,6 +334,9 @@ class SniperBot:
             return
 
         registry = self.data_store.state.setdefault("dev_migration_candidates", {})
+        if not isinstance(registry, dict):
+            log.error("Registre de migration corrompu — candidat ignoré par sécurité.")
+            return
         key = f"{source_wallet}:{destination}"
         candidate = registry.setdefault(key, {
             "source_wallet": source_wallet,
@@ -345,31 +348,45 @@ class SniperBot:
             "last_seen": time.time(),
             "status": "candidate",
         })
+        if not isinstance(candidate, dict):
+            log.error("Entrée de migration corrompue — candidat ignoré par sécurité.")
+            return
         if not isinstance(candidate.get("signatures"), list):
             candidate["signatures"] = []
         if not isinstance(candidate.get("token_mints"), list):
             candidate["token_mints"] = []
         if signature in candidate["signatures"]:
             return
-        candidate["transfer_count"] = max(0, int(candidate.get("transfer_count", 0) or 0))
+        try:
+            candidate["transfer_count"] = max(0, int(candidate.get("transfer_count", 0) or 0))
+        except (TypeError, ValueError, OverflowError):
+            candidate["transfer_count"] = 0
+        previous_status = candidate.get("status", "candidate")
         candidate["transfer_count"] += 1
         candidate["last_seen"] = time.time()
         if token_mint not in candidate["token_mints"]:
             candidate["token_mints"].append(token_mint)
+        candidate["token_mints"] = candidate["token_mints"][:10]
         candidate["signatures"].append(signature)
-        candidate["signatures"] = candidate["signatures"][-20:]
+        candidate["signatures"] = candidate["signatures"][-50:]
 
         # Deux mints distincts ou trois transactions indépendantes constituent
         # un signal plus fort, mais toujours heuristique (pas une preuve).
         suspected = len(candidate["token_mints"]) >= 2 or candidate["transfer_count"] >= 3
         candidate["status"] = "suspected_migration" if suspected else "candidate"
+        should_notify = (
+            candidate.get("last_notified_status") != candidate["status"]
+            and (candidate["transfer_count"] == 1 or suspected)
+        )
+        if should_notify:
+            candidate["last_notified_status"] = candidate["status"]
         self.data_store.save()
 
         log.warning(
             "Developer SPL transfer: %s -> %s mint=%s amount=%s status=%s",
             source_wallet[:8], destination[:8], token_mint[:8], amount, candidate["status"],
         )
-        if self.notifier:
+        if self.notifier and should_notify:
             label = "⚠️ Migration potentielle" if suspected else "🔎 Transfert SPL à surveiller"
             await self.notifier.notify(
                 "rugger_alert",
