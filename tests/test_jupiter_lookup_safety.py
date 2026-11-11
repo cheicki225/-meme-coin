@@ -51,7 +51,7 @@ def test_lookup_table_resolution_rejects_untrusted_account_owner(monkeypatch):
 def _swap_with_ata(payer, owner, mint, ata):
     create_ata = Instruction(
         ASSOCIATED,
-        b"\\x01",
+        bytes([1]),
         [
             AccountMeta(payer.pubkey(), True, True),
             AccountMeta(ata, False, True),
