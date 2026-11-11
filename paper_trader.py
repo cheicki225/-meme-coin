@@ -34,6 +34,7 @@ import wallet_history
 import position_price_stream
 from backtest import _get_pair_data, get_bonding_curve_price, get_sol_usd_rate, get_live_price_and_market_cap
 import security as security_check
+import liquidity_monitor
 
 log = logging.getLogger("paper_trader")
 
@@ -597,6 +598,7 @@ class PaperTrader:
         last_ws_price_usd = None
         last_ws_market_cap = None
         last_ws_ts = 0.0
+        last_liquidity_check = 0.0
 
         try:
             while elapsed < max_duration_s and position["units"] > 0:
@@ -670,6 +672,49 @@ class PaperTrader:
 
                 if price <= 0:
                     continue
+
+                # Read-only liquidity surveillance: sample at a bounded cadence,
+                # independently of the price WebSocket. This is an alert only;
+                # it never submits a sell or claims to prove a rug.
+                if settings.get("liquidity_monitor_enabled", config.LIQUIDITY_MONITOR_ENABLED):
+                    now = time.time()
+                    if now - last_liquidity_check >= 60:
+                        last_liquidity_check = now
+                        try:
+                            liquidity_pair = data or await _get_pair_data(
+                                position["token_mint"], retries=1, retry_delay_s=0
+                            )
+                            liquidity_result = liquidity_monitor.update_position_liquidity(
+                                position,
+                                liquidity_pair,
+                                threshold_pct=settings.get("liquidity_drop_alert_pct", 40),
+                                sampled_at=now,
+                            )
+                            if liquidity_result.get("alert"):
+                                status = liquidity_result.get("status")
+                                if status == "liquidity_drop":
+                                    detail = (
+                                        f"baisse estimée de {liquidity_result.get('drop_pct', 0):.1f}% "
+                                        f"({liquidity_result.get('previous_liquidity_usd', 0):.0f}$ -> "
+                                        f"{liquidity_result.get('current_liquidity_usd', 0):.0f}$)"
+                                    )
+                                else:
+                                    detail = "adresse du pool DexScreener différente du dernier relevé"
+                                log.warning(
+                                    f"⚠️ Alerte liquidité {position['token_mint'][:8]}...: {detail}. "
+                                    "Vérification manuelle requise; aucune vente automatique."
+                                )
+                                self.data_store.save()
+                                if self.notifier:
+                                    await self.notifier.notify(
+                                        "liquidity_alert",
+                                        f"⚠️ *Alerte liquidité*\nToken: `{position['token_mint'][:8]}...`\n"
+                                        f"Signal: {detail}.\n"
+                                        "_Indicateur DexScreener heuristique; vérifie le pool on-chain. "
+                                        "Aucune vente automatique n'a été envoyée._",
+                                    )
+                        except Exception as exc:
+                            log.debug("Liquidity monitor unavailable for %s: %s", position["token_mint"][:8], exc)
 
                 position["ath_market_cap"] = max(position["ath_market_cap"], market_cap)
                 change_pct = self._pnl_pct(position, price)
