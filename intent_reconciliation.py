@@ -6,6 +6,8 @@ an operator or a provider-specific adapter that can verify chain state.
 
 from __future__ import annotations
 
+import math
+import time
 from typing import Any, Mapping
 
 UNRESOLVED_STATUSES = frozenset({"pending", "unknown"})
@@ -60,6 +62,93 @@ def resolve_intent(
         record["signature"] = signature
     if note:
         record["reconciliation_note"] = note[:500]
+
+
+def list_unaccounted_confirmed_buys(state: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """List confirmed LIVE buys whose position accounting is not durable yet."""
+    intents = state.get("safety_order_intents", {})
+    recovery = state.get("safety_unaccounted_confirmed_buys", {})
+    if not isinstance(intents, dict) or not isinstance(recovery, dict):
+        raise ValueError("Buy reconciliation registry is corrupted")
+
+    items: list[dict[str, Any]] = []
+    for key, record in intents.items():
+        if not isinstance(record, dict):
+            continue
+        if (record.get("side") == "buy" and record.get("status") == "confirmed"
+                and record.get("accounting_status") != "accounted"):
+            item = dict(record)
+            item["idempotency_key"] = key
+            item["recovery_record"] = next(
+                (dict(value) for value in recovery.values()
+                 if isinstance(value, dict) and value.get("intent_idempotency_key") == key),
+                None,
+            )
+            items.append(item)
+    return sorted(items, key=lambda item: float(item.get("created_at", 0) or 0))
+
+
+def resolve_confirmed_buy_accounting(
+    state: dict[str, Any],
+    idempotency_key: str,
+    *,
+    position: Mapping[str, Any],
+    note: str,
+) -> None:
+    """Apply operator-verified chain/accounting data and persist a recovered position in state.
+
+    The caller MUST durably save the state (prefer DataStore.save_or_raise)
+    immediately after this function returns.
+    """
+    intents = state.get("safety_order_intents")
+    recovery = state.get("safety_unaccounted_confirmed_buys")
+    positions = state.setdefault("open_positions", [])
+    if not isinstance(intents, dict) or not isinstance(recovery, dict) or not isinstance(positions, list):
+        raise ValueError("Buy reconciliation state is missing or corrupted")
+    record = intents.get(idempotency_key)
+    if (not isinstance(record, dict) or record.get("side") != "buy"
+            or record.get("status") != "confirmed"
+            or record.get("accounting_status") == "accounted"):
+        raise ValueError("Only confirmed, unaccounted LIVE buys can be reconciled")
+    if not isinstance(position, Mapping):
+        raise ValueError("A reconciled position is required")
+
+    signature = record.get("signature")
+    signatures = position.get("tx_signatures")
+    if not isinstance(signature, str) or not signature.strip():
+        raise ValueError("Confirmed buy signature is missing")
+    if not isinstance(signatures, list) or signature not in signatures:
+        raise ValueError("Reconciled position must include the confirmed transaction signature")
+    if position.get("token_mint") != record.get("token_mint"):
+        raise ValueError("Reconciled position token does not match the confirmed buy")
+    if position.get("source_wallet") != record.get("source_wallet"):
+        raise ValueError("Reconciled position wallet does not match the confirmed buy")
+
+    for field in ("units", "cost_basis_usd", "entry_price"):
+        try:
+            value = float(position.get(field))
+        except (TypeError, ValueError):
+            raise ValueError(f"Invalid reconciled position {field}") from None
+        if not math.isfinite(value) or value <= 0:
+            raise ValueError(f"Invalid reconciled position {field}")
+
+    already_present = any(
+        isinstance(item, dict)
+        and isinstance(item.get("tx_signatures"), list)
+        and signature in item["tx_signatures"]
+        for item in positions
+    )
+    if not already_present:
+        positions.append(dict(position))
+
+    record["accounting_status"] = "accounted"
+    record["accounted_at"] = time.time()
+    record["reconciliation_note"] = str(note)[:500]
+    for key, item in list(recovery.items()):
+        if (isinstance(item, dict)
+                and (item.get("intent_idempotency_key") == idempotency_key
+                     or item.get("signature") == signature)):
+            recovery.pop(key, None)
 
 def list_unresolved_sell_intents(state: Mapping[str, Any]) -> list[dict[str, Any]]:
     """List pending/unknown/confirmed-unaccounted sell intents without mutating state."""
