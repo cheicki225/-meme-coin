@@ -219,3 +219,23 @@ def test_invalid_sell_units_are_rejected_before_rpc_or_swap():
     trader = _trader({})
     for units in (0, -1, float("nan"), float("inf")):
         assert asyncio.run(trader._execute_sell("TokenMint", units, 1.0, {})) is None
+
+
+
+def test_unexpected_sell_execution_error_is_persisted_as_unknown(monkeypatch):
+    async def decimals(*args, **kwargs):
+        return 6
+
+    async def execute(*args, **kwargs):
+        raise RuntimeError("provider connection dropped after submission")
+
+    monkeypatch.setattr(live_trader, "_get_token_decimals", decimals)
+    monkeypatch.setattr(live_trader.jupiter_executor, "execute_swap", execute)
+    trader = _trader({})
+    trader._get_execution_keypair = lambda: FakeKeypair()
+
+    assert asyncio.run(trader._execute_sell("TokenMint", 100.0, 1.0, {})) is None
+    record = trader.data_store.state["safety_unresolved_sell_tokens"]["TokenMint"]
+    assert record["status"] == "unknown"
+    assert "provider connection dropped" in record["error"]
+    assert trader.data_store.saved is True
