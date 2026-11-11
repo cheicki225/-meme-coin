@@ -109,8 +109,16 @@ def _validate_unsigned_transaction(raw_tx: bytes, keypair: Keypair,
             if program_id not in allowed_programs:
                 raise SwapError(f"Programme de transaction non autorisé: {program_id}.")
             has_jupiter_swap |= program_id == "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
-            accounts = [keys[index] for index in instruction.accounts]
             data = bytes(instruction.data)
+            # Les index du message v0 peuvent viser des comptes résolus via
+            # Address Lookup Tables. Ne résous les index que pour les rares
+            # instructions top-level dont les comptes sont effectivement inspectés.
+            accounts = []
+            if program_id == "11111111111111111111111111111111" or program_id in token_programs:
+                try:
+                    accounts = [keys[index] for index in instruction.accounts]
+                except IndexError as exc:
+                    raise SwapError("Compte d'instruction non résolu; transaction refusée.") from exc
             if program_id == "11111111111111111111111111111111":
                 # Le seul transfert System top-level admis finance le compte
                 # WSOL propre au wallet; un transfert vers un tiers échoue fermé.
