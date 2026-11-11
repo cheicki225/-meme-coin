@@ -88,7 +88,8 @@ class CopyTradeListener:
         self._subscribed_wallets = set()
         self._sub_id_to_wallet = {}
         self._creation_mode_wallets = set()  # sous-ensemble surveillé pour les transferts SOL (seuil %)
-        self._recent_signatures = {}  # signature -> timestamp du premier traitement, voir _already_processed
+        self._recent_signatures = {}  # signatures dont le décodage a réussi
+        self._processing_signatures = set()  # déduplication concurrente pendant le fetch
 
     def _get_tracked_wallets(self) -> set:
         """
@@ -230,39 +231,44 @@ class CopyTradeListener:
         return False
 
     async def _process_transaction(self, signature: str, is_swap_related: bool = False):
-        if self._already_processed(signature):
-            log.debug(f"Signature {signature[:8]}... déjà traitée récemment — doublon ignoré.")
+        # Ne mémoriser définitivement une signature qu'après récupération
+        # réussie de la transaction. Un timeout Helius ne doit pas supprimer
+        # le signal pour les 120 prochaines secondes.
+        if signature in self._recent_signatures or signature in self._processing_signatures:
+            log.debug(f"Signature {signature[:8]}... déjà en cours/traitée — doublon ignoré.")
             return
 
-        parsed = await self._fetch_parsed_transaction(signature)
-        if not parsed:
-            return
+        self._processing_signatures.add(signature)
+        try:
+            parsed = await self._fetch_parsed_transaction(signature)
+            if not parsed:
+                return
 
-        # AJOUTÉ : vérification du transfert SOL important, indépendante de
-        # la classification achat/vente ci-dessous — un dev peut très bien
-        # transférer son SOL SANS que ce soit un swap.
-        if self._creation_mode_wallets:
-            await self._check_large_sol_transfer(parsed, signature, is_swap_related)
-            await self._check_dev_token_transfers(parsed, signature, is_swap_related)
+            # Le fetch a réussi : les notifications identiques ne doivent plus
+            # lancer une deuxième fois les callbacks (donc pas de double achat).
+            self._already_processed(signature)
 
-        # AJOUTÉ suite à une demande explicite : alerte retrait SOL, TOUS
-        # wallets surveillés (pas juste track_creation), seuil en montant
-        # absolu plutôt qu'en % du solde.
-        if self.on_withdrawal:
-            await self._check_withdrawal(parsed, signature, is_swap_related)
+            if self._creation_mode_wallets:
+                await self._check_large_sol_transfer(parsed, signature, is_swap_related)
+                await self._check_dev_token_transfers(parsed, signature, is_swap_related)
 
-        action_info = self._classify_transaction(parsed)
-        if not action_info:
-            return
+            if self.on_withdrawal:
+                await self._check_withdrawal(parsed, signature, is_swap_related)
 
-        wallet = action_info["wallet"]
-        if wallet not in self._subscribed_wallets:
-            return
+            action_info = self._classify_transaction(parsed)
+            if not action_info:
+                return
 
-        if action_info["action"] == "buy" and self.on_buy:
-            await self.on_buy(wallet, action_info["token_mint"], signature)
-        elif action_info["action"] == "sell" and self.on_sell:
-            await self.on_sell(wallet, action_info["token_mint"], signature)
+            tracked_wallet = action_info["wallet"]
+            if tracked_wallet not in self._subscribed_wallets:
+                return
+
+            if action_info["action"] == "buy" and self.on_buy:
+                await self.on_buy(tracked_wallet, action_info["token_mint"], signature)
+            elif action_info["action"] == "sell" and self.on_sell:
+                await self.on_sell(tracked_wallet, action_info["token_mint"], signature)
+        finally:
+            self._processing_signatures.discard(signature)
 
     async def _check_large_sol_transfer(self, parsed: dict, signature: str, is_swap_related: bool = False):
         """
