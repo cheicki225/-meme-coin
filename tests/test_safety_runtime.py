@@ -130,3 +130,22 @@ def test_corrupt_existing_intent_fails_closed():
     with pytest.raises(ValueError, match="Corrupt"):
         reserve_intent(state, intent)
     assert state["safety_order_intents"][intent.idempotency_key] == "not-a-record"
+
+@pytest.mark.parametrize(
+    ("token_mint", "source_wallet", "event_id", "message"),
+    [
+        ("", "wallet", None, "Missing token mint"),
+        ("mint", "", None, "Missing source wallet"),
+        ("mint", "wallet", "", "Invalid order event id"),
+    ],
+)
+def test_preflight_rejects_incomplete_order_identity(token_mint, source_wallet, event_id, message):
+    with pytest.raises(ValueError, match=message):
+        preflight_buy(
+            token_mint=token_mint,
+            amount_sol=0.1,
+            source_wallet=source_wallet,
+            settings={"max_position_sol": 0.5},
+            state={"balance_sol": 2.0, "open_positions": []},
+            event_id=event_id,
+        )
