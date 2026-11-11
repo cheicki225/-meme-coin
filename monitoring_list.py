@@ -266,6 +266,13 @@ class DataStore:
                 os.fsync(f.fileno())
             os.replace(temp_path, self.path)
             temp_path = None
+            # Persist the directory entry as well as file contents. If this
+            # fails, LIVE callers receive the error and must not submit.
+            directory_fd = os.open(parent_dir, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
         finally:
             if temp_path and os.path.exists(temp_path):
                 try:
