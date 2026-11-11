@@ -70,6 +70,13 @@ async def get_tip_accounts() -> list:
 
 
 async def send_bundle_with_tip(swap_tx_bytes: bytes, keypair: Keypair, recent_blockhash: str,
+    # The tip transfer is a second signed transaction outside the Jupiter
+    # instruction validator. Keep bundle mode disabled until tip-account
+    # provenance and the aggregate fee cap are enforced here.
+    raise JitoError(
+        "Jito tip bundles are disabled pending transaction-level tip account validation."
+    )
+
                                 tip_lamports: int = None) -> str:
     """
     Construit une transaction de tip séparée, bundle avec la transaction de
