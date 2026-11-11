@@ -21,6 +21,7 @@ import copy
 import glob
 import json
 import logging
+import math
 import os
 import shutil
 import tempfile
@@ -62,6 +63,8 @@ class DataStore:
                     self._migrate_force_buy_only_once(loaded)
                     self._migrate_force_profit_trail_enabled(loaded)
                     self._migrate_reset_legacy_already_bought(loaded)
+                    if str(getattr(config, "TRADING_MODE", "PAPER")).upper() == "LIVE":
+                        self._validate_live_persisted_state(loaded)
                     return loaded
             except (json.JSONDecodeError, OSError, ValueError) as e:
                 log.error(f"Erreur lecture {self.path}: {e}")
@@ -73,6 +76,40 @@ class DataStore:
                 log.warning("Mode PAPER : chargement d'un état vierge après erreur de lecture.")
 
         return self._default_state()
+
+    def _validate_live_persisted_state(self, state: dict):
+        """Reject malformed persisted trading state instead of starting LIVE partially blind."""
+        if not isinstance(state.get("open_positions"), list):
+            raise ValueError("open_positions must be a list")
+        if any(not isinstance(item, dict) for item in state["open_positions"]):
+            raise ValueError("open_positions contains a malformed record")
+
+        registry_names = (
+            "safety_order_intents",
+            "safety_pending_sell_tokens",
+            "safety_unresolved_sell_tokens",
+            "safety_unaccounted_confirmed_buys",
+            "safety_unaccounted_confirmed_sells",
+        )
+        for name in registry_names:
+            registry = state.get(name, {})
+            if not isinstance(registry, dict):
+                raise ValueError(f"{name} must be an object")
+            if any(not isinstance(record, dict) for record in registry.values()):
+                raise ValueError(f"{name} contains a malformed record")
+
+        intents = state.get("safety_order_intents", {})
+        for record in intents.values():
+            status = record.get("status")
+            if status not in {"pending", "confirmed", "failed", "unknown"}:
+                raise ValueError("Persisted order intent has an invalid status")
+            if record.get("side") == "buy" and status in {"pending", "confirmed", "unknown"}:
+                try:
+                    amount = float(record.get("amount_sol"))
+                except (TypeError, ValueError):
+                    raise ValueError("Persisted buy intent has an invalid amount") from None
+                if not math.isfinite(amount) or amount <= 0:
+                    raise ValueError("Persisted buy intent has an invalid amount")
 
     def _backfill_wallet_settings(self, state: dict):
         """
