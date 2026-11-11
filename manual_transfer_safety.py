@@ -5,9 +5,12 @@ import math
 
 
 def validate_manual_transfer(mode: str, emergency_stop: bool, has_pending: bool,
-                             amount_sol: float, maximum_sol: float) -> None:
+                             amount_sol: float, maximum_sol: float, *,
+                             execution_enabled: bool = False) -> None:
     if str(mode).upper() != "LIVE":
         raise ValueError("Manual SOL transfers are disabled while TRADING_MODE=PAPER.")
+    if not execution_enabled:
+        raise ValueError("Manual SOL transfers require LIVE_EXECUTION_ENABLED=true.")
     if emergency_stop:
         raise ValueError("Emergency stop is active; manual SOL transfers are blocked.")
     if has_pending:
