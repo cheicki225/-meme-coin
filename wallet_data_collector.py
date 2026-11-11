@@ -21,7 +21,7 @@ import config
 import wallet_history
 
 log = logging.getLogger("wallet_data_collector")
-DEFAULT_DB_PATH = Path("data/wallet_intelligence.sqlite3")
+DEFAULT_DB_PATH = Path(getattr(config, "WALLET_ACTIVITY_DB_FILE", "data/wallet_intelligence.sqlite3"))
 
 
 def _account_key(value: Any) -> str | None:
@@ -46,12 +46,13 @@ def _wallet_token_deltas(tx: dict, wallet: str) -> list[dict]:
             amount = (row.get("uiTokenAmount") or {}).get("amount")
             dec = (row.get("uiTokenAmount") or {}).get("decimals")
             try:
-                target[mint] = target.get(mint, 0) + int(amount)
-                if mint in decimals and decimals[mint] != int(dec):
-                    continue
-                decimals[mint] = int(dec)
+                amount_value, decimal_value = int(amount), int(dec)
             except (TypeError, ValueError):
                 continue
+            if mint in decimals and decimals[mint] != decimal_value:
+                continue
+            target[mint] = target.get(mint, 0) + amount_value
+            decimals[mint] = decimal_value
     result = []
     for mint in set(before) | set(after):
         delta = after.get(mint, 0) - before.get(mint, 0)
@@ -133,6 +134,9 @@ def initialize_store(db_path: str | Path = DEFAULT_DB_PATH) -> None:
         mode = db.execute("PRAGMA journal_mode = WAL").fetchone()
         if not mode or str(mode[0]).lower() != "wal":
             raise sqlite3.DatabaseError("SQLite WAL mode could not be enabled")
+        integrity = db.execute("PRAGMA integrity_check").fetchone()
+        if not integrity or integrity[0] != "ok":
+            raise sqlite3.DatabaseError(f"SQLite integrity check failed: {integrity}")
         with db:
             db.execute("""
                 CREATE TABLE IF NOT EXISTS wallet_activity (
