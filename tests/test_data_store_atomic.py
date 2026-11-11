@@ -63,3 +63,23 @@ def test_corrupt_state_keeps_paper_recovery_behavior(tmp_path, monkeypatch):
     store = DataStore(str(path))
     assert isinstance(store.state, dict)
     assert store.state["open_positions"] == []
+
+
+
+@pytest.mark.parametrize(
+    "state_text",
+    [
+        '{"open_positions": "not-a-list"}',
+        '{"open_positions": [], "safety_order_intents": []}',
+        '{"open_positions": [], "safety_order_intents": {"bad": {"side": "buy", "status": "unknown", "amount_sol": "NaN"}}}',
+    ],
+)
+def test_malformed_safety_state_blocks_live_startup(tmp_path, monkeypatch, state_text):
+    import monitoring_list
+
+    path = tmp_path / "state.json"
+    path.write_text(state_text, encoding="utf-8")
+    monkeypatch.setattr(monitoring_list.config, "TRADING_MODE", "LIVE")
+
+    with pytest.raises(RuntimeError, match="LIVE startup blocked"):
+        DataStore(str(path))
