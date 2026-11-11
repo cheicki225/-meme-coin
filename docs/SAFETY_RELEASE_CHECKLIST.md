@@ -28,10 +28,10 @@ This checklist is required before enabling LIVE trading.
 - [x] Build the safety snapshot from the actual wallet balance and persisted open positions.
 - [x] Persist and enforce idempotency keys across process restarts.
 - [x] Add an explicit, independently verified emergency-stop source.
-- [ ] Add mocked RPC/Jupiter integration tests for `live_trader.py`.
-- [ ] Add fail-closed validation for malformed/partial Jupiter responses.
+- [x] Add mocked RPC integration tests for the LIVE safety preflight (emergency stop + malformed balance fail closed).
+- [x] Add fail-closed validation for malformed/inconsistent Jupiter quotes before transaction build/sign/send, with tests.
 - [x] Add network-free reconciliation helpers for intents left in `unknown` state.
-- [ ] Run the complete repository test suite.
+- [ ] Run the complete repository test suite (the dedicated `tests/` CI suite passes; root-level/manual checks remain to be audited).
 - [ ] Run PAPER mode soak testing before any LIVE transaction.
 - [ ] Keep LIVE disabled until all unchecked items above are completed.
 
