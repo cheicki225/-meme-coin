@@ -129,13 +129,16 @@ python main.py
 - Backtest approximatif sur l'historique d'un dev
 - Paper trading avec TP/SL simulés et journalisation dans `sniper_data.json`
 
-## Ce qu'il reste à construire
-- Régularité de vente du dev (point 4 ci-dessus)
-- Distinction fiable simple/mère (point 5)
-- Vraie source OHLC pour un backtest précis (point 6)
-- Bot Telegram pour alertes + gestion manuelle du monitoring (comme `bot.py`)
-- Exécution LIVE via Jupiter (actuellement pas codée du tout, volontairement — à faire
-  seulement après des semaines de paper trading validées)
+## Limites et prochaines étapes réelles
+
+- Régularité de vente du dev et distinction fiable des schémas de financement : les limites/stubs décrits plus haut restent à résoudre.
+- Vraie source OHLC minute pour un backtest précis : les données DexScreener actuelles ne suffisent pas à valider une stratégie.
+- Le bot Telegram et les alertes sont présents dans le code ; leur bon fonctionnement dépend de la configuration et doit être validé en conditions contrôlées.
+- **L'exécution LIVE via Jupiter existe dans `live_trader.py`**, avec préflight, intents persistés et protections contre les doubles envois. Cela ne constitue PAS une validation de sécurité financière. Garder impérativement `TRADING_MODE=PAPER` jusqu'à des tests contrôlés, une réconciliation des transactions et une longue période de paper trading.
+- Le moniteur de liquidité DexScreener est un signal heuristique d'alerte ; il ne déclenche volontairement aucune vente automatique et ne remplace pas une vérification on-chain.
+- Certains modes affichés dans Telegram restent incomplets (notamment Buy on Dev Sell et Track Sells) : ne pas les considérer comme des fonctions opérationnelles tant que leur pipeline complet n'est pas implémenté et testé.
+
+Priorité : stabiliser les tests automatisés, auditer les chemins LIVE et leur réconciliation, puis valider les flux WebSocket/Helius et les signaux en PAPER avant toute activation réelle.
 
 ## Prochaine étape recommandée
 Lance `python -m detection.websocket_listener` seul, avec ta clé Helius, et observe
