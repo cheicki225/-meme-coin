@@ -10,6 +10,8 @@ def test_goplus_missing_credentials_is_fail_closed(monkeypatch):
     assert result["error"] == "no_api_key"
     assert result["security_score"] == 0
     assert result["is_honeypot"] is None
+    assert result["is_risky"] is True
+    assert result["flags"]["verification_unavailable"] is True
 
 
 def test_security_numeric_parser_rejects_non_finite_values():
@@ -107,5 +109,7 @@ def test_goplus_sol_schema_scores_authority_and_transfer_risks(monkeypatch):
     assert result["error"] is None
     assert result["is_mintable"] is True
     assert result["security_score"] == 80
+    assert result["is_risky"] is True
+    assert result["flags"]["mintable"] is True
     assert result["transfer_fee_pct"] == 2.0
     assert result["dex_liquidity_usd"] == 50000.0
