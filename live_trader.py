@@ -16,6 +16,7 @@ Le prochain cycle de _monitor_position retentera automatiquement.
 import logging
 import asyncio
 import os
+import time
 
 import config
 import jupiter_executor
@@ -351,6 +352,14 @@ class LiveTrader(PaperTrader):
         if units <= 0:
             return None
 
+        unresolved_sells = self.data_store.state.get("safety_unresolved_sell_tokens", {})
+        if isinstance(unresolved_sells, dict) and token_mint in unresolved_sells:
+            log.critical(
+                f"🛑 Vente bloquée pour {token_mint[:8]}...: une vente précédente a un résultat inconnu; "
+                "réconciliation requise avant tout nouvel essai."
+            )
+            return None
+
         decimals = await _get_token_decimals(token_mint)
         amount_raw = int(units * (10 ** decimals))
         if amount_raw <= 0:
@@ -365,6 +374,19 @@ class LiveTrader(PaperTrader):
                 token_mint, config.SOL_MINT, amount_raw, slippage_bps,
                 keypair=keypair, use_jito=settings.get("use_jito", False),
             )
+        except jupiter_executor.SwapOutcomeUnknown as e:
+            registry = self.data_store.state.setdefault("safety_unresolved_sell_tokens", {})
+            registry[token_mint] = {
+                "status": "unknown",
+                "units": units,
+                "created_at": time.time(),
+                "error": str(e)[:500],
+            }
+            self.data_store.save()
+            log.critical(
+                f"🛑 Vente LIVE ambiguë sur {token_mint[:8]}...; token bloqué jusqu'à réconciliation: {e}"
+            )
+            return None
         except jupiter_executor.SwapError as e:
             log.error(f"❌ Vente LIVE échouée sur {token_mint[:8]}...: {e}")
             return None
