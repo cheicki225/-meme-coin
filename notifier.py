@@ -14,7 +14,7 @@ import logging
 
 log = logging.getLogger("notifier")
 
-ALWAYS_ON = {"buy_failed", "sell_failed", "bot_errors"}
+ALWAYS_ON = {"buy_failed", "sell_failed", "bot_errors", "risk_alert", "rpc_alert", "collector_alert"}
 
 
 class Notifier:
