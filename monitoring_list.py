@@ -53,6 +53,8 @@ class DataStore:
             try:
                 with open(self.path, "r", encoding="utf-8") as f:
                     loaded = json.load(f)
+                    if not isinstance(loaded, dict):
+                        raise ValueError("Persisted bot state must be a JSON object")
                     default = self._default_state()
                     for key, value in default.items():
                         loaded.setdefault(key, value)
@@ -61,8 +63,14 @@ class DataStore:
                     self._migrate_force_profit_trail_enabled(loaded)
                     self._migrate_reset_legacy_already_bought(loaded)
                     return loaded
-            except (json.JSONDecodeError, OSError) as e:
-                log.error(f"Erreur lecture {self.path}: {e} — réinitialisation.")
+            except (json.JSONDecodeError, OSError, ValueError) as e:
+                log.error(f"Erreur lecture {self.path}: {e}")
+                if str(getattr(config, "TRADING_MODE", "PAPER")).upper() == "LIVE":
+                    raise RuntimeError(
+                        "LIVE startup blocked: persisted bot state is unreadable; "
+                        "restore a verified backup before trading."
+                    ) from e
+                log.warning("Mode PAPER : chargement d'un état vierge après erreur de lecture.")
 
         return self._default_state()
 
