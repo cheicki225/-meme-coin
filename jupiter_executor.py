@@ -19,6 +19,9 @@ import asyncio
 import base64
 import logging
 import math
+import time
+
+from execution_metrics import record_execution_metric
 
 import aiohttp
 from solders.transaction import VersionedTransaction
@@ -37,6 +40,24 @@ class SwapError(Exception):
 
 class SwapOutcomeUnknown(SwapError):
     """Submission may have reached the chain, but confirmation is unavailable."""
+
+
+async def _measured_async_stage(stage: str, operation, provider: str = "unknown"):
+    """Measure one executor stage without changing its error/retry semantics."""
+    started = time.perf_counter()
+    outcome = "success"
+    try:
+        return await operation
+    except SwapOutcomeUnknown:
+        outcome = "unknown"
+        raise
+    except Exception:
+        outcome = "failure"
+        raise
+    finally:
+        record_execution_metric(
+            stage, (time.perf_counter() - started) * 1000, outcome, provider
+        )
 
 
 
@@ -176,7 +197,7 @@ async def execute_swap(input_mint: str, output_mint: str, amount_lamports: int, 
     if not isinstance(slippage_bps, int) or isinstance(slippage_bps, bool) or not 1 <= slippage_bps <= 10_000:
         raise SwapError("Slippage bps invalide")
 
-    quote = await get_quote(input_mint, output_mint, amount_lamports, slippage_bps)
+    quote = await _measured_async_stage("quote", get_quote(input_mint, output_mint, amount_lamports, slippage_bps), "jupiter")
     if not isinstance(quote, dict):
         raise SwapError("Devis Jupiter invalide : réponse non objet")
     try:
@@ -197,24 +218,30 @@ async def execute_swap(input_mint: str, output_mint: str, amount_lamports: int, 
     if quote.get("inputMint") != input_mint or quote.get("outputMint") != output_mint:
         raise SwapError("Les mints du devis Jupiter ne correspondent pas à la demande")
 
-    swap_tx_b64 = await _build_swap_transaction(quote, user_pubkey)
+    swap_tx_b64 = await _measured_async_stage("build_transaction", _build_swap_transaction(quote, user_pubkey), "jupiter")
     if not isinstance(swap_tx_b64, str) or not swap_tx_b64.strip():
         raise SwapError("Transaction Jupiter absente ou mal formée")
-    signed_bytes, signature, blockhash = _sign_transaction(swap_tx_b64, keypair)
+    sign_started = time.perf_counter()
+    try:
+        signed_bytes, signature, blockhash = _sign_transaction(swap_tx_b64, keypair)
+    except Exception:
+        record_execution_metric("sign_transaction", (time.perf_counter() - sign_started) * 1000, "failure", "local")
+        raise
+    record_execution_metric("sign_transaction", (time.perf_counter() - sign_started) * 1000, "success", "local")
 
     if use_jito and config.JITO_ENABLED:
         try:
-            await _send_via_jito(signed_bytes, keypair, blockhash)
+            await _measured_async_stage("submit", _send_via_jito(signed_bytes, keypair, blockhash), "jito")
             log.info(f"📡 Transaction envoyée via Jito : {signature} — confirmation en cours...")
         except Exception as e:
             log.warning(f"⚠️ Envoi Jito a échoué ({e}) — repli sur l'envoi RPC classique.")
-            await _send_via_rpc(signed_bytes)
+            await _measured_async_stage("submit", _send_via_rpc(signed_bytes), "rpc")
             log.info(f"📡 Transaction envoyée via RPC (repli) : {signature} — confirmation en cours...")
     else:
         await _send_via_rpc(signed_bytes)
         log.info(f"📡 Transaction envoyée : {signature} — confirmation en cours...")
 
-    await _confirm_transaction(signature)
+    await _measured_async_stage("confirm", _confirm_transaction(signature), "solana_rpc")
     log.info(f"✅ Transaction confirmée : {signature}")
 
     return {
