@@ -17,6 +17,7 @@ import logging
 import asyncio
 import os
 import time
+import math
 
 import config
 import jupiter_executor
@@ -132,6 +133,12 @@ class LiveTrader(PaperTrader):
     ):
         """Préflight + persistance AVANT tout envoi réseau vers Jupiter/Jito."""
         source_wallet = str(keypair.pubkey())
+        unresolved_buys = self.data_store.state.get("safety_unaccounted_confirmed_buys", {})
+        if isinstance(unresolved_buys, dict) and any(
+            isinstance(item, dict) and item.get("token_mint") == token_mint
+            for item in unresolved_buys.values()
+        ):
+            raise ValueError("Confirmed buy awaits accounting reconciliation for this token")
         safety_state = await self._build_live_safety_state(keypair)
 
         # Le prix d'entrée fait partie de l'événement : un retry du même signal
@@ -160,6 +167,29 @@ class LiveTrader(PaperTrader):
             error=error,
         )
         self.data_store.save()
+
+    def _persist_confirmed_buy_reconciliation(self, *, intent, token_mint, source_wallet, result, error):
+        """Keep a confirmed swap recoverable when local accounting cannot finish."""
+        signature = result.get("signature") if isinstance(result, dict) else None
+        key = signature or intent.idempotency_key
+        registry = self.data_store.state.setdefault("safety_unaccounted_confirmed_buys", {})
+        registry[key] = {
+            "status": "needs_accounting_reconciliation",
+            "token_mint": token_mint,
+            "source_wallet": source_wallet,
+            "signature": signature,
+            "intent_idempotency_key": intent.idempotency_key,
+            "input_amount_raw": result.get("input_amount") if isinstance(result, dict) else None,
+            "output_amount_raw": result.get("output_amount") if isinstance(result, dict) else None,
+            "price_impact_pct": result.get("price_impact_pct") if isinstance(result, dict) else None,
+            "created_at": time.time(),
+            "error": str(error)[:500],
+        }
+        self.data_store.save()
+        log.critical(
+            f"CONFIRMED BUY REQUIRES ACCOUNTING RECONCILIATION: token={token_mint} "
+            f"signature={signature}; further buys for this token are blocked."
+        )
 
     async def _execute_buy(self, token_mint: str, entry_price: float, settings: dict) -> dict:
         if settings.get("multibuy_enabled") and settings.get("multibuy_wallet_labels"):
@@ -212,18 +242,34 @@ class LiveTrader(PaperTrader):
             log.exception(f"🛑 État d'achat LIVE ambigu sur {token_mint[:8]}... — retry automatique bloqué.")
             return None
 
+        # La confirmation on-chain est durablement enregistrée AVANT toute
+        # lecture de métadonnées/prix. Une panne d'indexation ne doit jamais
+        # faire disparaître un achat confirmé ni autoriser un nouvel achat.
         self._mark_live_intent(intent, "confirmed", signature=result.get("signature"))
-
-        decimals = await _get_token_decimals(token_mint)
-        units_received = result["output_amount"] / (10 ** decimals)
-        sol_spent = result["input_amount"] / 1_000_000_000
-        cost_basis_usd = sol_spent * await get_sol_usd_rate()
-
-        if units_received <= 0:
-            log.error(f"❌ Achat LIVE sur {token_mint[:8]}... a renvoyé 0 token reçu — anomalie.")
+        try:
+            decimals = await _get_token_decimals(token_mint)
+            raw_output = result["output_amount"]
+            raw_input = result["input_amount"]
+            if (not isinstance(raw_output, int) or isinstance(raw_output, bool) or raw_output <= 0
+                    or not isinstance(raw_input, int) or isinstance(raw_input, bool) or raw_input <= 0):
+                raise ValueError("Montants bruts du swap confirmé invalides")
+            units_received = raw_output / (10 ** decimals)
+            sol_spent = raw_input / 1_000_000_000
+            sol_usd = float(await get_sol_usd_rate())
+            if not math.isfinite(sol_usd) or sol_usd <= 0:
+                raise ValueError("Taux SOL/USD indisponible ou invalide après confirmation")
+            cost_basis_usd = sol_spent * sol_usd
+            if not math.isfinite(units_received) or units_received <= 0 or not math.isfinite(cost_basis_usd):
+                raise ValueError("Comptabilité invalide pour le swap confirmé")
+            actual_price = cost_basis_usd / units_received
+            if not math.isfinite(actual_price) or actual_price <= 0:
+                raise ValueError("Prix d'entrée calculé invalide")
+        except Exception as e:
+            self._persist_confirmed_buy_reconciliation(
+                intent=intent, token_mint=token_mint, source_wallet=str(keypair.pubkey()),
+                result=result, error=e,
+            )
             return None
-
-        actual_price = cost_basis_usd / units_received
 
         log.info(
             f"💰 [LIVE] Achat réel confirmé : {sol_spent:.4f} SOL -> {units_received:.2f} tokens "
