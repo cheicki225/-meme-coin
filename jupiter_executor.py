@@ -310,7 +310,7 @@ async def _confirm_transaction(signature: str, timeout_s: int = None) -> bool:
 
 
 async def execute_swap(input_mint: str, output_mint: str, amount_lamports: int, slippage_bps: int,
-                        keypair=None, use_jito: bool = False, on_signed=None) -> dict:
+                        keypair=None, use_jito: bool = False, on_signed=None, on_accounted=None) -> dict:
     """
     Exécute un swap complet réel : quote -> build -> sign -> send -> confirm.
     keypair: si fourni, signe avec ce keypair précis (utilisé par MultiBuy pour
@@ -410,6 +410,11 @@ async def execute_swap(input_mint: str, output_mint: str, amount_lamports: int, 
             f"Transaction {signature} is confirmed but actual swap amounts are unavailable; "
             "pending state must be reconciled manually."
         )
+
+    if on_accounted is not None:
+        callback_result = on_accounted({"signature": signature, "accounting": accounting})
+        if inspect.isawaitable(callback_result):
+            await callback_result
 
     return {
         "signature": signature,
