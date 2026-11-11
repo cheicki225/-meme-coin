@@ -41,6 +41,48 @@ async def _get_token_decimals(mint: str) -> int:
 
 
 class LiveTrader(PaperTrader):
+    def __init__(self, data_store, notifier=None, price_stream=None):
+        super().__init__(data_store, notifier=notifier, price_stream=price_stream)
+        self._swap_lock = asyncio.Lock()
+
+    async def _execute_swap_tracked(self, input_mint: str, output_mint: str, amount: int,
+                                    slippage_bps: int, keypair, use_jito: bool) -> dict | None:
+        """Persist each signature before broadcast and fail closed on unresolved state."""
+        async with self._swap_lock:
+            state = self.data_store.state
+            if state.get("emergency_stop") or state.get("pending_transactions"):
+                if state.get("pending_transactions") and not state.get("emergency_stop"):
+                    self.data_store.activate_emergency_stop("unresolved transaction requires reconciliation")
+                if self.notifier:
+                    await self.notifier.notify(
+                        "risk_alert",
+                        "🛑 *LIVE suspendu* — arrêt d'urgence actif ou signature non réconciliée. "
+                        "Aucun nouveau swap ne sera envoyé.",
+                    )
+                return None
+
+            def persist_signature(record: dict) -> None:
+                # If durable persistence fails, execute_swap will not broadcast.
+                self.data_store.record_pending_transaction(record)
+
+            try:
+                result = await jupiter_executor.execute_swap(
+                    input_mint, output_mint, amount, slippage_bps,
+                    keypair=keypair, use_jito=use_jito, on_signed=persist_signature,
+                )
+                return result
+            except jupiter_executor.SwapError as exc:
+                if self.data_store.state.get("pending_transactions"):
+                    self.data_store.activate_emergency_stop(
+                        f"transaction outcome requires reconciliation: {str(exc)[:300]}"
+                    )
+                    if self.notifier:
+                        await self.notifier.notify(
+                            "risk_alert",
+                            f"🛑 *Signature à réconcilier*\nL'exécution est suspendue. "
+                            f"Vérifier la signature dans l'état persistant avant reprise.\nErreur: {exc}",
+                        )
+                raise
     def _get_execution_keypair(self):
         """
         Retourne le keypair à utiliser pour une exécution simple (non-MultiBuy) :
@@ -60,7 +102,13 @@ class LiveTrader(PaperTrader):
 
     async def _execute_buy(self, token_mint: str, entry_price: float, settings: dict) -> dict:
         if settings.get("multibuy_enabled") and settings.get("multibuy_wallet_labels"):
-            return await self._execute_multibuy(token_mint, entry_price, settings)
+            log.error("LIVE MultiBuy is disabled until every wallet position can be reconciled and sold independently.")
+            if self.notifier:
+                await self.notifier.notify(
+                    "risk_alert",
+                    "🛑 *MultiBuy LIVE refusé* — les positions multi-wallet ne sont pas encore comptabilisées séparément.",
+                )
+            return None
 
         buy_amount_sol = settings.get("buy_amount_sol", 0.1)
         amount_lamports = int(buy_amount_sol * 1_000_000_000)
@@ -69,8 +117,8 @@ class LiveTrader(PaperTrader):
         use_jito = settings.get("use_jito", False)
 
         try:
-            result = await jupiter_executor.execute_swap(
-                config.SOL_MINT, token_mint, amount_lamports, slippage_bps, keypair=keypair, use_jito=use_jito
+            result = await self._execute_swap_tracked(
+                config.SOL_MINT, token_mint, amount_lamports, slippage_bps, keypair, use_jito
             )
         except jupiter_executor.SwapError as e:
             log.error(f"❌ Achat LIVE échoué sur {token_mint[:8]}...: {e}")
@@ -81,9 +129,19 @@ class LiveTrader(PaperTrader):
                 )
             return None
 
-        decimals = await _get_token_decimals(token_mint)
+        if result is None:
+            return None
+        accounting = result.get("accounting") or {}
+        decimals = (accounting.get("token_decimals") or {}).get(token_mint)
+        if not isinstance(decimals, int) or not 0 <= decimals <= 18:
+            self.data_store.activate_emergency_stop("confirmed buy has no verified token decimals")
+            raise jupiter_executor.SwapError("Confirmed token decimals are unavailable; position cannot be accounted.")
         units_received = result["output_amount"] / (10 ** decimals)
-        sol_spent = result["input_amount"] / 1_000_000_000
+        native_delta = int(accounting.get("native_delta_lamports", 0))
+        if native_delta >= 0:
+            self.data_store.activate_emergency_stop("confirmed buy did not debit SOL from the wallet")
+            raise jupiter_executor.SwapError("Confirmed SOL cashflow is inconsistent with a buy.")
+        sol_spent = -native_delta / 1_000_000_000
         cost_basis_usd = sol_spent * await get_sol_usd_rate()
 
         if units_received <= 0:
@@ -102,6 +160,8 @@ class LiveTrader(PaperTrader):
             "cost_basis_usd": cost_basis_usd,
             "actual_price": actual_price,
             "signature": result["signature"],
+            "fee_lamports": int(accounting.get("fee_lamports", 0)),
+            "sol_cashflow": sol_spent,
         }
 
     async def _execute_multibuy(self, token_mint: str, entry_price: float, settings: dict) -> dict:
@@ -199,15 +259,22 @@ class LiveTrader(PaperTrader):
         keypair = self._get_execution_keypair()
 
         try:
-            result = await jupiter_executor.execute_swap(
+            result = await self._execute_swap_tracked(
                 token_mint, config.SOL_MINT, amount_raw, slippage_bps,
-                keypair=keypair, use_jito=settings.get("use_jito", False),
+                keypair, settings.get("use_jito", False),
             )
         except jupiter_executor.SwapError as e:
             log.error(f"❌ Vente LIVE échouée sur {token_mint[:8]}...: {e}")
             return None
 
-        sol_received = result["output_amount"] / 1_000_000_000
+        if result is None:
+            return None
+        accounting = result.get("accounting") or {}
+        native_delta = int(accounting.get("native_delta_lamports", 0))
+        if native_delta <= 0:
+            self.data_store.activate_emergency_stop("confirmed sell did not credit SOL to the wallet")
+            raise jupiter_executor.SwapError("Confirmed SOL cashflow is inconsistent with a sell.")
+        sol_received = native_delta / 1_000_000_000
         proceeds_usd = sol_received * await get_sol_usd_rate()
 
         log.info(
@@ -215,4 +282,9 @@ class LiveTrader(PaperTrader):
             f"(impact prix {result['price_impact_pct']:.2f}%) — tx {result['signature']}"
         )
 
-        return {"proceeds_usd": proceeds_usd, "signature": result["signature"]}
+        return {
+            "proceeds_usd": proceeds_usd,
+            "signature": result["signature"],
+            "fee_lamports": int(accounting.get("fee_lamports", 0)),
+            "sol_cashflow": sol_received,
+        }
