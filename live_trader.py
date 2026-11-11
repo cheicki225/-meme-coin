@@ -134,6 +134,24 @@ class LiveTrader(PaperTrader):
             or bool(settings.get("emergency_stop", False))
         )
 
+    def _finalize_buy_accounting(self, token_mint: str, buy_result: dict):
+        """Mark confirmed buy intents accounted only after the position is durable."""
+        registry = self.data_store.state.get("safety_order_intents", {})
+        if not isinstance(registry, dict):
+            raise ValueError("Corrupt buy intent registry during accounting finalization")
+        intent_ids = buy_result.get("buy_intent_ids") or [buy_result.get("buy_intent_id")]
+        intent_ids = [item for item in intent_ids if isinstance(item, str) and item]
+        if not intent_ids:
+            raise ValueError("Missing buy intent identity during accounting finalization")
+        for intent_id in intent_ids:
+            record = registry.get(intent_id)
+            if (not isinstance(record, dict) or record.get("status") != "confirmed"
+                    or record.get("token_mint") != token_mint):
+                raise ValueError("Confirmed buy intent mismatch; accounting remains blocked")
+            record["accounting_status"] = "accounted"
+            record["accounted_at"] = time.time()
+        self._persist_safety_state()
+
     async def _reserve_live_buy_intent(
         self,
         *,
@@ -145,6 +163,18 @@ class LiveTrader(PaperTrader):
     ):
         """Préflight + persistance AVANT tout envoi réseau vers Jupiter/Jito."""
         source_wallet = str(keypair.pubkey())
+        intent_registry = self.data_store.state.get("safety_order_intents", {})
+        if not isinstance(intent_registry, dict):
+            raise ValueError("Corrupt buy intent registry; refusing LIVE buy")
+        if any(
+            isinstance(item, dict)
+            and item.get("side") == "buy"
+            and item.get("token_mint") == token_mint
+            and item.get("status") == "confirmed"
+            and item.get("accounting_status") != "accounted"
+            for item in intent_registry.values()
+        ):
+            raise ValueError("A confirmed buy for this token still requires position accounting")
         unresolved_buys = self.data_store.state.get("safety_unaccounted_confirmed_buys", {})
         if isinstance(unresolved_buys, dict) and any(
             isinstance(item, dict) and item.get("token_mint") == token_mint
@@ -178,6 +208,10 @@ class LiveTrader(PaperTrader):
             signature=signature,
             error=error,
         )
+        if status == "confirmed" and intent.side == "buy":
+            self.data_store.state["safety_order_intents"][intent.idempotency_key][
+                "accounting_status"
+            ] = "awaiting_accounting"
         self._persist_safety_state()
 
     def _persist_confirmed_buy_reconciliation(self, *, intent, token_mint, source_wallet, result, error):
@@ -293,6 +327,8 @@ class LiveTrader(PaperTrader):
             "cost_basis_usd": cost_basis_usd,
             "actual_price": actual_price,
             "signature": result["signature"],
+            "buy_intent_id": intent.idempotency_key,
+            "buy_intent_ids": [intent.idempotency_key],
         }
 
     async def _execute_multibuy(self, token_mint: str, entry_price: float, settings: dict) -> dict:
@@ -427,6 +463,7 @@ class LiveTrader(PaperTrader):
             "cost_basis_usd": cost_basis_usd,
             "actual_price": actual_price,
             "signature": signatures[0] if signatures else None,
+            "buy_intent_ids": [leg[0].idempotency_key for leg in confirmed_legs],
         }
 
     async def _execute_sell(self, token_mint: str, units: float, current_price: float, settings: dict) -> dict:
