@@ -1717,8 +1717,8 @@ class SniperTelegramBot:
         result = await security.check_token_security(token_mint)
         if result.get("error"):
             await msg.edit_text(
-                "🛑 Vérification anti-rug indisponible — token non validé.\\n"
-                f"Raison: {result.get('error')}\\n"
+                "🛑 Vérification anti-rug indisponible — token non validé.\n"
+                f"Raison: {result.get('error')}\n"
                 "Aucune conclusion de sécurité ne peut être tirée."
             )
             return
