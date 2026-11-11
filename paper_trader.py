@@ -350,6 +350,9 @@ class PaperTrader:
         hold_max = settings.get("dev_holding_max_pct")
         if not skip_speed and (dev_min is not None or dev_max is not None or hold_min is not None or hold_max is not None):
             dev_stats = await self._check_dev_behavior(source_wallet, token_mint, entry_price)
+            if not dev_stats:
+                log.warning(f"🛑 Filtres comportement dev actifs mais données indisponibles pour {token_mint[:8]}... — achat bloqué.")
+                return None
             if dev_stats:
                 if dev_min is not None and dev_stats["dev_buy_sol"] < dev_min:
                     log.info(f"⏭️  Achat dev {dev_stats['dev_buy_sol']:.2f} SOL < min {dev_min}, achat refusé.")
@@ -367,7 +370,19 @@ class PaperTrader:
         # ── Vérification sécurité GoPlus (si activée pour ce wallet) ──
         if settings.get("security_check_enabled"):
             security = await security_check.check_token_security(token_mint)
-            if security.get("is_honeypot"):
+            if security.get("error"):
+                log.warning(
+                    f"🛑 Vérification anti-rug indisponible ({security.get('error')}) "
+                    f"pour {token_mint[:8]}... — achat bloqué (fail-closed)."
+                )
+                if self.notifier:
+                    await self.notifier.notify(
+                        "buy_skipped",
+                        f"🛑 *Buy Skipped* — vérification anti-rug indisponible\\n"
+                        f"Token: `{token_mint[:8]}...`\\nRaison: `{security.get('error')}`",
+                    )
+                return None
+            if security.get("is_honeypot") is True:
                 log.warning(f"🚨 Honeypot détecté sur {token_mint[:8]}... — achat annulé.")
                 if self.notifier:
                     await self.notifier.notify(
