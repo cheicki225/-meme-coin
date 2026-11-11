@@ -378,6 +378,15 @@ class DataStore:
             pending.append(dict(record))
         self.save()
 
+    def mark_pending_transaction_accounted(self, signature: str, accounting: dict) -> bool:
+        for item in self.state.setdefault("pending_transactions", []):
+            if item.get("signature") == signature:
+                item["status"] = "accounted"
+                item["accounting"] = dict(accounting)
+                self.save()
+                return True
+        return False
+
     def resolve_pending_transaction(self, signature: str, outcome: dict | None = None) -> bool:
         pending = self.state.setdefault("pending_transactions", [])
         match = next((item for item in pending if item.get("signature") == signature), None)
