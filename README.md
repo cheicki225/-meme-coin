@@ -4,7 +4,7 @@ Implémentation de la méthode "sniping de rugger" décrite dans la vidéo Faomo
 détection temps réel des créations de tokens Pump.fun, traçage du financement
 du wallet dev, backtest automatique, et ajout au monitoring si rentable.
 
-**Mode PAPER par défaut. Aucun ordre réel n'est jamais envoyé sans que tu changes `TRADING_MODE=LIVE`.**
+**Mode PAPER par défaut.** Le code LIVE existe, mais n'est pas validé pour des fonds réels. Il exige `TRADING_MODE=LIVE` et `LIVE_EXECUTION_ENABLED=true`; aucun swap réel n'a été exécuté pendant cette phase.
 
 **Le mode LIVE n'est pas validé pour des fonds réels.** Les contrôles ajoutés ne remplacent pas un audit indépendant, les prix/API peuvent manquer ou être inexacts, et un timeout de transaction doit être réconcilié avant toute nouvelle tentative. Configurez `TELEGRAM_ALLOWED_USER_IDS` pour limiter l'accès Telegram. Voir [SECURITY.md](SECURITY.md), [INSTALLATION.md](INSTALLATION.md) et [AUDIT_COMPLET.md](AUDIT_COMPLET.md).
 
@@ -119,7 +119,7 @@ Envoie `/start` au bot pour t'enregistrer (le `chat_id` est sauvegardé dans `sn
 pip install -r requirements.txt
 
 export HELIUS_API_KEY="ta_clé"
-export BOT_TOKEN="ton_token_telegram"      # optionnel pour l'instant, alertes non branchées
+export BOT_TOKEN="ton_token_telegram"      # alertes Telegram et commandes autorisées
 export TRADING_MODE="PAPER"                 # ne JAMAIS changer avant validation complète
 
 python main.py
@@ -129,15 +129,18 @@ python main.py
 - Connexion WebSocket aux logs Pump.fun (si clé Helius valide)
 - Traçage du funder d'un wallet + détection schéma "exchange" (si adresses vérifiées)
 - Backtest approximatif sur l'historique d'un dev
-- Paper trading avec TP/SL simulés et journalisation dans `sniper_data.json`
+- Paper trading avec TP/SL simulés; état persistant SQLite par défaut et import initial depuis l'ancien JSON.
+- Collecteur wallet optionnel en lecture seule, avec curseurs et stockage SQLite.
+- Relecture de chandelles OHLC fournie par l'utilisateur avec frais, slippage et règles conservatrices dans `historical_backtest.py`.
+- PnL LIVE basé sur les soldes on-chain confirmés et les frais, sans utiliser le montant estimé du devis.
 
 ## Ce qu'il reste à construire
 - Régularité de vente du dev (point 4 ci-dessus)
 - Distinction fiable simple/mère (point 5)
-- Vraie source OHLC pour un backtest précis (point 6)
-- Bot Telegram pour alertes + gestion manuelle du monitoring (comme `bot.py`)
-- Exécution LIVE via Jupiter (actuellement pas codée du tout, volontairement — à faire
-  seulement après des semaines de paper trading validées)
+- Source historique OHLC automatique et données de stratégie validées; le moteur actuel requiert un jeu de chandelles fourni.
+- Tests d'intégration RPC/Jupiter et soak PAPER en environnement cible.
+- Revue indépendante de la politique on-chain, de la reprise après crash et des limites avant toute activation LIVE.
+- L'exécution utilise Jupiter Swap API V2 `/order` + `/execute`, requiert `JUPITER_API_KEY` et reste non validée.
 
 ## Prochaine étape recommandée
 Lance `python -m detection.websocket_listener` seul, avec ta clé Helius, et observe
@@ -148,3 +151,10 @@ si le format de réponse Helius correspond à ce que le code attend, avant d'all
 ## Mise en route
 
 Copiez `.env.example` vers `.env`, gardez `TRADING_MODE=PAPER`, puis suivez [INSTALLATION.md](INSTALLATION.md) et [CONFIGURATION.md](CONFIGURATION.md). Les identifiants Telegram doivent figurer dans `TELEGRAM_ALLOWED_USER_IDS` (identifiants numériques séparés par des virgules). Sans allowlist, commandes et callbacks sont refusés. L'audit et les limites restantes sont dans [AUDIT_COMPLET.md](AUDIT_COMPLET.md).
+
+
+## Phase fiabilité et sécurité
+
+La branche de suivi ajoute un état SQLite WAL avec sauvegardes/récupération, un arrêt d'urgence persistant (`/halt`, reprise refusée tant qu'une signature reste irrésolue), un collecteur de wallets strictement en lecture seule, des alertes RPC/collecteur, et des plafonds globaux d'exposition/nombre de positions. L'exécuteur Jupiter V2 n'autorise que le routeur Metis, valide le payeur, les programmes top-level, le blockhash, les frais et le loyer estimé avant signature. Toute transaction envoyée est d'abord inscrite durablement; les résultats sont comptabilisés à partir des deltas de soldes confirmés. Une issue incertaine arrête les nouvelles exécutions.
+
+Ces contrôles sont couverts par des tests mockés. Ils ne constituent pas une validation on-chain ni un feu vert LIVE. Gardez `TRADING_MODE=PAPER`.

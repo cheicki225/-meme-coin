@@ -21,7 +21,7 @@ import config
 import wallet_history
 
 log = logging.getLogger("wallet_data_collector")
-DEFAULT_DB_PATH = Path("data/wallet_intelligence.sqlite3")
+DEFAULT_DB_PATH = Path(getattr(config, "WALLET_ACTIVITY_DB_FILE", "data/wallet_intelligence.sqlite3"))
 
 
 def _account_key(value: Any) -> str | None:
@@ -46,10 +46,13 @@ def _wallet_token_deltas(tx: dict, wallet: str) -> list[dict]:
             amount = (row.get("uiTokenAmount") or {}).get("amount")
             dec = (row.get("uiTokenAmount") or {}).get("decimals")
             try:
-                target[mint] = int(amount)
-                decimals[mint] = int(dec)
+                amount_value, decimal_value = int(amount), int(dec)
             except (TypeError, ValueError):
                 continue
+            if mint in decimals and decimals[mint] != decimal_value:
+                continue
+            target[mint] = target.get(mint, 0) + amount_value
+            decimals[mint] = decimal_value
     result = []
     for mint in set(before) | set(after):
         delta = after.get(mint, 0) - before.get(mint, 0)
@@ -116,30 +119,85 @@ def normalize_transaction(wallet: str, signature: str, tx: dict) -> dict | None:
     return {"signature": signature, "events": events}
 
 
+def _connect(db_path: str | Path) -> sqlite3.Connection:
+    db = sqlite3.connect(db_path, timeout=10)
+    db.execute("PRAGMA busy_timeout = 10000")
+    db.execute("PRAGMA synchronous = FULL")
+    return db
+
+
 def initialize_store(db_path: str | Path = DEFAULT_DB_PATH) -> None:
     path = Path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(path) as db:
-        db.execute("""
-            CREATE TABLE IF NOT EXISTS wallet_activity (
-                signature TEXT NOT NULL,
-                wallet_address TEXT NOT NULL,
-                token_mint TEXT NOT NULL,
-                block_time INTEGER,
-                event_type TEXT NOT NULL,
-                token_delta_raw TEXT NOT NULL,
-                token_decimals INTEGER,
-                sol_delta REAL,
-                classification_confidence TEXT NOT NULL,
-                realized_pnl_sol REAL,
-                entry_price_sol REAL,
-                exit_price_sol REAL,
-                source TEXT NOT NULL,
-                collected_at INTEGER NOT NULL,
-                PRIMARY KEY (wallet_address, signature, token_mint)
+    db = _connect(path)
+    try:
+        mode = db.execute("PRAGMA journal_mode = WAL").fetchone()
+        if not mode or str(mode[0]).lower() != "wal":
+            raise sqlite3.DatabaseError("SQLite WAL mode could not be enabled")
+        integrity = db.execute("PRAGMA integrity_check").fetchone()
+        if not integrity or integrity[0] != "ok":
+            raise sqlite3.DatabaseError(f"SQLite integrity check failed: {integrity}")
+        with db:
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS wallet_activity (
+                    signature TEXT NOT NULL,
+                    wallet_address TEXT NOT NULL,
+                    token_mint TEXT NOT NULL,
+                    block_time INTEGER,
+                    event_type TEXT NOT NULL,
+                    token_delta_raw TEXT NOT NULL,
+                    token_decimals INTEGER,
+                    sol_delta REAL,
+                    classification_confidence TEXT NOT NULL,
+                    realized_pnl_sol REAL,
+                    entry_price_sol REAL,
+                    exit_price_sol REAL,
+                    source TEXT NOT NULL,
+                    collected_at INTEGER NOT NULL,
+                    PRIMARY KEY (wallet_address, signature, token_mint)
+                )
+            """)
+            db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_wallet_activity_time "
+                "ON wallet_activity(wallet_address, block_time)"
             )
-        """)
-        db.execute("CREATE INDEX IF NOT EXISTS idx_wallet_activity_time ON wallet_activity(wallet_address, block_time)")
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS wallet_cursors (
+                    wallet_address TEXT PRIMARY KEY,
+                    last_signature TEXT NOT NULL,
+                    updated_at INTEGER NOT NULL
+                )
+            """)
+    finally:
+        db.close()
+
+
+def get_collection_cursor(wallet: str, db_path: str | Path = DEFAULT_DB_PATH) -> str | None:
+    if not Path(db_path).exists():
+        return None
+    db = _connect(db_path)
+    try:
+        row = db.execute(
+            "SELECT last_signature FROM wallet_cursors WHERE wallet_address=?", (wallet,)
+        ).fetchone()
+        return row[0] if row else None
+    finally:
+        db.close()
+
+
+def set_collection_cursor(wallet: str, signature: str, db_path: str | Path = DEFAULT_DB_PATH) -> None:
+    initialize_store(db_path)
+    db = _connect(db_path)
+    try:
+        with db:
+            db.execute("""
+                INSERT INTO wallet_cursors(wallet_address,last_signature,updated_at)
+                VALUES(?,?,?)
+                ON CONFLICT(wallet_address) DO UPDATE SET
+                    last_signature=excluded.last_signature, updated_at=excluded.updated_at
+            """, (wallet, signature, int(time.time())))
+    finally:
+        db.close()
 
 
 def store_events(events: list[dict], db_path: str | Path = DEFAULT_DB_PATH) -> int:
@@ -153,28 +211,35 @@ def store_events(events: list[dict], db_path: str | Path = DEFAULT_DB_PATH) -> i
         )
         for e in events
     ]
-    with sqlite3.connect(db_path) as db:
-        before = db.total_changes
-        db.executemany("""
+    db = _connect(db_path)
+    try:
+        with db:
+            before = db.total_changes
+            db.executemany("""
             INSERT OR IGNORE INTO wallet_activity
             (signature,wallet_address,token_mint,block_time,event_type,token_delta_raw,
              token_decimals,sol_delta,classification_confidence,realized_pnl_sol,
              entry_price_sol,exit_price_sol,source,collected_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        """, rows)
-        return db.total_changes - before
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """, rows)
+            return db.total_changes - before
+    finally:
+        db.close()
 
 
 def read_wallet_activity(wallet: str, db_path: str | Path = DEFAULT_DB_PATH) -> list[dict]:
     if not Path(db_path).exists():
         return []
-    with sqlite3.connect(db_path) as db:
+    db = _connect(db_path)
+    try:
         db.row_factory = sqlite3.Row
         rows = db.execute(
             "SELECT * FROM wallet_activity WHERE wallet_address=? ORDER BY block_time DESC",
             (wallet,),
         ).fetchall()
-    return [dict(row) for row in rows]
+        return [dict(row) for row in rows]
+    finally:
+        db.close()
 
 
 async def collect_wallet(wallet: str, limit: int = 100, db_path: str | Path = DEFAULT_DB_PATH) -> dict:
@@ -185,8 +250,9 @@ async def collect_wallet(wallet: str, limit: int = 100, db_path: str | Path = DE
         raise ValueError("limit must be between 1 and 1000")
     if not config.HELIUS_API_KEY:
         return {"status": "unavailable", "reason": "helius_not_configured", "wallet": wallet}
+    cursor = get_collection_cursor(wallet, db_path)
     try:
-        signatures = await wallet_history._get_signatures(wallet, limit=limit)
+        signatures = await wallet_history._get_signatures(wallet, limit=limit, until=cursor)
     except Exception as exc:
         log.warning("Wallet signature collection failed: %s", exc)
         return {"status": "error", "reason": "signature_fetch_failed", "wallet": wallet}
@@ -212,6 +278,10 @@ async def collect_wallet(wallet: str, limit: int = 100, db_path: str | Path = DE
 
     try:
         inserted = store_events(events, db_path)
+        if failed == 0 and signatures:
+            newest = signatures[0].get("signature") if isinstance(signatures[0], dict) else None
+            if newest:
+                set_collection_cursor(wallet, newest, db_path)
     except (OSError, sqlite3.Error) as exc:
         log.exception("Wallet activity persistence failed")
         return {"status": "error", "reason": "storage_failed", "wallet": wallet}

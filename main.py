@@ -35,6 +35,9 @@ from notifier import Notifier
 from telegram_bot import SniperTelegramBot
 from position_price_stream import PositionPriceStream
 import wallet
+from wallet_collector_service import WalletCollectorService
+from execution_recovery import classify_pending_transactions
+from rpc_health_monitor import RpcHealthMonitor
 
 # CORRIGÉ suite à un vrai crash en boucle signalé : logging.FileHandler()
 # ne crée JAMAIS le dossier parent de LOG_FILE tout seul — si config.LOG_FILE
@@ -87,9 +90,42 @@ class SniperBot:
         self.rug_scanner = RugScanner(self.data_store, notifier=self.notifier)
         self.wallet_cleanup = WalletCleanup(self.data_store, notifier=self.notifier)
         self.telegram_bot = SniperTelegramBot(self.data_store, self.notifier, self.trader)
+        self.wallet_collector = WalletCollectorService(self.data_store, notifier=self.notifier)
+        self.rpc_health_monitor = RpcHealthMonitor(self.notifier)
+
+    async def _recover_pending_transactions(self):
+        pending = self.data_store.state.get("pending_transactions", [])
+        if not pending:
+            return
+        reconciled, unresolved = classify_pending_transactions(self.data_store.state)
+        for signature in reconciled:
+            self.data_store.resolve_pending_transaction(
+                signature, {"recovered_after_restart": True, "position_signature_found": True}
+            )
+        if unresolved:
+            signatures = [
+                item.get("signature", "unknown") for item in unresolved[:5]
+                if isinstance(item, dict)
+            ]
+            self.data_store.activate_emergency_stop(
+                "pending transaction signatures require manual reconciliation"
+            )
+            log.critical(
+                "🛑 %s unresolved LIVE transaction signature(s); execution halted: %s",
+                len(unresolved), ", ".join(signatures),
+            )
+            await self.notifier.notify(
+                "risk_alert",
+                "🛑 *Arrêt d'urgence au redémarrage*\n"
+                f"{len(unresolved)} signature(s) LIVE restent à réconcilier. "
+                "Aucun nouveau swap ne sera envoyé. Vérifiez l'état on-chain avant /resume.\n"
+                + "\n".join(f"• `{signature}`" for signature in signatures),
+            )
+
 
     async def run(self):
         log.info(f"🚀 Sniper Bot démarré — mode : {config.TRADING_MODE}")
+        await self._recover_pending_transactions()
         if not config.HELIUS_API_KEY:
             log.error(
                 "❌ Aucune clé HELIUS_API_KEY configurée. Le bot ne peut pas fonctionner "
@@ -116,7 +152,10 @@ class SniperBot:
         # temporairement via config.DETECTION_ENABLED (voir config.py).
         # Le reste (Telegram, Protection, Copy Trading) continue de tourner.
         tasks = [self.protection_scanner.start(), self.copytrade_listener.start(), self.rug_scanner.start(),
-                 self.wallet_cleanup.start(), self.position_price_stream.start()]
+                 self.wallet_cleanup.start(), self.position_price_stream.start(),
+                 self.rpc_health_monitor.start()]
+        if config.WALLET_COLLECTOR_ENABLED:
+            tasks.append(self.wallet_collector.start())
         if config.DETECTION_ENABLED:
             tasks.append(self.listener.start())
         else:

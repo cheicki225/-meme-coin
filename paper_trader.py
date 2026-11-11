@@ -27,6 +27,7 @@ import logging
 import asyncio
 
 import config
+import risk_controls
 import rpc_client
 import wallet
 import wallet_history
@@ -84,6 +85,35 @@ class PaperTrader:
         # même (jamais requis), _monitor_position retombe alors uniquement
         # sur le sondage RPC classique, comme avant ce changement.
         self.price_stream = price_stream
+        self._risk_lock = asyncio.Lock()
+        self._risk_reservations = {}
+
+    async def _reserve_entry_risk(self, reservation_id: str, settings: dict) -> tuple[bool, str | None]:
+        amount_sol = settings.get("buy_amount_sol", 0.1)
+        if not isinstance(amount_sol, (int, float)) or amount_sol <= 0:
+            return False, "invalid_buy_amount"
+        sol_usd = await get_sol_usd_rate()
+        # Reserve a conservative fee/rent cushion until confirmed position
+        # accounting replaces it with the actual cash cost.
+        cushion_sol = config.MAX_TRANSACTION_FEE_LAMPORTS / 1_000_000_000 + 0.005
+        proposed_usd = (amount_sol + cushion_sol) * sol_usd
+        async with self._risk_lock:
+            reserved = list(self._risk_reservations.values())
+            allowed, reason = risk_controls.assess_new_position(
+                self.data_store.state,
+                proposed_usd,
+                max_exposure_usd=config.MAX_OPEN_EXPOSURE_USD,
+                max_open_positions=config.MAX_OPEN_POSITIONS,
+                reserved_exposure_usd=sum(reserved),
+                reserved_positions=len(reserved),
+            )
+            if allowed:
+                self._risk_reservations[reservation_id] = proposed_usd
+                return True, None
+            return False, reason
+
+    def _release_entry_risk(self, reservation_id: str) -> None:
+        self._risk_reservations.pop(reservation_id, None)
 
     # ══════════════════════════════════════════════════════════
     # PRIMITIVES D'EXÉCUTION — surchargées par LiveTrader pour le vrai trading
@@ -132,6 +162,15 @@ class PaperTrader:
         state = self.data_store.state
         settings = self.data_store.get_wallet_settings(source_wallet)
 
+        if state.get("emergency_stop"):
+            log.error("🛑 Emergency stop active; new entries are disabled.")
+            if self.notifier:
+                await self.notifier.notify(
+                    "risk_alert",
+                    f"🛑 *Emergency stop actif*\nAucun nouvel achat. Motif: {state.get('emergency_stop_reason') or 'non précisé'}",
+                )
+            return None
+
         if not self.data_store.is_auto_buy_active(source_wallet):
             log.info(f"⏭️  Auto-buy désactivé ou en pause pour {source_wallet[:8]}..., skip.")
             if self.notifier:
@@ -157,7 +196,13 @@ class PaperTrader:
             self.data_store.save()
 
         if state.get("session_losses_usd", 0) >= config.CIRCUIT_BREAKER_USD:
-            log.warning("🛑 Circuit breaker actif — aucune nouvelle position ouverte.")
+            log.warning("🛑 Circuit breaker actif — arrêt d'urgence persistant; aucun nouvel achat.")
+            self.data_store.activate_emergency_stop("session loss limit reached")
+            if self.notifier:
+                await self.notifier.notify(
+                    "risk_alert",
+                    f"🛑 *Limite de pertes atteinte*\nPertes de session: ${state.get('session_losses_usd', 0):.2f}. Arrêt d'urgence activé.",
+                )
             return None
 
         if settings.get("buy_only_once", True) and self.data_store.has_already_bought(source_wallet, token_mint):
@@ -381,8 +426,23 @@ class PaperTrader:
                     )
                 return None
 
-        buy_result = await self._execute_buy(token_mint, entry_price, settings)
+        reservation_id = f"{token_mint}:{source_wallet}:{time.time_ns()}"
+        allowed, risk_reason = await self._reserve_entry_risk(reservation_id, settings)
+        if not allowed:
+            log.warning("Entry rejected by risk controls (%s): %s", risk_reason, token_mint[:8])
+            if self.notifier:
+                await self.notifier.notify(
+                    "risk_alert",
+                    f"🛑 *Achat refusé par les limites de risque*\nToken: `{token_mint[:8]}...`\nMotif: {risk_reason}",
+                )
+            return None
+        try:
+            buy_result = await self._execute_buy(token_mint, entry_price, settings)
+        except Exception:
+            self._release_entry_risk(reservation_id)
+            raise
         if buy_result is None:
+            self._release_entry_risk(reservation_id)
             log.warning(f"Achat annulé/échoué pour {token_mint[:8]}...")
             return None
 
@@ -399,6 +459,9 @@ class PaperTrader:
             "entry_time": time.time(),
             "cost_basis_usd": cost_basis_usd,
             "units": units,
+            "token_decimals": buy_result.get("token_decimals"),
+            "execution_wallet": buy_result.get("execution_wallet"),
+            "fee_lamports": int(buy_result.get("fee_lamports", 0)),
             "settings": settings,
             "ath_market_cap": market_cap,
             "tp_levels_hit": [],
@@ -410,7 +473,7 @@ class PaperTrader:
             "buy_mode": buy_mode,
             "simulated_fees_sol": simulated_fee_sol,
             "tx_signatures": [buy_signature] if buy_signature else [],
-            "total_sol_invested": settings.get("buy_amount_sol", 0.1),
+            "total_sol_invested": buy_result.get("sol_cashflow", settings.get("buy_amount_sol", 0.1)),
             "total_sol_received": 0.0,
             "mc_trailing_armed": False,
             "profit_trail_armed": False,
@@ -418,9 +481,14 @@ class PaperTrader:
         }
 
         self.data_store.state.setdefault("open_positions", []).append(position)
+        if buy_signature:
+            self.data_store.resolve_pending_transaction(
+                buy_signature, {"position_opened": token_mint, "units": units, "cost_basis_usd": cost_basis_usd}
+            )
         if settings.get("buy_only_once", True):
             self.data_store.mark_bought(source_wallet, token_mint)
         self.data_store.save()
+        self._release_entry_risk(reservation_id)
 
         log.info(
             f"📈 [{config.TRADING_MODE}] Position ouverte sur {token_mint} @ ${actual_entry_price:.8f} "
@@ -1114,16 +1182,30 @@ class PaperTrader:
         position["total_sol_received"] = position.get("total_sol_received", 0) + (proceeds / await get_sol_usd_rate())
         if sell_signature:
             position.setdefault("tx_signatures", []).append(sell_signature)
+        position["fee_lamports"] = int(position.get("fee_lamports", 0)) + int(sell_result.get("fee_lamports", 0))
         if tp_index is not None:
             position["tp_levels_hit"].append(tp_index)
 
         state = self.data_store.state
         state["total_pnl_usd"] = state.get("total_pnl_usd", 0) + pnl_usd
+        if pnl_usd < 0:
+            state["session_losses_usd"] = state.get("session_losses_usd", 0) + abs(pnl_usd)
         state.setdefault("trades", []).append({
             "token_mint": position["token_mint"], "type": "partial_close",
             "sell_ratio": sell_ratio, "result_pct": change_pct, "pnl_usd": pnl_usd, "time": time.time(),
         })
         self.data_store.save()
+        if sell_signature:
+            self.data_store.resolve_pending_transaction(
+                sell_signature, {"position_updated": position["token_mint"], "pnl_usd": pnl_usd}
+            )
+        if state.get("session_losses_usd", 0) >= config.CIRCUIT_BREAKER_USD:
+            self.data_store.activate_emergency_stop("session loss limit reached")
+            if self.notifier:
+                await self.notifier.notify(
+                    "risk_alert",
+                    f"🛑 *Limite de pertes atteinte*\nPertes de session: ${state.get('session_losses_usd', 0):.2f}. Arrêt d'urgence activé.",
+                )
 
         log.info(
             f"✅ [{config.TRADING_MODE}] Vente partielle sur {position['token_mint']} "
@@ -1164,6 +1246,7 @@ class PaperTrader:
         position["cost_basis_usd"] = 0
         if sell_signature:
             position.setdefault("tx_signatures", []).append(sell_signature)
+        position["fee_lamports"] = int(position.get("fee_lamports", 0)) + int(sell_result.get("fee_lamports", 0))
 
         state = self.data_store.state
         state["open_positions"] = [p for p in state.get("open_positions", []) if p is not position]
@@ -1174,6 +1257,17 @@ class PaperTrader:
             state["session_losses_usd"] = state.get("session_losses_usd", 0) + abs(pnl_usd)
 
         self.data_store.save()
+        if sell_signature:
+            self.data_store.resolve_pending_transaction(
+                sell_signature, {"position_closed": position["token_mint"], "pnl_usd": pnl_usd}
+            )
+        if state.get("session_losses_usd", 0) >= config.CIRCUIT_BREAKER_USD:
+            self.data_store.activate_emergency_stop("session loss limit reached")
+            if self.notifier:
+                await self.notifier.notify(
+                    "risk_alert",
+                    f"🛑 *Limite de pertes atteinte*\nPertes de session: ${state.get('session_losses_usd', 0):.2f}. Arrêt d'urgence activé.",
+                )
 
         just_paused = self.data_store.record_trade_result(position["source_wallet"], is_win=(pnl_usd >= 0))
 

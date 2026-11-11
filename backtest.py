@@ -1138,3 +1138,14 @@ async def get_token_age_minutes(token_mint: str) -> float:
         return None
     age_seconds = time.time() - (created_at_ms / 1000)
     return age_seconds / 60
+
+
+def replay_historical_ohlc(candles, entry_signal_indices, **parameters) -> dict:
+    """Replay supplied OHLC candles with explicit fees and slippage.
+
+    This complements the existing wallet-quality heuristic; it does not invent
+    candle history from a current DexScreener price snapshot.
+    """
+    from historical_backtest import run_backtest
+
+    return run_backtest(candles, entry_signal_indices, **parameters)

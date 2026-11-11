@@ -1,80 +1,36 @@
-# Security and LIVE trading readiness
+# Sécurité et statut de l'exécution
 
-## Current operating rule
+## Mode de fonctionnement
 
-Keep `TRADING_MODE=PAPER`. The presence of `live_trader.py` and
-`jupiter_executor.py` means LIVE execution code exists; it does **not** mean
-that real-money execution has been audited or validated. Do not enable LIVE
-on a funded wallet based only on a successful import or CI compile.
+Gardez `TRADING_MODE=PAPER` et `LIVE_EXECUTION_ENABLED=false`. Le code LIVE exige ces deux opt-ins simultanément, mais il n'a pas été validé avec un RPC de production, un portefeuille de test, ni un soak test. Aucun swap réel n'a été exécuté au cours de cette mise à jour.
 
-## Release blockers before LIVE
+## Garde-fous implémentés
 
-The following items require implementation and/or evidence from controlled
-tests before LIVE can be considered:
+- Jupiter Swap API V2 utilise les endpoints officiels fixes `/swap/v2/order` et `/swap/v2/execute`, avec `JUPITER_API_KEY`. Les routeurs JupiterZ, Dflow et OKX sont exclus; seule une route Metis est acceptée.
+- Avant signature, l'exécuteur résout les Address Lookup Tables depuis le RPC, puis vérifie les mints et montants, le minimum reçu, le slippage, l'impact, le wallet taker/payeur, le nombre de signataires, les programmes top-level, les ATA du wallet, le blockhash, les frais réseau et le loyer de comptes estimé. Une donnée manquante ou un programme inconnu fait échouer la transaction.
+- La signature est créée localement. L'API reçoit la transaction signée pour l'inclusion; la clé privée n'est jamais envoyée.
+- La signature est persistée avant l'appel d'exécution. Les issues incertaines ne sont jamais renvoyées automatiquement et activent l'arrêt d'urgence.
+- Une vente/position n'est comptabilisée qu'après confirmation `finalized` et lecture du `getTransaction`. Le PnL SOL inclut les frais réseau et le loyer réellement reflétés dans les soldes du wallet. La conversion USD utilise le cours SOL récupéré au moment du trade; elle n'est pas une valorisation historique de marché.
+- Les décimales de tokens sont prises dans les métadonnées confirmées. Les positions LIVE MultiBuy sont refusées jusqu'à une comptabilisation par wallet.
+- Les transferts SOL manuels sont bloqués en PAPER, limités par montant en LIVE et refusés pendant l'arrêt d'urgence ou une transaction pendante. Les bundles Jito avec transfert de tip séparé restent désactivés.
+- L'état du bot est stocké en SQLite WAL avec commits atomiques, import initial depuis l'ancien JSON, sauvegardes et restauration depuis un instantané valide. Une version de schéma plus récente n'est jamais rétrogradée.
+- `/halt` déclenche un arrêt d'urgence durable; `/resume` ne le retire pas tant qu'une signature reste pendante. La limite de positions et d'exposition globale est vérifiée avant un nouvel achat et protégée contre les entrées concurrentes.
+- Le collecteur de wallets et le moniteur RPC sont en lecture seule; leurs erreurs génèrent des alertes Telegram avec cooldown.
 
-1. **Transaction policy validation** — validate input/output mints, positive
-   input amount, quote response fields, minimum output, maximum price impact,
-   and allowed slippage immediately before signing. Reject malformed or
-   out-of-policy quotes.
-2. **Transaction signer and instruction inspection** — verify the fee payer,
-   required signer set, recent blockhash, and permitted instructions in the
-   deserialized Jupiter transaction before signing. Never sign an arbitrary
-   transaction returned by an external API without inspecting it.
-3. **Wallet and balance limits** — enforce per-trade, per-token, daily-loss,
-   and total-exposure caps in the execution layer (not only in Telegram/UI
-   settings). Fail closed when balance or price data is unavailable.
-4. **Token amount precision** — do not silently assume six decimals when
-   `getTokenSupply` fails. A wrong decimal count can cause a materially
-   incorrect sell amount. Abort the trade when decimals cannot be verified.
-5. **Confirmation and reconciliation** — distinguish a send timeout from a
-   definitive transaction failure. Before retrying a swap, query the original
-   signature and reconcile wallet token/SOL balances to prevent duplicate
-   economic actions.
-6. **Multi-wallet accounting** — reconcile each partial MultiBuy fill and
-   each wallet's holdings independently. A combined position must not imply
-   that one wallet can sell tokens held by another.
-7. **Secret handling** — ensure API keys and private keys never enter logs,
-   Telegram messages, exceptions, test fixtures, or committed files. Rotate
-   any secret that has ever been committed.
-8. **Operational kill switch** — provide a server-side emergency stop that
-   blocks new buys and remains effective even if Telegram is unavailable.
+## Limites avant toute activation LIVE
 
-## Existing safeguards observed in the code
+1. Les instructions CPI d'un routeur et les programmes DEX appelés ne sont pas audités programme par programme. La liste des instructions top-level est une politique fail-closed, pas une preuve formelle d'innocuité on-chain.
+2. Les signatures pendantes non attachées à une position mettent le bot en arrêt d'urgence. Leur réconciliation après redémarrage reste manuelle; aucun retry ni reconstruction approximative de position n'est effectué.
+3. L'intégration Jupiter V2 n'a pas été exécutée sur devnet/mainnet. Les tests sont mockés et ne prouvent ni la disponibilité des routes ni le comportement du RPC cible.
+4. Le calcul USD utilise un cours SOL instantané au moment de l'exécution; les historiques de prix complets, les frais de fournisseur et les écarts de valeur SOL/USD entre entrée et sortie ne sont pas reconstruits.
+5. Le moteur de backtest OHLC requiert des données de chandelles fournies par l'opérateur. Aucun fournisseur historique n'est encore branché et le scoring historique de wallets du bot demeure heuristique.
+6. SQLite garantit l'atomicité du document d'état pour un processus du bot; aucun verrouillage multi-processus ni sauvegarde hors machine n'est fourni.
+7. Les fonctionnalités existantes de copy trading, de Buy on Dev Sell et de détection de régularité conservent les limites documentées dans README.
 
-- Configuration defaults to PAPER mode.
-- The wallet loader avoids including the private key in its validation error.
-- The executor signs locally; the private key is not intentionally sent to
-  Jupiter.
-- LIVE position accounting is updated only after the executor reports a
-  confirmed swap.
-- CI currently compiles Python sources and checks the PAPER default.
+## Validation de sécurité requise
 
-These safeguards are useful but do not satisfy the release blockers above.
+Avant toute décision LIVE, terminer la CI de la branche de suivi, tester les réponses Jupiter adversariales, exécuter un soak PAPER dans l'environnement cible, vérifier la restauration et la reprise, puis faire une revue indépendante des instructions on-chain et du PnL. N'utilisez pas un wallet qui contient des fonds à long terme.
 
-## Required validation sequence
+## Secrets et incident
 
-1. Run static compilation and the full automated test suite.
-2. Exercise quote parsing and transaction inspection with mocked responses,
-   including malformed and adversarial payloads.
-3. Run end-to-end PAPER tests for buys, partial sells, full sells, retries,
-   restarts, and MultiBuy partial failures.
-4. Run devnet/integration tests with a disposable wallet and negligible funds
-   where supported; verify actual token decimals and balance reconciliation.
-5. Run a sustained PAPER trial and compare recorded fills with independent
-   on-chain data.
-6. Only after independent review, enable LIVE with a dedicated low-balance
-   wallet and strict limits. Never use a wallet holding long-term assets.
-
-## Incident response
-
-If unexpected signing, spending, or position accounting occurs: stop the bot,
-disable LIVE, revoke/rotate exposed API credentials, move remaining assets to
-a clean wallet if the signing key may be compromised, and preserve logs and
-transaction signatures for investigation.
-
-
-## Controls added in the audit update
-
-The executor now rejects malformed quotes, mismatched mints and amounts, slippage or price impact above local limits, unexpected fee payers/signers/programs, non-Jupiter transactions, invalid blockhashes, excessive estimated fees, and direct top-level SOL/SPL instructions outside its narrow swap policy. The Telegram interface requires a private user ID in `TELEGRAM_ALLOWED_USER_IDS`; an empty list denies access.
-
-These checks do not close the blockers above. In particular, transaction timeout reconciliation before retry, execution-layer exposure limits, verified token decimals, per-wallet MultiBuy accounting, and a server-side kill switch still need implementation and controlled evidence. Keep LIVE disabled.
+Ne versionnez ni clés privées ni clés API. Si un secret est exposé, révoquez-le, remplacez-le et inspectez l'historique Git. En cas de dépense ou signature inattendue, gardez `TRADING_MODE=PAPER`, utilisez `/halt` si le bot est accessible, conservez les signatures et réconciliez l'état avant toute reprise.

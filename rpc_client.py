@@ -12,12 +12,55 @@ dans fund_tracer.py, pattern_detector.py, paper_trader.py.
 
 import asyncio
 import logging
+import time
+from collections import defaultdict, deque
 import aiohttp
 from aiohttp.resolver import ThreadedResolver
 
 import config
 
 log = logging.getLogger("rpc_client")
+
+_RPC_METRICS = {
+    "requests": 0,
+    "errors": 0,
+    "fallbacks": 0,
+    "errors_by_method": defaultdict(int),
+    "latencies_ms": deque(maxlen=200),
+}
+
+
+def get_metrics() -> dict:
+    """Return a copy of aggregate RPC health data without endpoint URLs or keys."""
+    return {
+        "requests": _RPC_METRICS["requests"],
+        "errors": _RPC_METRICS["errors"],
+        "fallbacks": _RPC_METRICS["fallbacks"],
+        "errors_by_method": dict(_RPC_METRICS["errors_by_method"]),
+        "latencies_ms": list(_RPC_METRICS["latencies_ms"]),
+    }
+
+
+def reset_metrics() -> None:
+    _RPC_METRICS["requests"] = 0
+    _RPC_METRICS["errors"] = 0
+    _RPC_METRICS["fallbacks"] = 0
+    _RPC_METRICS["errors_by_method"].clear()
+    _RPC_METRICS["latencies_ms"].clear()
+
+
+def _record_request(method: str, *, ok: bool, elapsed_ms: float, fallback: bool) -> None:
+    _RPC_METRICS["requests"] += 1
+    _RPC_METRICS["latencies_ms"].append(round(elapsed_ms, 2))
+    if fallback:
+        _RPC_METRICS["fallbacks"] += 1
+    if not ok:
+        _RPC_METRICS["errors"] += 1
+        _RPC_METRICS["errors_by_method"][method] += 1
+
+
+class RpcUnavailableError(RuntimeError):
+    pass
 
 
 class _RateLimiter:
@@ -79,23 +122,33 @@ def get_http_connector():
 
 
 async def rpc_post(payload: dict, timeout: int = 12) -> dict:
-    """
-    Envoie une requête JSON-RPC à Helius, avec fallback sur Alchemy si
-    configuré et si Helius échoue. Retourne le champ "result" de la
-    réponse (ou {} en cas d'échec total).
-    """
+    """Try Helius then Alchemy, recording latency, failures, and fallbacks."""
+    method = str(payload.get("method", "unknown"))
+    started = time.monotonic()
     result = await _try_endpoint(config.HELIUS_RPC_URL, payload, timeout)
-    if result is not None:
-        return result
-
-    if config.ALCHEMY_RPC_URL:
-        log.debug("Helius a échoué, tentative sur Alchemy...")
+    used_fallback = False
+    if result is None and config.ALCHEMY_RPC_URL:
+        used_fallback = True
+        log.debug("Helius failed for %s; trying Alchemy", method)
         result = await _try_endpoint(config.ALCHEMY_RPC_URL, payload, timeout)
-        if result is not None:
-            return result
 
-    log.warning(f"Échec RPC (Helius{' + Alchemy' if config.ALCHEMY_RPC_URL else ''}) pour méthode {payload.get('method')}")
+    ok = result is not None
+    _record_request(method, ok=ok, elapsed_ms=(time.monotonic() - started) * 1000, fallback=used_fallback)
+    if ok:
+        return result
+    log.warning(
+        "RPC request failed for method %s (Helius%s)",
+        method, " + Alchemy" if config.ALCHEMY_RPC_URL else "",
+    )
     return {}
+
+
+async def rpc_post_strict(payload: dict, timeout: int = 12):
+    """Return RPC data or raise instead of silently treating failure as zero."""
+    result = await rpc_post(payload, timeout=timeout)
+    if result == {}:
+        raise RpcUnavailableError(f"RPC request failed for method {payload.get('method', 'unknown')}")
+    return result
 
 
 async def fetch_parsed_transaction(signature: str) -> dict:

@@ -368,16 +368,65 @@ def _extract_transfer_source(tx: dict, target_wallet: str) -> dict:
 
 
 async def _count_distinct_outgoing_recipients(address: str, sample_size: int = 50) -> int:
-    """Estime le nombre de destinataires distincts financés par cette adresse récemment."""
-    signatures = await _get_all_signatures(address, max_pages=1)
-    signatures = signatures[:sample_size]
+    """Count unique direct SOL recipients from successful parsed System transfers.
+
+    Inner instructions are deliberately excluded: AMM and token-program CPI
+    traffic is not evidence that the wallet is funding another independent
+    wallet. Missing or unparsed transaction data is ignored rather than guessed.
+    """
+    if not isinstance(address, str) or not address:
+        return 0
+    if not isinstance(sample_size, int) or isinstance(sample_size, bool) or sample_size <= 0:
+        return 0
+
+    try:
+        signatures = await _get_all_signatures(address, max_pages=1)
+    except Exception as exc:
+        log.warning("Could not load outgoing wallet signatures: %s", type(exc).__name__)
+        return 0
+    if not isinstance(signatures, list):
+        return 0
 
     recipients = set()
-    for sig_info in signatures:
-        tx = await _get_transaction(sig_info["signature"])
-        if not tx:
+    seen_signatures = set()
+    for signature_info in signatures[:min(sample_size, 1000)]:
+        if not isinstance(signature_info, dict) or signature_info.get("err") is not None:
             continue
-        info = _extract_transfer_source(tx, address)
-        # Ici on cherche plutôt les sorties, logique simplifiée : à raffiner
-        # avec une vraie analyse des postBalances pour chaque destinataire.
+        signature = signature_info.get("signature")
+        if not isinstance(signature, str) or not signature or signature in seen_signatures:
+            continue
+        seen_signatures.add(signature)
+        try:
+            tx = await _get_transaction(signature)
+        except Exception as exc:
+            log.debug("Could not load transaction %s: %s", signature[:8], type(exc).__name__)
+            continue
+        if not isinstance(tx, dict) or not isinstance(tx.get("meta"), dict):
+            continue
+        if tx["meta"].get("err") is not None:
+            continue
+        instructions = ((tx.get("transaction") or {}).get("message") or {}).get("instructions")
+        if not isinstance(instructions, list):
+            continue
+        for instruction in instructions:
+            if not isinstance(instruction, dict):
+                continue
+            parsed = instruction.get("parsed")
+            if instruction.get("program") != "system":
+                continue
+            program_id = instruction.get("programId")
+            if program_id is not None and program_id != "11111111111111111111111111111111":
+                continue
+            if not isinstance(parsed, dict) or parsed.get("type") not in {"transfer", "transferWithSeed"}:
+                continue
+            info = parsed.get("info")
+            if not isinstance(info, dict) or info.get("source") != address:
+                continue
+            destination = info.get("destination")
+            try:
+                lamports = int(info.get("lamports", 0))
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if isinstance(destination, str) and destination and destination != address and lamports > 0:
+                recipients.add(destination)
     return len(recipients)
