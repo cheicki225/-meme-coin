@@ -82,6 +82,7 @@ class SniperBot:
             self.data_store, on_buy=self.on_copytrade_buy, on_sell=self.on_copytrade_sell,
             on_large_sol_transfer=self.on_dev_large_sol_transfer,
             on_withdrawal=self.on_wallet_withdrawal,
+            on_dev_token_transfer=self.on_dev_token_transfer,
         )
         self.protection_scanner = ProtectionScanner(self.data_store, notifier=self.notifier)
         self.rug_scanner = RugScanner(self.data_store, notifier=self.notifier)
@@ -318,6 +319,61 @@ class SniperBot:
             reason=f"Copy trade — achat détecté chez {label}",
             source_entry_market_cap=source_entry_market_cap,
         )
+
+    async def on_dev_token_transfer(self, source_wallet: str, destination: str, token_mint: str,
+                                    amount: float, signature: str):
+        """Enregistre les transferts SPL d'un dev comme indices de migration potentielle.
+
+        Pas d'ajout automatique du destinataire : plusieurs transferts distincts
+        augmentent le niveau de suspicion, mais une migration doit être vérifiée
+        manuellement avant de modifier les wallets surveillés.
+        """
+        source_entry = self.data_store.state.get("monitored_dev_wallets", {}).get(source_wallet, {})
+        if source_entry.get("mode", "track_creation") != "track_creation":
+            return
+
+        registry = self.data_store.state.setdefault("dev_migration_candidates", {})
+        key = f"{source_wallet}:{destination}"
+        candidate = registry.setdefault(key, {
+            "source_wallet": source_wallet,
+            "destination": destination,
+            "token_mints": [],
+            "signatures": [],
+            "transfer_count": 0,
+            "first_seen": time.time(),
+            "last_seen": time.time(),
+            "status": "candidate",
+        })
+        if signature in candidate["signatures"]:
+            return
+        candidate["transfer_count"] += 1
+        candidate["last_seen"] = time.time()
+        if token_mint not in candidate["token_mints"]:
+            candidate["token_mints"].append(token_mint)
+        candidate["signatures"].append(signature)
+        candidate["signatures"] = candidate["signatures"][-20:]
+
+        # Deux mints distincts ou trois transactions indépendantes constituent
+        # un signal plus fort, mais toujours heuristique (pas une preuve).
+        suspected = len(candidate["token_mints"]) >= 2 or candidate["transfer_count"] >= 3
+        candidate["status"] = "suspected_migration" if suspected else "candidate"
+        self.data_store.save()
+
+        log.warning(
+            "Developer SPL transfer: %s -> %s mint=%s amount=%s status=%s",
+            source_wallet[:8], destination[:8], token_mint[:8], amount, candidate["status"],
+        )
+        if self.notifier:
+            label = "⚠️ Migration potentielle" if suspected else "🔎 Transfert SPL à surveiller"
+            await self.notifier.notify(
+                "rugger_alert",
+                f"{label}\\nDev source: `{source_wallet[:8]}...`\\n"
+                f"Wallet destinataire: `{destination}`\\n"
+                f"Mint transféré: `{token_mint[:8]}...`\\n"
+                f"Transferts distincts: {candidate['transfer_count']} | Mints distincts: {len(candidate['token_mints'])}\\n"
+                f"Signature: `{signature[:16]}...`\\n"
+                "_Indice heuristique uniquement : destinataire non ajouté automatiquement._",
+            )
 
     async def on_wallet_withdrawal(self, wallet_address: str, destination: str, amount: float, asset: str = "SOL", signature: str = None):
         """
