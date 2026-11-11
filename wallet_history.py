@@ -412,31 +412,44 @@ async def get_all_created_tokens(dev_address: str, max_pages: int = 20, on_progr
     return created
 
 
-async def _get_signatures(address: str, limit: int = 300, max_retries: int = 4) -> list:
+async def _get_signatures(
+    address: str,
+    limit: int = 300,
+    max_retries: int = 4,
+    *,
+    raise_on_error: bool = False,
+) -> list:
     """
-    CORRIGÉ suite à un vrai faux-négatif : aucun réessai ici signifiait
-    qu'un seul échec RPC (rate limit après une session de tests intensive)
-    retournait silencieusement [] — traité ensuite comme "0 token trouvé"
-    alors que c'était en réalité "on n'a pas pu vérifier". Même logique de
-    réessai que _get_raw_transaction.
+    Récupère les signatures avec backoff exponentiel.
 
-    CORRIGÉ (19 août, même raisonnement que _get_raw_transaction) :
-    "commitment": "confirmed" ajouté explicitement — utilisée par
-    get_token_creator sur des tokens potentiellement tout juste créés, où
-    le défaut du nœud ("finalized") retarderait inutilement la visibilité
-    de la toute première signature.
+    Par compatibilité, les anciens appelants reçoivent [] après épuisement
+    des tentatives. Les collecteurs qui doivent distinguer un historique
+    réellement vide d'une panne RPC utilisent raise_on_error=True.
+    Une réponse RPC valide [] signifie bien « aucune signature » ; une
+    réponse mal formée ou une exception réseau est une erreur.
     """
+    if max_retries < 1:
+        raise ValueError("max_retries must be >= 1")
     payload = {
         "jsonrpc": "2.0", "id": 1,
         "method": "getSignaturesForAddress",
         "params": [address, {"limit": limit, "commitment": "confirmed"}],
     }
+    last_error = None
     for attempt in range(max_retries):
-        result = await rpc_client.rpc_post(payload, timeout=15)
-        if isinstance(result, list):
-            return result
+        try:
+            result = await rpc_client.rpc_post(payload, timeout=15)
+            if isinstance(result, list):
+                return result
+            last_error = RuntimeError("Invalid getSignaturesForAddress RPC response")
+        except Exception as exc:
+            last_error = exc
         if attempt < max_retries - 1:
             await asyncio.sleep(1.0 * (2 ** attempt))
+    if raise_on_error:
+        raise RuntimeError(
+            f"getSignaturesForAddress failed after {max_retries} attempts"
+        ) from last_error
     return []
 
 
