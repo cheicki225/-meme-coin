@@ -23,7 +23,7 @@ class WalletCollectorService:
     def __init__(self, data_store, notifier=None):
         self.data_store = data_store
         self.notifier = notifier
-        self._last_alert_at = 0.0
+        self._last_alert_at: float | None = None
         self._cycle_lock = asyncio.Lock()
 
     async def run_once(self) -> dict:
@@ -63,7 +63,9 @@ class WalletCollectorService:
 
     async def _alert_failure(self, reason: str) -> None:
         now = time.monotonic()
-        if not self.notifier or now - self._last_alert_at < 900:
+        if not self.notifier or (
+            self._last_alert_at is not None and now - self._last_alert_at < 900
+        ):
             return
         self._last_alert_at = now
         await self.notifier.notify(
@@ -83,4 +85,3 @@ class WalletCollectorService:
         while True:
             await self.run_once()
             await asyncio.sleep(interval)
-
