@@ -330,6 +330,10 @@ async def execute_swap(input_mint: str, output_mint: str, amount_lamports: int, 
     The use_jito argument remains for caller compatibility; no separate tip
     transaction is submitted. Ambiguous outcomes stay pending without retry.
     """
+    if config.TRADING_MODE != "LIVE" or not getattr(config, "LIVE_EXECUTION_ENABLED", False):
+        raise SwapError(
+            "LIVE execution is disabled; PAPER remains default and LIVE needs an explicit second opt-in."
+        )
     if not isinstance(amount_lamports, int) or isinstance(amount_lamports, bool) or amount_lamports <= 0:
         raise SwapError("Le montant du swap doit être un entier positif.")
     if not isinstance(slippage_bps, int) or isinstance(slippage_bps, bool):
