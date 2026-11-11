@@ -412,7 +412,8 @@ async def get_all_created_tokens(dev_address: str, max_pages: int = 20, on_progr
     return created
 
 
-async def _get_signatures(address: str, limit: int = 300, max_retries: int = 4) -> list:
+async def _get_signatures(address: str, limit: int = 300, max_retries: int = 4,
+                         until: str | None = None) -> list:
     """
     CORRIGÉ suite à un vrai faux-négatif : aucun réessai ici signifiait
     qu'un seul échec RPC (rate limit après une session de tests intensive)
@@ -429,7 +430,10 @@ async def _get_signatures(address: str, limit: int = 300, max_retries: int = 4) 
     payload = {
         "jsonrpc": "2.0", "id": 1,
         "method": "getSignaturesForAddress",
-        "params": [address, {"limit": limit, "commitment": "confirmed"}],
+        "params": [address, {
+            "limit": limit, "commitment": "confirmed",
+            **({"until": until} if until else {}),
+        }],
     }
     for attempt in range(max_retries):
         result = await rpc_client.rpc_post(payload, timeout=15)
