@@ -71,3 +71,12 @@ Known limitations (not represented as completed capabilities):
 - [ ] Keep LIVE disabled until all unchecked items above are completed.
 
 LIVE must remain disabled while this checklist has unchecked items.
+
+## Operator sell-intent recovery
+
+`intent_reconciliation.list_unresolved_sell_intents(state)` lists pending, unknown, and confirmed-but-unaccounted sell records without changing them. Before resolving an item, an operator must inspect the transaction signature and the wallet's token/SOL balances on a trusted Solana explorer or RPC source.
+
+- If chain evidence proves the transaction failed and no token debit occurred, call `resolve_sell_intent(state, mint, status="failed", note="...verified evidence...")`, then persist the data store. This releases the pending reservation only after an explicit operator decision.
+- If chain evidence proves the sell succeeded, call `resolve_sell_intent(state, mint, status="confirmed", signature="<verified signature>", note="...verified evidence...")`, then persist the data store. The mint remains blocked in `confirmed_awaiting_accounting`; do not clear it until position units, SOL proceeds, realized PnL, and transaction signature have been reconciled and saved.
+- If chain outcome is ambiguous, do not call the resolver, do not retry, and leave the token blocked.
+- Never infer failure solely from a client timeout or missing confirmation response.
