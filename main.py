@@ -17,6 +17,7 @@ import asyncio
 import logging
 import os
 import sys
+import time
 
 import config
 from websocket_listener import NewTokenListener
@@ -344,8 +345,13 @@ class SniperBot:
             "last_seen": time.time(),
             "status": "candidate",
         })
+        if not isinstance(candidate.get("signatures"), list):
+            candidate["signatures"] = []
+        if not isinstance(candidate.get("token_mints"), list):
+            candidate["token_mints"] = []
         if signature in candidate["signatures"]:
             return
+        candidate["transfer_count"] = max(0, int(candidate.get("transfer_count", 0) or 0))
         candidate["transfer_count"] += 1
         candidate["last_seen"] = time.time()
         if token_mint not in candidate["token_mints"]:
