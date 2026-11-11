@@ -87,8 +87,11 @@ def score_wallet(metrics: dict[str, Any] | None, relationships: dict[str, Any] |
         risk_flags.append("shared_funder_relationship")
     if isinstance(co_buy, list) and co_buy:
         risk_flags.append("co_buy_relationship")
-    if relationships.get("known_malicious_link") is True:
+    known_malicious_link = relationships.get("known_malicious_link") is True
+    if known_malicious_link:
         risk_flags.append("known_malicious_link")
+        # A confirmed malicious relationship must override any performance score.
+        recommendation = "avoid"
 
     return {
         "wallet_address": metrics.get("wallet_address"),
