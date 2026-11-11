@@ -43,6 +43,9 @@ ALCHEMY_RPC_URL = f"https://solana-mainnet.g.alchemy.com/v2/{ALCHEMY_API_KEY}" i
 GOPLUS_API_KEY = os.getenv("GOPLUS_API_KEY", "")
 GOPLUS_API_SECRET = os.getenv("GOPLUS_API_SECRET", "")
 
+# Read-only DexScreener liquidity change alerts; never triggers automatic sells.
+LIQUIDITY_MONITOR_ENABLED = os.getenv("LIQUIDITY_MONITOR_ENABLED", "true").lower() == "true"
+
 # ── Mobula — identification d'adresses (exchanges, labels comportementaux) ─
 # Clé API gratuite en libre-service immédiat : https://admin.mobula.io
 # (contrairement à Arkham, jamais confirmé gratuit et à accès sur demande).
