@@ -215,6 +215,67 @@ def test_confirmed_sell_is_preserved_when_price_accounting_fails(monkeypatch):
     assert asyncio.run(trader._execute_sell("TokenMint", 100.0, 1.0, {})) is None
 
 
+def test_sell_intent_is_persisted_before_submission_and_finalized_after_accounting(monkeypatch):
+    async def decimals(*args, **kwargs):
+        return 6
+
+    async def execute(*args, **kwargs):
+        record = trader.data_store.state["safety_pending_sell_tokens"]["TokenMint"]
+        assert record["status"] == "submitting"
+        assert trader.data_store.saved is True
+        return {
+            "signature": "sell-intent-signature",
+            "input_amount": 100_000_000,
+            "output_amount": 250_000_000,
+            "price_impact_pct": 0.4,
+        }
+
+    async def price():
+        return 100.0
+
+    monkeypatch.setattr(live_trader, "_get_token_decimals", decimals)
+    monkeypatch.setattr(live_trader.jupiter_executor, "execute_swap", execute)
+    monkeypatch.setattr(live_trader, "get_sol_usd_rate", price)
+    trader = _trader({"open_positions": []})
+    trader._get_execution_keypair = lambda: FakeKeypair()
+
+    result = asyncio.run(trader._execute_sell("TokenMint", 100.0, 1.0, {}))
+    assert result["sell_intent_id"]
+    pending = trader.data_store.state["safety_pending_sell_tokens"]["TokenMint"]
+    assert pending["status"] == "confirmed_awaiting_accounting"
+    assert pending["signature"] == "sell-intent-signature"
+
+    assert trader._finalize_sell_intent("TokenMint", result["sell_intent_id"]) is True
+    assert "TokenMint" not in trader.data_store.state["safety_pending_sell_tokens"]
+
+
+def test_confirmed_sell_accounting_failure_keeps_pending_intent(monkeypatch):
+    async def decimals(*args, **kwargs):
+        return 6
+
+    async def execute(*args, **kwargs):
+        return {
+            "signature": "sell-pending-recovery",
+            "input_amount": 100_000_000,
+            "output_amount": 250_000_000,
+            "price_impact_pct": 0.4,
+        }
+
+    async def unavailable_price():
+        raise RuntimeError("price feed unavailable")
+
+    monkeypatch.setattr(live_trader, "_get_token_decimals", decimals)
+    monkeypatch.setattr(live_trader.jupiter_executor, "execute_swap", execute)
+    monkeypatch.setattr(live_trader, "get_sol_usd_rate", unavailable_price)
+    trader = _trader({"open_positions": []})
+    trader._get_execution_keypair = lambda: FakeKeypair()
+
+    assert asyncio.run(trader._execute_sell("TokenMint", 100.0, 1.0, {})) is None
+    pending = trader.data_store.state["safety_pending_sell_tokens"]["TokenMint"]
+    assert pending["status"] == "confirmed_awaiting_accounting"
+    assert pending["signature"] == "sell-pending-recovery"
+
+
 def test_invalid_sell_units_are_rejected_before_rpc_or_swap():
     trader = _trader({})
     for units in (0, -1, float("nan"), float("inf")):
