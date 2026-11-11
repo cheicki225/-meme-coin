@@ -71,3 +71,10 @@ If unexpected signing, spending, or position accounting occurs: stop the bot,
 disable LIVE, revoke/rotate exposed API credentials, move remaining assets to
 a clean wallet if the signing key may be compromised, and preserve logs and
 transaction signatures for investigation.
+
+
+## Controls added in the audit update
+
+The executor now rejects malformed quotes, mismatched mints and amounts, slippage or price impact above local limits, unexpected fee payers/signers/programs, non-Jupiter transactions, invalid blockhashes, excessive estimated fees, and direct top-level SOL/SPL instructions outside its narrow swap policy. The Telegram interface requires a private user ID in `TELEGRAM_ALLOWED_USER_IDS`; an empty list denies access.
+
+These checks do not close the blockers above. In particular, transaction timeout reconciliation before retry, execution-layer exposure limits, verified token decimals, per-wallet MultiBuy accounting, and a server-side kill switch still need implementation and controlled evidence. Keep LIVE disabled.

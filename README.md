@@ -6,6 +6,8 @@ du wallet dev, backtest automatique, et ajout au monitoring si rentable.
 
 **Mode PAPER par défaut. Aucun ordre réel n'est jamais envoyé sans que tu changes `TRADING_MODE=LIVE`.**
 
+**Le mode LIVE n'est pas validé pour des fonds réels.** Les contrôles ajoutés ne remplacent pas un audit indépendant, les prix/API peuvent manquer ou être inexacts, et un timeout de transaction doit être réconcilié avant toute nouvelle tentative. Configurez `TELEGRAM_ALLOWED_USER_IDS` pour limiter l'accès Telegram. Voir [SECURITY.md](SECURITY.md), [INSTALLATION.md](INSTALLATION.md) et [AUDIT_COMPLET.md](AUDIT_COMPLET.md).
+
 ---
 
 ## ⚠️ À VÉRIFIER AVANT TOUTE UTILISATION — IMPORTANT
@@ -141,3 +143,8 @@ python main.py
 Lance `python -m detection.websocket_listener` seul, avec ta clé Helius, et observe
 ce qui sort en conditions réelles pendant 10-15 minutes. Ça va révéler immédiatement
 si le format de réponse Helius correspond à ce que le code attend, avant d'aller plus loin.
+
+
+## Mise en route
+
+Copiez `.env.example` vers `.env`, gardez `TRADING_MODE=PAPER`, puis suivez [INSTALLATION.md](INSTALLATION.md) et [CONFIGURATION.md](CONFIGURATION.md). Les identifiants Telegram doivent figurer dans `TELEGRAM_ALLOWED_USER_IDS` (identifiants numériques séparés par des virgules). Sans allowlist, commandes et callbacks sont refusés. L'audit et les limites restantes sont dans [AUDIT_COMPLET.md](AUDIT_COMPLET.md).

@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
   validate:
@@ -15,6 +16,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -23,7 +26,7 @@ jobs:
           cache: pip
 
       - name: Install dependencies
-        run: python -m pip install --upgrade pip && pip install -r requirements.txt
+        run: python -m pip install --upgrade pip && pip install -r requirements.txt pytest ruff pip-audit
 
       - name: Compile Python sources
         run: python -m compileall -q .
@@ -37,3 +40,17 @@ jobs:
           assert config.TRADING_MODE.upper() == "PAPER", config.TRADING_MODE
           print("Default trading mode: PAPER")
           PY
+
+      - name: Run unit tests
+        run: pytest -q
+
+      - name: Lint critical errors
+        run: ruff check --select E9,F63,F7,F82 .
+
+      - name: Audit dependencies
+        run: pip-audit -r requirements.txt
+
+      - name: Scan repository secrets
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
