@@ -37,7 +37,7 @@ import time
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
-    filters, ContextTypes, CallbackQueryHandler
+    filters, ContextTypes, CallbackQueryHandler, ApplicationHandlerStop
 )
 
 import re
@@ -270,6 +270,9 @@ class SniperTelegramBot:
 
     def build(self):
         self.app = Application.builder().token(config.BOT_TOKEN).build()
+        # Contrôle avant commandes, callbacks et messages : seuls les comptes
+        # privés présents dans TELEGRAM_ALLOWED_USER_IDS peuvent agir.
+        self.app.add_handler(MessageHandler(filters.ALL, self.authorize_update), group=-1)
 
         self.app.add_handler(CommandHandler("start", self.cmd_start))
         self.app.add_handler(CommandHandler("stats", self.cmd_stats))
@@ -287,6 +290,17 @@ class SniperTelegramBot:
 
         self.notifier.set_bot(self.app.bot)
         return self.app
+
+    async def authorize_update(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user = update.effective_user
+        is_private = bool(update.effective_chat and update.effective_chat.type == "private")
+        if user and is_private and user.id in config.TELEGRAM_ALLOWED_USER_IDS:
+            return
+        if update.callback_query:
+            await update.callback_query.answer("Accès refusé. Configurez TELEGRAM_ALLOWED_USER_IDS.", show_alert=True)
+        elif update.effective_message:
+            await update.effective_message.reply_text("Accès refusé. Configurez l'allowlist TELEGRAM_ALLOWED_USER_IDS.")
+        raise ApplicationHandlerStop
 
     async def run_polling(self):
         app = self.build()
