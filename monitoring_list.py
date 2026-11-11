@@ -23,6 +23,7 @@ import json
 import logging
 import os
 import shutil
+import tempfile
 import time
 
 import config
@@ -198,31 +199,47 @@ class DataStore:
             "auto_detection_settings": dict(config.DEFAULT_AUTO_DETECTION_SETTINGS),
         }
 
-    def save(self):
-        # CORRIGÉ suite à une question explicite sur la persistance des
-        # données : cette fonction n'a jamais créé le dossier parent de
-        # self.path avant d'écrire. Si DATA_FILE pointe vers un chemin de
-        # volume (ex: /app/data/sniper_data.json) et que ce dossier n'existe
-        # pas encore, l'écriture échouait SILENCIEUSEMENT (juste une ligne
-        # de log, aucun plantage visible) — les données n'étaient alors
-        # JAMAIS réellement sauvegardées, sans que rien ne le signale
-        # clairement dans l'usage normal du bot.
-        try:
-            parent_dir = os.path.dirname(self.path)
-            if parent_dir:
-                os.makedirs(parent_dir, exist_ok=True)
-            with open(self.path, "w", encoding="utf-8") as f:
-                json.dump(self.state, f, indent=2, ensure_ascii=False)
-        except OSError as e:
-            log.error(f"Erreur sauvegarde {self.path}: {e}")
-            return
+    def save_or_raise(self):
+        """Atomically persist the complete state or raise; never report a false success.
 
-        # Backup périodique (pas à chaque save() — save() est appelé très
-        # fréquemment, un backup à chaque fois serait excessif en I/O disque)
+        LIVE order intents rely on this method before a transaction is submitted.
+        The temporary file lives beside the destination so os.replace stays on
+        the same filesystem. fsync makes the file contents durable before rename.
+        """
+        parent_dir = os.path.dirname(os.path.abspath(self.path))
+        os.makedirs(parent_dir, exist_ok=True)
+        temp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=parent_dir,
+                prefix=os.path.basename(self.path) + ".", suffix=".tmp",
+                delete=False,
+            ) as f:
+                temp_path = f.name
+                json.dump(self.state, f, indent=2, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_path, self.path)
+            temp_path = None
+        finally:
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.unlink(temp_path)
+                except OSError:
+                    log.exception("Impossible de nettoyer le fichier temporaire %s", temp_path)
+
+        # Backups are best-effort; the primary atomic state write has succeeded.
         now = time.time()
         if now - self._last_backup_time >= BACKUP_INTERVAL_S:
             self._create_backup(reason="periodic")
             self._last_backup_time = now
+
+    def save(self):
+        """Backward-compatible best-effort save for non-critical state updates."""
+        try:
+            self.save_or_raise()
+        except OSError as e:
+            log.error(f"Erreur sauvegarde {self.path}: {e}")
 
     def _create_backup(self, reason: str = "periodic"):
         """Copie horodatée de sniper_data.json dans backups/, avec rotation
