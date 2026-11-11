@@ -389,3 +389,63 @@ def test_buy_accounting_finalization_rejects_wrong_token():
     })
     with pytest.raises(ValueError, match="mismatch"):
         trader._finalize_buy_accounting("TokenMint", {"buy_intent_ids": ["buy:one"]})
+
+
+
+def test_multibuy_group_can_reserve_multiple_wallet_legs(monkeypatch):
+    monkeypatch.setenv("BOT_EMERGENCY_STOP", "0")
+
+    class WalletKeypair:
+        def __init__(self, address):
+            self.address = address
+
+        def pubkey(self):
+            return self.address
+
+    async def rpc_balance(*args, **kwargs):
+        return {"value": 5_000_000_000}
+
+    monkeypatch.setattr(live_trader.rpc_client, "rpc_post", rpc_balance)
+    trader = _trader({"open_positions": [], "daily_pnl_sol": 0.0})
+    group = "multibuy:TokenMint:test-run"
+
+    first = asyncio.run(trader._reserve_live_buy_intent(
+        token_mint="TokenMint", entry_price=1.0, amount_sol=0.05,
+        settings={"max_position_sol": 0.5}, keypair=WalletKeypair("wallet-1"),
+        group_id=group,
+    ))
+    trader._mark_live_intent(first, "confirmed", signature="sig-1")
+
+    second = asyncio.run(trader._reserve_live_buy_intent(
+        token_mint="TokenMint", entry_price=1.0, amount_sol=0.05,
+        settings={"max_position_sol": 0.5}, keypair=WalletKeypair("wallet-2"),
+        group_id=group,
+    ))
+    assert second.idempotency_key != first.idempotency_key
+    assert len(trader.data_store.state["safety_order_intents"]) == 2
+
+
+def test_new_multibuy_group_is_blocked_by_unaccounted_confirmed_leg(monkeypatch):
+    monkeypatch.setenv("BOT_EMERGENCY_STOP", "0")
+
+    async def rpc_balance(*args, **kwargs):
+        return {"value": 5_000_000_000}
+
+    monkeypatch.setattr(live_trader.rpc_client, "rpc_post", rpc_balance)
+    trader = _trader({
+        "open_positions": [],
+        "daily_pnl_sol": 0.0,
+        "safety_order_intents": {
+            "buy:prior": {
+                "side": "buy", "token_mint": "TokenMint",
+                "status": "confirmed", "accounting_status": "awaiting_accounting",
+                "group_id": "old-multibuy",
+            }
+        },
+    })
+    with pytest.raises(ValueError, match="position accounting"):
+        asyncio.run(trader._reserve_live_buy_intent(
+            token_mint="TokenMint", entry_price=1.0, amount_sol=0.05,
+            settings={"max_position_sol": 0.5}, keypair=FakeKeypair(),
+            group_id="new-multibuy",
+        ))
