@@ -98,12 +98,15 @@ SOLANA_PRIVATE_KEY = os.getenv("SOLANA_PRIVATE_KEY", "")
 # dans .env — sans elle, les wallets stockés deviennent illisibles.
 WALLET_ENCRYPTION_KEY = os.getenv("WALLET_ENCRYPTION_KEY", "")
 SOL_MINT = "So11111111111111111111111111111111111111112"
-JUPITER_QUOTE_URL = os.getenv("JUPITER_QUOTE_URL", "https://quote-api.jup.ag/v6/quote")
-JUPITER_SWAP_URL = os.getenv("JUPITER_SWAP_URL", "https://quote-api.jup.ag/v6/swap")
+JUPITER_API_KEY = os.getenv("JUPITER_API_KEY", "")
+# Fixed official endpoints prevent API keys from being sent to an arbitrary host.
+JUPITER_ORDER_URL = "https://api.jup.ag/swap/v2/order"
+JUPITER_EXECUTE_URL = "https://api.jup.ag/swap/v2/execute"
 JUPITER_PRIORITIZATION_FEE_LAMPORTS = int(os.getenv("JUPITER_PRIORITIZATION_FEE_LAMPORTS", "100000"))  # ~0.0001 SOL
 MAX_SLIPPAGE_BPS = int(os.getenv("MAX_SLIPPAGE_BPS", "1000"))
 MAX_PRICE_IMPACT_PCT = float(os.getenv("MAX_PRICE_IMPACT_PCT", "5"))
 MAX_TRANSACTION_FEE_LAMPORTS = int(os.getenv("MAX_TRANSACTION_FEE_LAMPORTS", "500000"))
+MAX_JUPITER_RENT_LAMPORTS = int(os.getenv("MAX_JUPITER_RENT_LAMPORTS", "5000000"))
 
 # ── Jito (bundles + tips) — vraie amélioration de vitesse d'inclusion ─────
 # Vérifié via recherche web (docs Jito, mi-2026) : 95%+ du stake actif Solana
