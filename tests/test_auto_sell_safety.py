@@ -65,3 +65,37 @@ def test_sell_initials_does_not_mutate_position_when_execution_fails():
     assert position["units"] == 100.0
     assert position["cost_basis_usd"] == 50.0
     assert position["initials_sold"] is False
+
+
+
+def test_copy_sell_uses_configured_percentage_of_remaining_position():
+    trader = PaperTrader.__new__(PaperTrader)
+    calls = []
+
+    async def partial(position, price, change_pct, ratio, tp_index):
+        calls.append(ratio)
+        position["units"] *= (1 - ratio)
+
+    async def full(position, price, change_pct, reason):
+        calls.append(reason)
+        position["units"] = 0
+
+    trader._partial_close = partial
+    trader._close_remaining = full
+    position = _position()
+    assert asyncio.run(trader.copy_sell(position, 1.0, 25.0)) is True
+    assert calls == [0.25]
+    assert position["units"] == 75.0
+
+
+def test_copy_sell_rejects_invalid_percentage():
+    trader = PaperTrader.__new__(PaperTrader)
+    position = _position()
+
+    async def must_not_sell(*args, **kwargs):
+        raise AssertionError("invalid copy sell percentage must not execute")
+
+    trader._partial_close = must_not_sell
+    trader._close_remaining = must_not_sell
+    for value in (0, -1, 101, float("nan"), float("inf")):
+        assert asyncio.run(trader.copy_sell(position, 1.0, value)) is False
