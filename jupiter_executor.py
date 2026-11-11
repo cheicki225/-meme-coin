@@ -57,23 +57,81 @@ def _validate_quote(quote: dict, input_mint: str, output_mint: str,
         raise SwapError(f"Impact de prix hors limite ({impact:g}% ; maximum {config.MAX_PRICE_IMPACT_PCT:g}%).")
 
 
-def _validate_unsigned_transaction(raw_tx: bytes, keypair: Keypair,
-                                   input_mint: str, amount_lamports: int) -> tuple[VersionedTransaction, str]:
-    """Vérifie le payeur, les signataires et les programmes avant toute signature."""
+async def _resolve_lookup_addresses(message) -> tuple[list, list]:
+    """Resolve every v0 address lookup table through RPC before instruction inspection."""
+    lookups = getattr(message, "address_table_lookups", ())
+    if not lookups:
+        return [], []
+
+    from solders.address_lookup_table_account import ADDRESS_LOOKUP_TABLE_ID, AddressLookupTable
+
+    writable_addresses = []
+    readonly_addresses = []
+    for lookup in lookups:
+        table_key = str(lookup.account_key)
+        result = await rpc_client.rpc_post({
+            "jsonrpc": "2.0", "id": 1, "method": "getAccountInfo",
+            "params": [table_key, {"encoding": "base64", "commitment": "confirmed"}],
+        }, timeout=10)
+        value = result.get("value") if isinstance(result, dict) else None
+        if not isinstance(value, dict) or value.get("owner") != str(ADDRESS_LOOKUP_TABLE_ID):
+            raise SwapError("Address lookup table absent or owned by an unexpected program.")
+        encoded = value.get("data")
+        if isinstance(encoded, list):
+            if not encoded or (len(encoded) > 1 and encoded[1] != "base64"):
+                raise SwapError("Address lookup table encoding is invalid.")
+            encoded = encoded[0]
+        if not isinstance(encoded, str):
+            raise SwapError("Address lookup table data is unavailable.")
+        try:
+            table_data = base64.b64decode(encoded, validate=True)
+            table = AddressLookupTable.deserialize(table_data)
+            addresses = list(table.addresses)
+            for index in lookup.writable_indexes:
+                if index >= len(addresses):
+                    raise SwapError("Address lookup table writable index is out of range.")
+                writable_addresses.append(addresses[index])
+            for index in lookup.readonly_indexes:
+                if index >= len(addresses):
+                    raise SwapError("Address lookup table readonly index is out of range.")
+                readonly_addresses.append(addresses[index])
+        except SwapError:
+            raise
+        except Exception as exc:
+            raise SwapError("Address lookup table could not be decoded safely.") from exc
+
+    return writable_addresses, readonly_addresses
+
+
+def _validate_unsigned_transaction(
+    raw_tx: bytes,
+    keypair: Keypair,
+    input_mint: str,
+    amount_lamports: int,
+    output_mint: str = None,
+    resolved_lookup_addresses: tuple[list, list] = None,
+) -> tuple[VersionedTransaction, str]:
+    """Validate the payer, signers, lookup tables, and every top-level program."""
     try:
         tx = VersionedTransaction.from_bytes(raw_tx)
         message = tx.message
-        keys = list(message.account_keys)
+        lookups = getattr(message, "address_table_lookups", ())
+        if lookups and resolved_lookup_addresses is None:
+            raise SwapError("Address lookup table indexes must be resolved before signing.")
+        loaded_writable, loaded_readonly = resolved_lookup_addresses or ([], [])
+        expected_writable = sum(len(item.writable_indexes) for item in lookups)
+        expected_readonly = sum(len(item.readonly_indexes) for item in lookups)
+        if len(loaded_writable) != expected_writable or len(loaded_readonly) != expected_readonly:
+            raise SwapError("Address lookup table resolution is incomplete.")
+        keys = list(message.account_keys) + list(loaded_writable) + list(loaded_readonly)
         required = message.header.num_required_signatures
         if not keys or str(keys[0]) != str(keypair.pubkey()):
             raise SwapError("Le payeur de la transaction ne correspond pas au wallet actif.")
         if required != 1 or str(keys[0]) != str(keypair.pubkey()):
             raise SwapError("La transaction demande des signataires supplémentaires non autorisés.")
-        # Les programmes de route sont appelés en CPI par Jupiter. Les seules
-        # instructions de premier niveau permises sont Jupiter et les utilitaires
-        # Solana nécessaires à la préparation du swap.
+
         allowed_programs = {
-            "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4",  # Jupiter v6
+            "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4",
             "ComputeBudget111111111111111111111111111111",
             "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",
             "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
@@ -82,6 +140,7 @@ def _validate_unsigned_transaction(raw_tx: bytes, keypair: Keypair,
             "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr",
         }
         from solders.pubkey import Pubkey
+
         owner = keypair.pubkey()
         token_programs = {
             "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
@@ -89,10 +148,15 @@ def _validate_unsigned_transaction(raw_tx: bytes, keypair: Keypair,
         }
         associated_program = Pubkey.from_string("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")
         token_program = Pubkey.from_string("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
+        system_program = Pubkey.from_string("11111111111111111111111111111111")
+        allowed_mints = {Pubkey.from_string(input_mint)}
+        if output_mint:
+            allowed_mints.add(Pubkey.from_string(output_mint))
         wsol_mint = Pubkey.from_string(config.SOL_MINT)
         wsol_ata = Pubkey.find_program_address(
             [bytes(owner), bytes(token_program), bytes(wsol_mint)], associated_program
         )[0]
+
         has_jupiter_swap = False
         for instruction in message.instructions:
             try:
@@ -103,28 +167,36 @@ def _validate_unsigned_transaction(raw_tx: bytes, keypair: Keypair,
                 raise SwapError(f"Programme de transaction non autorisé: {program_id}.")
             has_jupiter_swap |= program_id == "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
             data = bytes(instruction.data)
-            # Les index du message v0 peuvent viser des comptes résolus via
-            # Address Lookup Tables. Ne résous les index que pour les rares
-            # instructions top-level dont les comptes sont effectivement inspectés.
             accounts = []
-            if program_id == "11111111111111111111111111111111" or program_id in token_programs:
+            if (program_id == "11111111111111111111111111111111"
+                    or program_id in token_programs
+                    or program_id == str(associated_program)):
                 try:
                     accounts = [keys[index] for index in instruction.accounts]
                 except IndexError as exc:
                     raise SwapError("Compte d'instruction non résolu; transaction refusée.") from exc
+
             if program_id == "11111111111111111111111111111111":
-                # Le seul transfert System top-level admis finance le compte
-                # WSOL propre au wallet; un transfert vers un tiers échoue fermé.
                 tag = int.from_bytes(data[:4], "little") if len(data) >= 4 else -1
                 if (input_mint != config.SOL_MINT or tag != 2 or len(data) < 12 or len(accounts) < 2
-                        or str(accounts[0]) != str(owner)
-                        or accounts[1] != wsol_ata
+                        or accounts[0] != owner or accounts[1] != wsol_ata
                         or int.from_bytes(data[4:12], "little") > amount_lamports):
                     raise SwapError("Instruction de transfert SOL non autorisée dans la transaction Jupiter.")
+
+            if program_id == str(associated_program):
+                if len(data) not in (0, 1) or data not in (b"", b"\\x01") or len(accounts) < 6:
+                    raise SwapError("Instruction de création de compte associé non autorisée.")
+                mint = accounts[3]
+                token_program_id = str(accounts[5])
+                expected_ata = Pubkey.find_program_address(
+                    [bytes(owner), bytes(accounts[5]), bytes(mint)], associated_program
+                )[0]
+                if (accounts[0] != owner or accounts[1] != expected_ata or accounts[2] != owner
+                        or mint not in allowed_mints or accounts[4] != system_program
+                        or token_program_id not in token_programs):
+                    raise SwapError("Création d'ATA pour un autre wallet ou mint refusée.")
+
             if program_id in token_programs:
-                # Les swaps exécutent les transferts de tokens en CPI Jupiter.
-                # Au niveau supérieur, n'autoriser que la fermeture du compte
-                # WSOL vers le wallet ou sa synchronisation native.
                 tag = data[0] if data else -1
                 close_ok = (
                     tag == 9 and len(accounts) >= 3 and accounts[1] == owner
@@ -133,6 +205,7 @@ def _validate_unsigned_transaction(raw_tx: bytes, keypair: Keypair,
                 sync_ok = tag == 17 and len(accounts) == 1 and accounts[0] == wsol_ata
                 if not (close_ok or sync_ok):
                     raise SwapError("Instruction SPL top-level non autorisée dans la transaction Jupiter.")
+
         if not has_jupiter_swap:
             raise SwapError("La transaction ne contient pas d'instruction de swap Jupiter v6.")
         return tx, str(message.recent_blockhash)
@@ -361,7 +434,12 @@ async def execute_swap(input_mint: str, output_mint: str, amount_lamports: int, 
         raw_tx = base64.b64decode(swap_tx_b64, validate=True)
     except Exception as exc:
         raise SwapError("Transaction Jupiter encodée en base64 invalide.") from exc
-    tx, blockhash = _validate_unsigned_transaction(raw_tx, keypair, input_mint, amount_lamports)
+    unsigned_tx = VersionedTransaction.from_bytes(raw_tx)
+    resolved_lookup_addresses = await _resolve_lookup_addresses(unsigned_tx.message)
+    tx, blockhash = _validate_unsigned_transaction(
+        raw_tx, keypair, input_mint, amount_lamports, output_mint,
+        resolved_lookup_addresses=resolved_lookup_addresses,
+    )
     await _assert_blockhash_valid(blockhash)
     await _assert_fee_within_limit(tx)
     signed_tx = VersionedTransaction(tx.message, [keypair])
