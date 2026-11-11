@@ -160,6 +160,7 @@ class LiveTrader(PaperTrader):
         amount_sol: float,
         settings: dict,
         keypair,
+        group_id: str | None = None,
     ):
         """Préflight + persistance AVANT tout envoi réseau vers Jupiter/Jito."""
         source_wallet = str(keypair.pubkey())
@@ -172,6 +173,7 @@ class LiveTrader(PaperTrader):
             and item.get("token_mint") == token_mint
             and item.get("status") == "confirmed"
             and item.get("accounting_status") != "accounted"
+            and (not group_id or item.get("group_id") != group_id)
             for item in intent_registry.values()
         ):
             raise ValueError("A confirmed buy for this token still requires position accounting")
@@ -196,6 +198,10 @@ class LiveTrader(PaperTrader):
             emergency_stop=self._emergency_stop_enabled(settings),
         )
         reserve_intent(self.data_store.state, intent)
+        if group_id:
+            self.data_store.state["safety_order_intents"][intent.idempotency_key][
+                "group_id"
+            ] = group_id
         # Fail-closed : si la persistance échoue, aucune transaction n'est envoyée.
         self._persist_safety_state()
         return intent
@@ -371,6 +377,7 @@ class LiveTrader(PaperTrader):
         total_sol_spent = 0.0
         signatures = []
         confirmed_legs = []
+        group_id = f"multibuy:{token_mint}:{entry_price:.12g}:{time.time_ns()}"
         decimals = await _get_token_decimals(token_mint)
 
         for i, label in enumerate(wallet_labels):
@@ -387,6 +394,7 @@ class LiveTrader(PaperTrader):
                     amount_sol=split_amount_sol,
                     settings=settings,
                     keypair=keypair,
+                    group_id=group_id,
                 )
             except (ValueError, TypeError) as e:
                 log.error(f"🛑 [MultiBuy {i+1}/{n}] '{label}' bloqué par safety: {e}")
