@@ -186,7 +186,7 @@ async def collect_wallet(wallet: str, limit: int = 100, db_path: str | Path = DE
     if not config.HELIUS_API_KEY:
         return {"status": "unavailable", "reason": "helius_not_configured", "wallet": wallet}
     try:
-        signatures = await wallet_history._get_signatures(wallet, limit=limit)
+        signatures = await wallet_history._get_signatures(wallet, limit=limit, raise_on_error=True)
     except Exception as exc:
         log.warning("Wallet signature collection failed: %s", exc)
         return {"status": "error", "reason": "signature_fetch_failed", "wallet": wallet}
