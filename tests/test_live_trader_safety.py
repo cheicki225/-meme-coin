@@ -300,3 +300,32 @@ def test_unexpected_sell_execution_error_is_persisted_as_unknown(monkeypatch):
     assert record["status"] == "unknown"
     assert "provider connection dropped" in record["error"]
     assert trader.data_store.saved is True
+
+
+
+def test_live_buy_reservation_aborts_when_durable_save_fails(monkeypatch):
+    monkeypatch.setenv("BOT_EMERGENCY_STOP", "0")
+
+    class FailingStore(FakeStore):
+        def save_or_raise(self):
+            raise OSError("disk is read-only")
+
+    async def rpc_balance(*args, **kwargs):
+        return {"value": 5_000_000_000}
+
+    monkeypatch.setattr(live_trader.rpc_client, "rpc_post", rpc_balance)
+    trader = _trader({"open_positions": [], "daily_pnl_sol": 0.0})
+    trader.data_store = FailingStore(trader.data_store.state)
+
+    with pytest.raises(OSError, match="read-only"):
+        asyncio.run(trader._reserve_live_buy_intent(
+            token_mint="TokenMint",
+            entry_price=1.0,
+            amount_sol=0.1,
+            settings={"max_position_sol": 0.5},
+            keypair=FakeKeypair(),
+        ))
+    # Intent exists in memory, but no caller can proceed to Jupiter because
+    # reservation persistence raised before _reserve_live_buy_intent returned.
+    assert trader.data_store.state["safety_order_intents"]
+    assert trader.data_store.saved is False
