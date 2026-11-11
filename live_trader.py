@@ -189,85 +189,14 @@ class LiveTrader(PaperTrader):
         }
 
     async def _execute_multibuy(self, token_mint: str, entry_price: float, settings: dict) -> dict:
-        """
-        Répartit l'achat total sur plusieurs wallets gérés (wallet_manager.py),
-        avec un délai entre chaque, pour réduire le price impact/la détectabilité
-        (méthode montrée dans les vidéos : diviser un gros achat en petits ordres
-        depuis plusieurs wallets plutôt qu'un seul gros ordre visible).
-
-        LIMITE : chaque sous-achat est indépendant (pas de coordination on-chain
-        atomique) — si un sous-achat échoue en cours de route, les précédents
-        restent acquis (partiels), ce qui est reflété fidèlement dans le résultat
-        cumulé retourné plutôt que de tout annuler.
-        """
-        from wallet_manager import WalletManager
-        wm = WalletManager(self.data_store)
-
-        wallet_labels = settings.get("multibuy_wallet_labels", [])
-        total_amount_sol = settings.get("buy_amount_sol", 0.1)
-        delay_s = settings.get("multibuy_delay_s", 3)
-        slippage_bps = int(settings.get("buy_slippage_pct", 50) * 100)
-
-        n = len(wallet_labels)
-        if n == 0:
-            log.warning("MultiBuy activé mais aucun wallet configuré — achat annulé.")
-            return None
-
-        split_amount_sol = total_amount_sol / n
-        amount_lamports = int(split_amount_sol * 1_000_000_000)
-
-        total_units = 0.0
-        total_sol_spent = 0.0
-        signatures = []
-        decimals = await _get_token_decimals(token_mint)
-
-        for i, label in enumerate(wallet_labels):
-            try:
-                keypair = wm.get_keypair(label)
-            except ValueError as e:
-                log.warning(f"MultiBuy : wallet '{label}' introuvable ({e}), sous-achat sauté.")
-                continue
-
-            try:
-                result = await jupiter_executor.execute_swap(
-                    config.SOL_MINT, token_mint, amount_lamports, slippage_bps,
-                    keypair=keypair, use_jito=settings.get("use_jito", False),
-                )
-                units = result["output_amount"] / (10 ** decimals)
-                sol_spent = result["input_amount"] / 1_000_000_000
-                total_units += units
-                total_sol_spent += sol_spent
-                signatures.append(result["signature"])
-                log.info(f"💰 [MultiBuy {i+1}/{n}] '{label}' : {sol_spent:.4f} SOL -> {units:.2f} tokens")
-            except jupiter_executor.SwapError as e:
-                log.error(f"❌ [MultiBuy {i+1}/{n}] échec sur '{label}': {e}")
-
-            if i < n - 1:
-                await asyncio.sleep(delay_s)
-
-        if total_units <= 0:
-            log.error(f"❌ MultiBuy sur {token_mint[:8]}... — tous les sous-achats ont échoué.")
-            if self.notifier:
-                await self.notifier.notify(
-                    "buy_failed",
-                    f"❌ *Buy Failed* (MultiBuy, LIVE)\nToken: `{token_mint[:8]}...`\nTous les sous-achats ont échoué.",
-                )
-            return None
-
-        cost_basis_usd = total_sol_spent * await get_sol_usd_rate()
-        actual_price = cost_basis_usd / total_units
-
-        log.info(
-            f"✅ [MultiBuy] Terminé sur {token_mint[:8]}... — {len(signatures)}/{n} sous-achats "
-            f"réussis, total {total_sol_spent:.4f} SOL -> {total_units:.2f} tokens"
-        )
-
-        return {
-            "units": total_units,
-            "cost_basis_usd": cost_basis_usd,
-            "actual_price": actual_price,
-            "signature": signatures[0] if signatures else None,  # signature principale pour l'affichage
-        }
+        """Fail closed until positions from multiple wallets are reconciled separately."""
+        log.error("LIVE MultiBuy is disabled pending per-wallet position accounting.")
+        if self.notifier:
+            await self.notifier.notify(
+                "risk_alert",
+                "🛑 *MultiBuy LIVE refusé* — l'exécution multi-wallet n'est pas réconciliée par wallet.",
+            )
+        return None
 
     async def _execute_sell(self, token_mint: str, units: float, current_price: float, settings: dict) -> dict:
         if units <= 0:
