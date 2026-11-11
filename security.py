@@ -49,12 +49,22 @@ def _safe_float(value, default=None):
         return default
 
 
+def _error_result(reason: str) -> dict:
+    return {
+        "error": reason,
+        "security_score": 0,
+        "is_honeypot": None,
+        "is_risky": True,
+        "flags": {"verification_unavailable": True},
+    }
+
+
 async def check_token_security(token_mint: str) -> dict:
     """Return a conservative risk summary from GoPlus' Solana endpoint."""
     credential = config.GOPLUS_API_SECRET or config.GOPLUS_API_KEY
     if not credential:
         log.warning("GoPlus non configuré — vérification anti-rug indisponible.")
-        return {"error": "no_api_key", "security_score": 0, "is_honeypot": None}
+        return _error_result("no_api_key")
 
     url = (
         "https://api.gopluslabs.io/api/v1/solana/token_security"
@@ -70,23 +80,23 @@ async def check_token_security(token_mint: str) -> dict:
             ) as response:
                 if response.status != 200:
                     log.warning("GoPlus HTTP %s pour %s", response.status, token_mint[:8])
-                    return {"error": f"http_{response.status}", "security_score": 0, "is_honeypot": None}
+                    return _error_result(f"http_{response.status}")
                 payload = await response.json()
     except Exception as exc:
         log.warning("GoPlus indisponible pour %s: %s", token_mint[:8], exc)
-        return {"error": "provider_unavailable", "security_score": 0, "is_honeypot": None}
+        return _error_result("provider_unavailable")
 
     if not isinstance(payload, dict) or not isinstance(payload.get("result"), dict):
-        return {"error": "invalid_provider_response", "security_score": 0, "is_honeypot": None}
+        return _error_result("invalid_provider_response")
     result = payload["result"]
     token = result.get(token_mint, result.get(token_mint.lower()))
     if not isinstance(token, dict) or not token:
-        return {"error": "not_indexed", "security_score": 0, "is_honeypot": None}
+        return _error_result("not_indexed")
 
     # These core fields are needed to distinguish explicit "no" from unknown.
     required = ("mintable", "freezable", "closable", "default_account_state", "non_transferable")
     if any(key not in token or token.get(key) is None for key in required):
-        return {"error": "incomplete_security_data", "security_score": 0, "is_honeypot": None}
+        return _error_result("incomplete_security_data")
 
     flags = {
         "mintable": _status(token.get("mintable")),
@@ -155,9 +165,20 @@ async def check_token_security(token_mint: str) -> dict:
     ]
     liquidity_values = [value for value in liquidity_values if value is not None and value >= 0]
 
+    final_score = max(0, min(100, score))
+    flags_output = {
+        **{key: value is True for key, value in flags.items()},
+        "default_accounts_frozen": default_state == "2",
+        "non_transferable": non_transferable,
+        "malicious_transfer_hook": hook_malicious,
+        "malicious_creator": creator_malicious,
+        "high_transfer_fee": transfer_fee_pct is not None and transfer_fee_pct > 5,
+    }
     return {
         "error": None,
-        "security_score": max(0, min(100, score)),
+        "is_risky": final_score < 60 or any(flags_output.values()),
+        "flags": flags_output,
+        "security_score": final_score,
         "is_honeypot": None,  # Le schéma Solana documenté ne fournit pas ce champ EVM.
         "owner_renounced": None,  # Les champs Solana ne prouvent pas une renonciation globale.
         "source_verified": None,
