@@ -28,7 +28,7 @@ TRADING_MODE = os.getenv("TRADING_MODE", "PAPER")
 
 # ── Accès RPC / WebSocket Solana ────────────────────────────────
 HELIUS_API_KEY = os.getenv("HELIUS_API_KEY", "")
-HELIUS_RPC_URL = f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}" if HELIUS_API_KEY else "https://api.mainnet-beta.solana.com"
+HELIUS_RPC_URL = os.getenv("SOLANA_RPC_URL") or (f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}" if HELIUS_API_KEY else "https://api.mainnet-beta.solana.com")
 HELIUS_WS_URL = f"wss://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}" if HELIUS_API_KEY else None
 # API "Enhanced Transactions" de Helius : parse déjà les instructions Pump.fun
 HELIUS_PARSE_TX_URL = f"https://api.helius.xyz/v0/transactions/?api-key={HELIUS_API_KEY}"
@@ -98,9 +98,12 @@ SOLANA_PRIVATE_KEY = os.getenv("SOLANA_PRIVATE_KEY", "")
 # dans .env — sans elle, les wallets stockés deviennent illisibles.
 WALLET_ENCRYPTION_KEY = os.getenv("WALLET_ENCRYPTION_KEY", "")
 SOL_MINT = "So11111111111111111111111111111111111111112"
-JUPITER_QUOTE_URL = "https://quote-api.jup.ag/v6/quote"
-JUPITER_SWAP_URL = "https://quote-api.jup.ag/v6/swap"
+JUPITER_QUOTE_URL = os.getenv("JUPITER_QUOTE_URL", "https://quote-api.jup.ag/v6/quote")
+JUPITER_SWAP_URL = os.getenv("JUPITER_SWAP_URL", "https://quote-api.jup.ag/v6/swap")
 JUPITER_PRIORITIZATION_FEE_LAMPORTS = int(os.getenv("JUPITER_PRIORITIZATION_FEE_LAMPORTS", "100000"))  # ~0.0001 SOL
+MAX_SLIPPAGE_BPS = int(os.getenv("MAX_SLIPPAGE_BPS", "1000"))
+MAX_PRICE_IMPACT_PCT = float(os.getenv("MAX_PRICE_IMPACT_PCT", "5"))
+MAX_TRANSACTION_FEE_LAMPORTS = int(os.getenv("MAX_TRANSACTION_FEE_LAMPORTS", "500000"))
 
 # ── Jito (bundles + tips) — vraie amélioration de vitesse d'inclusion ─────
 # Vérifié via recherche web (docs Jito, mi-2026) : 95%+ du stake actif Solana
@@ -119,7 +122,14 @@ TX_CONFIRMATION_TIMEOUT_S = int(os.getenv("TX_CONFIRMATION_TIMEOUT_S", "60"))
 PUMP_FUN_PROGRAM_ID = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
 
 # ── Telegram ─────────────────────────────────────────────────────
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+BOT_TOKEN = os.getenv("BOT_TOKEN", os.getenv("TELEGRAM_BOT_TOKEN", ""))
+try:
+    TELEGRAM_ALLOWED_USER_IDS = frozenset(
+        int(value.strip()) for value in os.getenv("TELEGRAM_ALLOWED_USER_IDS", "").split(",")
+        if value.strip()
+    )
+except ValueError as exc:
+    raise ValueError("TELEGRAM_ALLOWED_USER_IDS doit contenir des identifiants numériques séparés par des virgules.") from exc
 
 # ── Bannière affichée au /start (image locale, voir telegram_bot.py cmd_start) ─
 # Place l'image de bannière dans le dossier du bot et indique son nom ici.
