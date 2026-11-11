@@ -171,9 +171,17 @@ class LiveTrader(PaperTrader):
             isinstance(item, dict)
             and item.get("side") == "buy"
             and item.get("token_mint") == token_mint
-            and item.get("status") == "confirmed"
-            and item.get("accounting_status") != "accounted"
-            and (not group_id or item.get("group_id") != group_id)
+            and item.get("status") in {"pending", "unknown", "confirmed"}
+            and not (
+                group_id
+                and item.get("group_id") == group_id
+                and item.get("status") == "confirmed"
+                and item.get("accounting_status") == "awaiting_accounting"
+            )
+            and (
+                item.get("status") != "confirmed"
+                or item.get("accounting_status") != "accounted"
+            )
             for item in intent_registry.values()
         ):
             raise ValueError("A confirmed buy for this token still requires position accounting")
