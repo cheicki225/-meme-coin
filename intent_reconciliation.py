@@ -25,7 +25,14 @@ def list_unresolved_intents(state: Mapping[str, Any]) -> list[dict[str, Any]]:
             item = dict(record)
             item["idempotency_key"] = key
             unresolved.append(item)
-    return sorted(unresolved, key=lambda item: float(item.get("created_at", 0.0)))
+    def _created_at(item):
+        try:
+            value = float(item.get("created_at", 0.0))
+            return value if value >= 0 else 0.0
+        except (TypeError, ValueError, OverflowError):
+            return 0.0
+
+    return sorted(unresolved, key=_created_at)
 
 
 def resolve_intent(
@@ -44,6 +51,10 @@ def resolve_intent(
         raise ValueError("Unknown order intent")
 
     record = registry[idempotency_key]
+    if record.get("status") not in UNRESOLVED_STATUSES:
+        raise ValueError("Only pending or unknown intents can be reconciled")
+    if status == "unknown":
+        raise ValueError("Reconciliation must establish confirmed or failed on-chain outcome")
     record["status"] = status
     if signature:
         record["signature"] = signature
