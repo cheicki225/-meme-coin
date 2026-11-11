@@ -449,3 +449,29 @@ def test_new_multibuy_group_is_blocked_by_unaccounted_confirmed_leg(monkeypatch)
             settings={"max_position_sol": 0.5}, keypair=FakeKeypair(),
             group_id="new-multibuy",
         ))
+
+
+
+def test_ambiguous_multibuy_leg_stops_remaining_group_legs(monkeypatch):
+    monkeypatch.setenv("BOT_EMERGENCY_STOP", "0")
+
+    async def rpc_balance(*args, **kwargs):
+        return {"value": 5_000_000_000}
+
+    monkeypatch.setattr(live_trader.rpc_client, "rpc_post", rpc_balance)
+    trader = _trader({
+        "open_positions": [],
+        "daily_pnl_sol": 0.0,
+        "safety_order_intents": {
+            "buy:ambiguous": {
+                "side": "buy", "token_mint": "TokenMint",
+                "status": "unknown", "group_id": "same-group",
+            }
+        },
+    })
+    with pytest.raises(ValueError, match="position accounting"):
+        asyncio.run(trader._reserve_live_buy_intent(
+            token_mint="TokenMint", entry_price=1.0, amount_sol=0.05,
+            settings={"max_position_sol": 0.5}, keypair=FakeKeypair(),
+            group_id="same-group",
+        ))
