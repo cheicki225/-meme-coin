@@ -881,35 +881,82 @@ class PaperTrader:
     # ══════════════════════════════════════════════════════════
 
     async def sell_initials(self, position: dict, price: float) -> bool:
-        """Vend exactement de quoi récupérer la mise investie (cost_basis_usd), garde le reste."""
-        if position.get("initials_sold"):
+        """Vend réellement une partie de la position pour tenter de récupérer la mise."""
+        if position.get("initials_sold") or position.get("units", 0) <= 0:
+            return False
+        try:
+            price = float(price)
+            units = float(position["units"])
+            cost_basis = float(position["cost_basis_usd"])
+        except (KeyError, TypeError, ValueError):
+            return False
+        if not all(math.isfinite(v) for v in (price, units, cost_basis)) or price <= 0 or units <= 0 or cost_basis <= 0:
             return False
 
-        current_value = position["units"] * price
-        if current_value <= position["cost_basis_usd"]:
-            return False  # pas encore en profit, rien à récupérer
+        current_value = units * price
+        if current_value <= cost_basis:
+            return False
 
-        units_to_sell = position["cost_basis_usd"] / price
-        proceeds = units_to_sell * price  # == cost_basis_usd, par construction
+        units_to_sell = min(units, cost_basis / price)
+        sell_ratio = units_to_sell / units
+        sell_result = await self._execute_sell(
+            position["token_mint"], units_to_sell, price, position["settings"]
+        )
+        if sell_result is None:
+            return False
 
-        position["units"] -= units_to_sell
-        recovered = position["cost_basis_usd"]
-        position["cost_basis_usd"] = 0  # le reste devient un moonbag à coût nul
-        position["initials_sold"] = True
+        try:
+            proceeds = float(sell_result["proceeds_usd"])
+            sol_received = float(sell_result["sol_received"])
+        except (KeyError, TypeError, ValueError):
+            position["status"] = "needs_accounting_reconciliation"
+            position["accounting_error"] = "missing_sell_proceeds"
+            self.data_store.save()
+            return False
+        if not math.isfinite(proceeds) or proceeds < 0 or not math.isfinite(sol_received) or sol_received < 0:
+            position["status"] = "needs_accounting_reconciliation"
+            position["accounting_error"] = "invalid_sell_proceeds"
+            self.data_store.save()
+            return False
+
+        remaining_cost = cost_basis * (1 - sell_ratio)
+        if proceeds >= cost_basis:
+            pnl_usd = proceeds - cost_basis
+            position["cost_basis_usd"] = 0.0
+            position["initials_sold"] = True
+        else:
+            cost_removed = cost_basis * sell_ratio
+            pnl_usd = proceeds - cost_removed
+            position["cost_basis_usd"] = remaining_cost
+
+        position["units"] = max(0.0, units - units_to_sell)
+        position["total_sol_received"] = position.get("total_sol_received", 0.0) + sol_received
+        if sell_result.get("signature"):
+            position.setdefault("tx_signatures", []).append(sell_result["signature"])
 
         state = self.data_store.state
+        state["total_pnl_usd"] = state.get("total_pnl_usd", 0.0) + pnl_usd
         state.setdefault("trades", []).append({
-            "token_mint": position["token_mint"], "type": "sell_initials",
-            "recovered_usd": recovered, "time": time.time(),
+            "token_mint": position["token_mint"],
+            "type": "sell_initials",
+            "sell_ratio": sell_ratio,
+            "recovered_usd": proceeds,
+            "pnl_usd": pnl_usd,
+            "time": time.time(),
+            "signature": sell_result.get("signature"),
         })
         self.data_store.save()
 
-        log.info(f"💰 [PAPER] Sell Initials sur {position['token_mint'][:8]}... — {recovered:.2f}$ récupérés.")
+        log.info(
+            f"💰 [{config.TRADING_MODE}] Sell Initials sur {position['token_mint'][:8]}... "
+            f"— produit {proceeds:.2f}$, récupération de mise {'complète' if position.get('initials_sold') else 'partielle'}."
+        )
         if self.notifier:
             await self.notifier.notify(
                 "sell_success",
-                f"💰 *Sell Initials*\nToken: `{position['token_mint'][:8]}...`\n"
-                f"Mise récupérée: {recovered:.2f}$\nLe reste est en free-ride (coût nul).",
+                f"💰 *Sell Initials*\\nToken: `{position['token_mint'][:8]}...`\\n"
+                f"Produit: {proceeds:.2f}$\\n"
+                f"{'Mise récupérée — le solde devient free-ride.' if position.get('initials_sold') else 'Récupération partielle; coût restant conservé.'}",
             )
         return True
 
