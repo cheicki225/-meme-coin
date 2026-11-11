@@ -322,6 +322,7 @@ class LiveTrader(PaperTrader):
         total_units = 0.0
         total_sol_spent = 0.0
         signatures = []
+        confirmed_legs = []
         decimals = await _get_token_decimals(token_mint)
 
         for i, label in enumerate(wallet_labels):
@@ -343,12 +344,14 @@ class LiveTrader(PaperTrader):
                 log.error(f"🛑 [MultiBuy {i+1}/{n}] '{label}' bloqué par safety: {e}")
                 continue
 
+            result = None
             try:
                 result = await jupiter_executor.execute_swap(
                     config.SOL_MINT, token_mint, amount_lamports, slippage_bps,
                     keypair=keypair, use_jito=settings.get("use_jito", False),
                 )
                 self._mark_live_intent(intent, "confirmed", signature=result.get("signature"))
+                confirmed_legs.append((intent, str(keypair.pubkey()), result))
                 units = result["output_amount"] / (10 ** decimals)
                 sol_spent = result["input_amount"] / 1_000_000_000
                 total_units += units
@@ -362,9 +365,16 @@ class LiveTrader(PaperTrader):
                 self._mark_live_intent(intent, "failed", error=str(e))
                 log.error(f"❌ [MultiBuy {i+1}/{n}] échec sur '{label}': {e}")
             except Exception as e:
-                self._mark_live_intent(intent, "unknown", error=str(e))
+                record = self.data_store.state.get("safety_order_intents", {}).get(intent.idempotency_key, {})
+                if isinstance(record, dict) and record.get("status") == "confirmed":
+                    self._persist_confirmed_buy_reconciliation(
+                        intent=intent, token_mint=token_mint, source_wallet=str(keypair.pubkey()),
+                        result=result, error=e,
+                    )
+                else:
+                    self._mark_live_intent(intent, "unknown", error=str(e))
                 log.exception(
-                    f"🛑 [MultiBuy {i+1}/{n}] état ambigu sur '{label}' — retry automatique bloqué."
+                    f"🛑 [MultiBuy {i+1}/{n}] échec post-exécution/état ambigu sur '{label}' — aucune relance."
                 )
 
             if i < n - 1:
@@ -379,8 +389,21 @@ class LiveTrader(PaperTrader):
                 )
             return None
 
-        cost_basis_usd = total_sol_spent * await get_sol_usd_rate()
-        actual_price = cost_basis_usd / total_units
+        try:
+            sol_usd = float(await get_sol_usd_rate())
+            if not math.isfinite(sol_usd) or sol_usd <= 0:
+                raise ValueError("Taux SOL/USD indisponible ou invalide après MultiBuy confirmé")
+            cost_basis_usd = total_sol_spent * sol_usd
+            actual_price = cost_basis_usd / total_units
+            if not math.isfinite(cost_basis_usd) or not math.isfinite(actual_price) or actual_price <= 0:
+                raise ValueError("Comptabilité invalide pour MultiBuy confirmé")
+        except Exception as e:
+            for confirmed_intent, source_wallet, confirmed_result in confirmed_legs:
+                self._persist_confirmed_buy_reconciliation(
+                    intent=confirmed_intent, token_mint=token_mint, source_wallet=source_wallet,
+                    result=confirmed_result, error=e,
+                )
+            return None
 
         log.info(
             f"✅ [MultiBuy] Terminé sur {token_mint[:8]}... — {len(signatures)}/{n} sous-achats "
