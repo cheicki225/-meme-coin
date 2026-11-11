@@ -475,3 +475,27 @@ def test_ambiguous_multibuy_leg_stops_remaining_group_legs(monkeypatch):
             settings={"max_position_sol": 0.5}, keypair=FakeKeypair(),
             group_id="same-group",
         ))
+
+
+
+def test_sell_reservation_stays_locked_when_release_persistence_fails():
+    class FailingStore(FakeStore):
+        def save_or_raise(self):
+            raise OSError("disk unavailable")
+
+    state = {
+        "safety_pending_sell_tokens": {
+            "TokenMint": {
+                "intent_id": "sell-1",
+                "status": "confirmed_awaiting_accounting",
+                "signature": "verified-sig",
+            }
+        }
+    }
+    trader = _trader(state)
+    trader.data_store = FailingStore(state)
+
+    with pytest.raises(OSError, match="disk unavailable"):
+        trader._finalize_sell_intent("TokenMint", "sell-1")
+
+    assert state["safety_pending_sell_tokens"]["TokenMint"]["status"] == "confirmed_awaiting_accounting"
