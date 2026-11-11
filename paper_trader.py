@@ -25,6 +25,7 @@ import time
 import random
 import logging
 import asyncio
+import math
 
 import config
 import rpc_client
@@ -108,7 +109,14 @@ class PaperTrader:
         """Version PAPER : conversion directe au prix coté, aucun slippage simulé.
         Retourne None seulement si la vente doit être annulée (jamais en PAPER)."""
         proceeds_usd = units * current_price
-        return {"proceeds_usd": proceeds_usd, "signature": None}
+        sol_usd = float(await get_sol_usd_rate())
+        if not math.isfinite(sol_usd) or sol_usd <= 0:
+            raise ValueError("SOL/USD rate unavailable for paper sell accounting")
+        return {
+            "proceeds_usd": proceeds_usd,
+            "sol_received": proceeds_usd / sol_usd,
+            "signature": None,
+        }
 
     # ══════════════════════════════════════════════════════════
     # OUVERTURE DE POSITION
@@ -1092,7 +1100,17 @@ class PaperTrader:
 
     async def _partial_close(self, position: dict, exit_price: float, change_pct: float,
                               sell_ratio: float, tp_index):
+        try:
+            sell_ratio = float(sell_ratio)
+        except (TypeError, ValueError):
+            log.error("Vente partielle refusée : sell_ratio invalide.")
+            return
+        if not math.isfinite(sell_ratio) or not 0 < sell_ratio <= 1:
+            log.error("Vente partielle refusée : sell_ratio doit être dans ]0, 1].")
+            return
         units_sold = position["units"] * sell_ratio
+        if not math.isfinite(units_sold) or units_sold <= 0:
+            return
 
         sell_result = await self._execute_sell(position["token_mint"], units_sold, exit_price, position["settings"])
         if sell_result is None:
@@ -1104,14 +1122,21 @@ class PaperTrader:
                 )
             return
 
-        proceeds = sell_result["proceeds_usd"]
+        proceeds = float(sell_result["proceeds_usd"])
+        sol_received = float(sell_result["sol_received"])
+        if not math.isfinite(proceeds) or proceeds < 0 or not math.isfinite(sol_received) or sol_received < 0:
+            log.critical("Vente confirmée mais montants comptables invalides; position bloquée pour réconciliation.")
+            position["status"] = "needs_accounting_reconciliation"
+            position["accounting_error"] = "invalid_sell_proceeds"
+            self.data_store.save()
+            return
         sell_signature = sell_result.get("signature")
         cost_removed = position["cost_basis_usd"] * sell_ratio
         pnl_usd = proceeds - cost_removed
 
         position["units"] -= units_sold
         position["cost_basis_usd"] -= cost_removed
-        position["total_sol_received"] = position.get("total_sol_received", 0) + (proceeds / await get_sol_usd_rate())
+        position["total_sol_received"] = position.get("total_sol_received", 0) + sol_received
         if sell_signature:
             position.setdefault("tx_signatures", []).append(sell_signature)
         if tp_index is not None:
@@ -1150,7 +1175,14 @@ class PaperTrader:
                 )
             return
 
-        proceeds = sell_result["proceeds_usd"]
+        proceeds = float(sell_result["proceeds_usd"])
+        sol_received = float(sell_result["sol_received"])
+        if not math.isfinite(proceeds) or proceeds < 0 or not math.isfinite(sol_received) or sol_received < 0:
+            log.critical("Vente confirmée mais montants comptables invalides; position bloquée pour réconciliation.")
+            position["status"] = "needs_accounting_reconciliation"
+            position["accounting_error"] = "invalid_sell_proceeds"
+            self.data_store.save()
+            return
         sell_signature = sell_result.get("signature")
         pnl_usd = proceeds - position["cost_basis_usd"]
 
@@ -1159,7 +1191,7 @@ class PaperTrader:
         position["exit_time"] = time.time()
         position["result_pct"] = change_pct
         position["close_reason"] = close_reason
-        position["total_sol_received"] = position.get("total_sol_received", 0) + (proceeds / await get_sol_usd_rate())
+        position["total_sol_received"] = position.get("total_sol_received", 0) + sol_received
         position["units"] = 0
         position["cost_basis_usd"] = 0
         if sell_signature:
