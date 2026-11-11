@@ -32,7 +32,12 @@ log = logging.getLogger("jupiter_executor")
 
 
 class SwapError(Exception):
-    pass
+    """A swap failed with a definitive outcome."""
+
+
+class SwapOutcomeUnknown(SwapError):
+    """Submission may have reached the chain, but confirmation is unavailable."""
+
 
 
 async def get_quote(input_mint: str, output_mint: str, amount_lamports: int, slippage_bps: int) -> dict:
@@ -145,7 +150,7 @@ async def _confirm_transaction(signature: str, timeout_s: int = None) -> bool:
                 return True
         await asyncio.sleep(interval)
         elapsed += interval
-    raise SwapError(f"Transaction {signature} non confirmée après {timeout_s}s (timeout).")
+    raise SwapOutcomeUnknown(f"Transaction {signature} non confirmée après {timeout_s}s; résultat inconnu, réconciliation requise.")
 
 
 async def execute_swap(input_mint: str, output_mint: str, amount_lamports: int, slippage_bps: int,
