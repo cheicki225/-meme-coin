@@ -110,6 +110,26 @@ class LiveTrader(PaperTrader):
             except (TypeError, ValueError):
                 raise ValueError("Invalid persisted position exposure") from None
 
+        # Reserve funds for orders that may already have reached the chain but
+        # are not yet represented by a durable position. Otherwise a second
+        # mint could consume the same apparent wallet balance after a timeout.
+        intents = state.get("safety_order_intents", {})
+        if not isinstance(intents, dict):
+            raise ValueError("Invalid persisted order-intent registry")
+        for intent in intents.values():
+            if not isinstance(intent, dict):
+                raise ValueError("Invalid persisted order-intent record")
+            if (intent.get("side") == "buy"
+                    and intent.get("status") in {"pending", "unknown", "confirmed"}
+                    and intent.get("accounting_status") != "accounted"):
+                try:
+                    reserved = float(intent.get("amount_sol"))
+                except (TypeError, ValueError):
+                    raise ValueError("Invalid unresolved buy reservation") from None
+                if not math.isfinite(reserved) or reserved <= 0:
+                    raise ValueError("Invalid unresolved buy reservation")
+                exposure_sol += reserved
+
         if "daily_pnl_sol" in state:
             daily_pnl_sol = float(state["daily_pnl_sol"])
         else:
