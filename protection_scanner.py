@@ -147,9 +147,16 @@ class ProtectionScanner:
 
     def _already_processed(self, signature: str) -> bool:
         now = time.time()
-        if len(self._recent_signatures) > _SIGNATURE_CACHE_MAX_SIZE:
-            cutoff = now - _SIGNATURE_CACHE_TTL_S
-            self._recent_signatures = {s: t for s, t in self._recent_signatures.items() if t > cutoff}
+        cutoff = now - _SIGNATURE_CACHE_TTL_S
+        self._recent_signatures = {
+            cached_signature: timestamp
+            for cached_signature, timestamp in self._recent_signatures.items()
+            if timestamp > cutoff
+        }
+        # Enforce a hard cap even during bursts inside the TTL window.
+        while len(self._recent_signatures) >= _SIGNATURE_CACHE_MAX_SIZE:
+            oldest_signature = next(iter(self._recent_signatures))
+            self._recent_signatures.pop(oldest_signature, None)
         if signature in self._recent_signatures:
             return True
         self._recent_signatures[signature] = now
