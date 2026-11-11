@@ -1,3 +1,5 @@
+import time
+
 from copytrade_listener import CopyTradeListener
 from protection_scanner import ProtectionScanner
 
@@ -8,9 +10,9 @@ def test_copytrade_signature_cache_has_hard_size_bound(monkeypatch):
     monkeypatch.setattr(copytrade_listener, "_SIGNATURE_CACHE_MAX_SIZE", 3)
     listener = CopyTradeListener.__new__(CopyTradeListener)
     listener._recent_signatures = {
-        "old-1": 1.0,
-        "old-2": 2.0,
-        "old-3": 3.0,
+        "old-1": time.time(),
+        "old-2": time.time(),
+        "old-3": time.time(),
     }
 
     assert listener._already_processed("new-signature") is False
