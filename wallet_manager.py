@@ -149,29 +149,53 @@ class WalletManager:
 
     # ── Disperse SOL — transfert natif réel ─────────────────────────
     async def send_sol(self, label: str, destination: str, amount_sol: float) -> str:
-        """
-        Envoie du SOL depuis un wallet géré vers une adresse externe (ou un
-        autre wallet géré). Transaction réelle, irréversible. Retourne la
-        signature de transaction.
-        """
+        """Send a capped native SOL transfer only in explicitly enabled LIVE mode."""
+        import base64
+        import math
+        import time
         from solders.pubkey import Pubkey
         from solders.system_program import transfer, TransferParams
         from solders.message import MessageV0
         from solders.transaction import VersionedTransaction
         from solders.hash import Hash
+        import jupiter_executor
+        from transaction_accounting import account_confirmed_sol_transfer
+
+        if config.TRADING_MODE.upper() != "LIVE":
+            raise ValueError("Manual SOL transfers are disabled while TRADING_MODE=PAPER.")
+        if self.data_store.state.get("emergency_stop"):
+            raise ValueError("Emergency stop is active; manual SOL transfers are blocked.")
+        if self.data_store.state.get("pending_transactions"):
+            raise ValueError("A transaction signature is unresolved; reconcile it before transferring.")
+        if not isinstance(amount_sol, (int, float)) or isinstance(amount_sol, bool) or not math.isfinite(amount_sol):
+            raise ValueError("Transfer amount must be a finite number.")
+        if amount_sol <= 0 or amount_sol > config.MAX_MANUAL_TRANSFER_SOL:
+            raise ValueError(
+                f"Transfer amount must be greater than zero and at most {config.MAX_MANUAL_TRANSFER_SOL:g} SOL."
+            )
+        try:
+            destination_key = Pubkey.from_string(destination)
+        except Exception as exc:
+            raise ValueError("Destination is not a valid Solana public key.") from exc
 
         keypair = self.get_keypair(label)
+        wallet_pubkey = str(keypair.pubkey())
+        if str(destination_key) == wallet_pubkey:
+            raise ValueError("Source and destination wallets must be different.")
         lamports = int(amount_sol * 1_000_000_000)
+        if lamports <= 0:
+            raise ValueError("Transfer amount is below one lamport.")
 
         blockhash_payload = {"jsonrpc": "2.0", "id": 1, "method": "getLatestBlockhash", "params": []}
         blockhash_result = await rpc_client.rpc_post(blockhash_payload, timeout=10)
         blockhash_str = blockhash_result.get("value", {}).get("blockhash") if isinstance(blockhash_result, dict) else None
         if not blockhash_str:
-            raise ValueError("Impossible de récupérer le dernier blockhash — transfert annulé.")
+            raise ValueError("No recent blockhash; transfer cancelled.")
+        await jupiter_executor._assert_blockhash_valid(blockhash_str)
 
         ix = transfer(TransferParams(
             from_pubkey=keypair.pubkey(),
-            to_pubkey=Pubkey.from_string(destination),
+            to_pubkey=destination_key,
             lamports=lamports,
         ))
         msg = MessageV0.try_compile(
@@ -180,18 +204,56 @@ class WalletManager:
             address_lookup_table_accounts=[],
             recent_blockhash=Hash.from_string(blockhash_str),
         )
+        message_b64 = base64.b64encode(bytes(msg)).decode("ascii")
+        fee_result = await rpc_client.rpc_post({
+            "jsonrpc": "2.0", "id": 1, "method": "getFeeForMessage",
+            "params": [message_b64, {"encoding": "base64", "commitment": "confirmed"}],
+        }, timeout=10)
+        try:
+            estimated_fee = int(fee_result["value"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("Network fee could not be verified; transfer cancelled.") from exc
+        if estimated_fee < 0 or estimated_fee > config.MAX_TRANSACTION_FEE_LAMPORTS:
+            raise ValueError("Estimated network fee exceeds the configured transaction limit.")
+
         tx = VersionedTransaction(msg, [keypair])
+        signature = str(tx.signatures[0])
+        self.data_store.record_pending_transaction({
+            "signature": signature,
+            "wallet": wallet_pubkey,
+            "destination": str(destination_key),
+            "amount_lamports": lamports,
+            "kind": "manual_sol_transfer",
+            "status": "submitted",
+            "created_at": int(time.time()),
+        })
+        try:
+            signed_b64 = base64.b64encode(bytes(tx)).decode("ascii")
+            result = await rpc_client.rpc_post({
+                "jsonrpc": "2.0", "id": 1,
+                "method": "sendTransaction",
+                "params": [signed_b64, {"encoding": "base64", "skipPreflight": False, "maxRetries": 3}],
+            }, timeout=15)
+            if result != signature:
+                raise ValueError("RPC returned a different transfer signature.")
+            await jupiter_executor._confirm_transaction(signature)
+            confirmed = await jupiter_executor._get_confirmed_transaction(signature)
+            accounting = account_confirmed_sol_transfer(
+                wallet_pubkey, str(destination_key), lamports, confirmed
+            )
+            self.data_store.resolve_pending_transaction(signature, accounting)
+        except Exception as exc:
+            if any(
+                item.get("signature") == signature
+                for item in self.data_store.state.get("pending_transactions", [])
+            ):
+                self.data_store.activate_emergency_stop(
+                    f"manual transfer outcome requires reconciliation: {str(exc)[:300]}"
+                )
+            raise
 
-        import base64
-        signed_b64 = base64.b64encode(bytes(tx)).decode("utf-8")
-        send_payload = {
-            "jsonrpc": "2.0", "id": 1,
-            "method": "sendTransaction",
-            "params": [signed_b64, {"encoding": "base64", "skipPreflight": False, "maxRetries": 3}],
-        }
-        result = await rpc_client.rpc_post(send_payload, timeout=15)
-        if not result or not isinstance(result, str):
-            raise ValueError(f"Échec de l'envoi de la transaction (réponse RPC: {result})")
-
-        log.info(f"📤 [Disperse SOL] {amount_sol} SOL envoyé depuis '{label}' vers {destination[:8]}... — tx {result}")
-        return result
+        log.info(
+            "[Manual SOL transfer] %s lamports from '%s' to %s — tx %s",
+            lamports, label, str(destination_key)[:8], signature,
+        )
+        return signature
