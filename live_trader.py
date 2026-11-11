@@ -208,7 +208,7 @@ class LiveTrader(PaperTrader):
             signature=signature,
             error=error,
         )
-        if status == "confirmed" and intent.side == "buy":
+        if status == "confirmed" and getattr(intent, "side", "buy") == "buy":
             self.data_store.state["safety_order_intents"][intent.idempotency_key][
                 "accounting_status"
             ] = "awaiting_accounting"
