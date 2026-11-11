@@ -181,9 +181,10 @@ async def execute_swap(input_mint: str, output_mint: str, amount_lamports: int, 
     keypair: si fourni, signe avec ce keypair précis (utilisé par MultiBuy pour
     exécuter depuis plusieurs wallets différents). Sinon, retombe sur le wallet
     unique de wallet.py (SOLANA_PRIVATE_KEY) — comportement historique inchangé.
-    use_jito: si True (et config.JITO_ENABLED), soumet via bundle Jito avec tip
-    pour une inclusion plus rapide. Repli automatique et transparent sur l'envoi
-    RPC classique si Jito échoue (réseau, timeout, etc.) — jamais bloquant.
+    use_jito: si True (et config.JITO_ENABLED), soumet via bundle Jito avec tip.
+    En cas d'erreur de soumission Jito, le résultat est considéré comme inconnu :
+    aucun renvoi RPC automatique n'est effectué, afin d'éviter un double achat
+    si le bundle a été accepté mais que la réponse s'est perdue.
     Retourne : {"signature": str, "input_amount": int, "output_amount": int,
                 "price_impact_pct": float}
     Lève SwapError en cas d'échec à n'importe quelle étape.
@@ -234,12 +235,16 @@ async def execute_swap(input_mint: str, output_mint: str, amount_lamports: int, 
             await _measured_async_stage("submit", _send_via_jito(signed_bytes, keypair, blockhash), "jito")
             log.info(f"📡 Transaction envoyée via Jito : {signature} — confirmation en cours...")
         except Exception as e:
-            log.warning(f"⚠️ Envoi Jito a échoué ({e}) — repli sur l'envoi RPC classique.")
-            await _measured_async_stage("submit", _send_via_rpc(signed_bytes), "rpc")
-            log.info(f"📡 Transaction envoyée via RPC (repli) : {signature} — confirmation en cours...")
+            # Une erreur/expiration de réponse ne prouve pas que Jito n'a
+            # pas accepté le bundle. Ne jamais renvoyer la même opération
+            # via RPC : cela pourrait exécuter deux swaps.
+            log.error(f"⚠️ Résultat de soumission Jito incertain ({e}); réconciliation requise.")
+            raise SwapOutcomeUnknown(
+                "Soumission Jito incertaine; aucun renvoi RPC automatique pour éviter un double swap."
+            ) from e
     else:
-        await _send_via_rpc(signed_bytes)
-        log.info(f"📡 Transaction envoyée : {signature} — confirmation en cours...")
+        await _measured_async_stage("submit", _send_via_rpc(signed_bytes), "rpc")
+        log.info(f"📡 Transaction envoyée via RPC : {signature} — confirmation en cours...")
 
     await _measured_async_stage("confirm", _confirm_transaction(signature), "solana_rpc")
     log.info(f"✅ Transaction confirmée : {signature}")
