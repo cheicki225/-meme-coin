@@ -460,6 +460,7 @@ class PaperTrader:
             "cost_basis_usd": cost_basis_usd,
             "units": units,
             "token_decimals": buy_result.get("token_decimals"),
+            "execution_wallet": buy_result.get("execution_wallet"),
             "fee_lamports": int(buy_result.get("fee_lamports", 0)),
             "settings": settings,
             "ath_market_cap": market_cap,
@@ -480,7 +481,6 @@ class PaperTrader:
         }
 
         self.data_store.state.setdefault("open_positions", []).append(position)
-        self._release_entry_risk(reservation_id)
         if buy_signature:
             self.data_store.resolve_pending_transaction(
                 buy_signature, {"position_opened": token_mint, "units": units, "cost_basis_usd": cost_basis_usd}
@@ -488,6 +488,7 @@ class PaperTrader:
         if settings.get("buy_only_once", True):
             self.data_store.mark_bought(source_wallet, token_mint)
         self.data_store.save()
+        self._release_entry_risk(reservation_id)
 
         log.info(
             f"📈 [{config.TRADING_MODE}] Position ouverte sur {token_mint} @ ${actual_entry_price:.8f} "
