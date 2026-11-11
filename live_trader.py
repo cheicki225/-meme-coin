@@ -655,6 +655,12 @@ class LiveTrader(PaperTrader):
         if record.get("status") != "confirmed_awaiting_accounting":
             log.critical("Sell intent is not confirmed; reservation retained.")
             return False
-        registry.pop(token_mint, None)
-        self._persist_safety_state()
+        removed = registry.pop(token_mint, None)
+        try:
+            self._persist_safety_state()
+        except Exception:
+            # Keep the in-memory lock if durable release failed. Otherwise the
+            # running process could submit the same sell again before restart.
+            registry[token_mint] = record if removed is None else removed
+            raise
         return True
