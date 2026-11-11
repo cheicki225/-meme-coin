@@ -282,6 +282,8 @@ class SniperTelegramBot:
         self.app.add_handler(CommandHandler("positions", self.cmd_positions))
         self.app.add_handler(CommandHandler("help", self.cmd_help))
         self.app.add_handler(CommandHandler("settings", self.cmd_settings))
+        self.app.add_handler(CommandHandler("halt", self.cmd_halt))
+        self.app.add_handler(CommandHandler("resume", self.cmd_resume))
         self.app.add_handler(CommandHandler("analyze", self.cmd_analyze))
         self.app.add_handler(CommandHandler("wallet", self.cmd_wallet_analyze))
         self.app.add_handler(CommandHandler("dev", self.cmd_dev_analyze))
@@ -332,6 +334,33 @@ class SniperTelegramBot:
     # ══════════════════════════════════════════════════════════
     # COMMANDES
     # ══════════════════════════════════════════════════════════
+
+    async def cmd_halt(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user = update.effective_user
+        self.data_store.activate_emergency_stop(
+            f"manual Telegram halt by user {user.id if user else 'unknown'}"
+        )
+        await update.effective_message.reply_text(
+            "🛑 Arrêt d'urgence activé. Les nouvelles opérations sont suspendues."
+        )
+
+    async def cmd_resume(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        pending = self.data_store.state.get("pending_transactions", [])
+        if pending:
+            signatures = "\n".join(f"• {item.get('signature', 'unknown')}" for item in pending[:5])
+            await update.effective_message.reply_text(
+                "Reprise refusée : des signatures restent à réconcilier. "
+                "Vérifiez leur état sur Solana puis réconciliez-les avant la reprise.\n" + signatures
+            )
+            return
+        if self.data_store.clear_emergency_stop():
+            await update.effective_message.reply_text(
+                "✅ Arrêt d'urgence désactivé. Les limites de pertes et d'exposition restent actives."
+            )
+        else:
+            await update.effective_message.reply_text(
+                "Reprise refusée : l'arrêt d'urgence n'a pas pu être désactivé."
+            )
 
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         self.data_store.set_telegram_chat_id(update.effective_chat.id)
