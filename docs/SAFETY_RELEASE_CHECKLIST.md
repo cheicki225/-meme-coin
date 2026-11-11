@@ -24,6 +24,26 @@ This checklist is required before enabling LIVE trading.
 - Network-free reconciliation helpers list unresolved intents and apply explicit operator-confirmed resolutions.
 - Automated pytest checks in GitHub Actions include guard + runtime/idempotency + reconciliation tests.
 
+## Developer migration, auto-sell and anti-rug safeguards
+
+- SPL token transfers sent by monitored `track_creation` developer wallets are recorded as migration candidates with mint/signature evidence.
+- Two distinct transferred mints or three independent transfer signatures escalate a candidate to `suspected_migration`; alerts are deduplicated and evidence is bounded.
+- Migration candidates are advisory only. Recipients are not auto-added or auto-traded because a token transfer alone does not prove wallet ownership or migration.
+- Copy-sell supports a per-wallet `copy_sell_pct` (default 100%) and validates the percentage before selling.
+- Sell Initials now routes through the same execution primitive as every other sell; it no longer mutates a LIVE position without submitting a sell.
+- PAPER and LIVE sell accounting use a single returned SOL-proceeds value, avoiding a second price lookup after a confirmed sell.
+- A confirmed LIVE sell that cannot be accounted is persisted in `safety_unaccounted_confirmed_sells`; further sells for that mint are blocked pending reconciliation.
+- Unexpected LIVE sell execution errors are persisted as `unknown`; no automatic retry is permitted until the transaction is reconciled.
+- Partial sell ratios and token unit amounts are validated before execution.
+- When GoPlus checks are enabled, missing credentials, API errors, malformed responses, and unindexed tokens fail closed. An enabled developer-behavior filter also blocks if its required data cannot be obtained.
+- GoPlus `is_open_source` is treated as source verification, not as proof that mint/freeze authorities were renounced.
+
+Known limitations (not represented as completed capabilities):
+- SPL migration detection is heuristic and does not prove common ownership; it intentionally does not auto-add destinations.
+- Front Run Sell remains polling-based/best-effort, not same-block execution.
+- Auto-Sell on Big Buy remains an approximate pool-transaction heuristic.
+- No comprehensive LP-liquidity lock/migration monitor or deterministic rug-proof classifier is implemented.
+
 ## Required before LIVE activation
 
 - [x] Call `validate_order()` from the actual LIVE buy path before every swap.
@@ -38,6 +58,10 @@ This checklist is required before enabling LIVE trading.
 - [x] Fail closed when SPL token decimals cannot be verified, with tests.
 - [x] Persist confirmed buy signature and raw amounts when post-confirmation accounting fails; block further buys for the mint until reconciliation, with regression tests.
 - [x] Prevent executor code from downgrading terminal intents; restrict operator resolution to unresolved intents and verified outcomes, with regression tests.
+- [x] Detect and persist SPL transfer-based developer migration candidates with deduplication and escalation tests.
+- [x] Execute Copy Sell percentages through the sell primitive; route Sell Initials through real execution; test both.
+- [x] Persist confirmed sell accounting failures and unexpected sell outcomes; block automatic repeat sells.
+- [x] Fail closed when enabled anti-rug provider checks or configured developer-behavior data are unavailable.
 - [x] Add network-free reconciliation helpers for intents left in `unknown` state.
 - [ ] Run the complete repository test suite (the dedicated `tests/` CI suite passes; root-level/manual checks remain to be audited).
 - [ ] Run PAPER mode soak testing before any LIVE transaction.
