@@ -1,4 +1,7 @@
+import asyncio
 import sqlite3
+
+import wallet_history
 
 import wallet_data_collector as collector
 
@@ -58,3 +61,58 @@ def test_store_is_idempotent_and_pnl_stays_unknown(tmp_path):
     assert len(rows) == 1
     assert rows[0]["realized_pnl_sol"] is None
     assert rows[0]["entry_price_sol"] is None
+
+
+
+def test_signature_fetch_distinguishes_valid_empty_from_rpc_failure(monkeypatch):
+    calls = {"count": 0}
+
+    async def empty_rpc(*args, **kwargs):
+        calls["count"] += 1
+        return []
+
+    monkeypatch.setattr(wallet_history.rpc_client, "rpc_post", empty_rpc)
+    assert asyncio.run(wallet_history._get_signatures("Wallet", max_retries=2, raise_on_error=True)) == []
+    assert calls["count"] == 1
+
+
+def test_signature_fetch_raises_after_invalid_rpc_responses(monkeypatch):
+    async def invalid_rpc(*args, **kwargs):
+        return None
+
+    async def no_wait(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(wallet_history.rpc_client, "rpc_post", invalid_rpc)
+    monkeypatch.setattr(wallet_history.asyncio, "sleep", no_wait)
+    try:
+        asyncio.run(wallet_history._get_signatures("Wallet", max_retries=2, raise_on_error=True))
+    except RuntimeError as exc:
+        assert "failed after 2 attempts" in str(exc)
+    else:
+        raise AssertionError("RPC failure must not be converted to empty history")
+
+
+def test_collect_wallet_reports_signature_rpc_failure(monkeypatch, tmp_path):
+    monkeypatch.setattr(collector.config, "HELIUS_API_KEY", "test-key")
+
+    async def failed_signatures(*args, **kwargs):
+        raise RuntimeError("RPC unavailable")
+
+    monkeypatch.setattr(collector.wallet_history, "_get_signatures", failed_signatures)
+    result = asyncio.run(collector.collect_wallet(WALLET, db_path=tmp_path / "wallets.sqlite3"))
+    assert result["status"] == "error"
+    assert result["reason"] == "signature_fetch_failed"
+
+
+def test_collect_wallet_reports_valid_empty_history(monkeypatch, tmp_path):
+    monkeypatch.setattr(collector.config, "HELIUS_API_KEY", "test-key")
+
+    async def empty_signatures(*args, **kwargs):
+        return []
+
+    monkeypatch.setattr(collector.wallet_history, "_get_signatures", empty_signatures)
+    result = asyncio.run(collector.collect_wallet(WALLET, db_path=tmp_path / "wallets.sqlite3"))
+    assert result["status"] == "ok"
+    assert result["signatures_scanned"] == 0
+    assert result["events_detected"] == 0
