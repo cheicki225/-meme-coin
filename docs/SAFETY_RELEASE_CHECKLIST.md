@@ -36,6 +36,8 @@ This checklist is required before enabling LIVE trading.
 - [x] Treat post-submission confirmation timeouts as ambiguous and block automatic buy retries, with tests.
 - [x] Block repeated sells for a token after an ambiguous confirmation timeout, with a mocked regression test.
 - [x] Fail closed when SPL token decimals cannot be verified, with tests.
+- [x] Persist confirmed buy signature and raw amounts when post-confirmation accounting fails; block further buys for the mint until reconciliation, with regression tests.
+- [x] Prevent executor code from downgrading terminal intents; restrict operator resolution to unresolved intents and verified outcomes, with regression tests.
 - [x] Add network-free reconciliation helpers for intents left in `unknown` state.
 - [ ] Run the complete repository test suite (the dedicated `tests/` CI suite passes; root-level/manual checks remain to be audited).
 - [ ] Run PAPER mode soak testing before any LIVE transaction.
