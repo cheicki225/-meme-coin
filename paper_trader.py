@@ -1187,6 +1187,8 @@ class PaperTrader:
 
         state = self.data_store.state
         state["total_pnl_usd"] = state.get("total_pnl_usd", 0) + pnl_usd
+        if pnl_usd < 0:
+            state["session_losses_usd"] = state.get("session_losses_usd", 0) + abs(pnl_usd)
         state.setdefault("trades", []).append({
             "token_mint": position["token_mint"], "type": "partial_close",
             "sell_ratio": sell_ratio, "result_pct": change_pct, "pnl_usd": pnl_usd, "time": time.time(),
@@ -1196,6 +1198,13 @@ class PaperTrader:
             self.data_store.resolve_pending_transaction(
                 sell_signature, {"position_updated": position["token_mint"], "pnl_usd": pnl_usd}
             )
+        if state.get("session_losses_usd", 0) >= config.CIRCUIT_BREAKER_USD:
+            self.data_store.activate_emergency_stop("session loss limit reached")
+            if self.notifier:
+                await self.notifier.notify(
+                    "risk_alert",
+                    f"🛑 *Limite de pertes atteinte*\nPertes de session: ${state.get('session_losses_usd', 0):.2f}. Arrêt d'urgence activé.",
+                )
 
         log.info(
             f"✅ [{config.TRADING_MODE}] Vente partielle sur {position['token_mint']} "
