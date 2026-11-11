@@ -19,6 +19,8 @@ import asyncio
 import base64
 import logging
 import math
+import inspect
+import time
 
 import aiohttp
 from solders.transaction import VersionedTransaction
@@ -26,6 +28,7 @@ from solders.keypair import Keypair
 
 import config
 import rpc_client
+from transaction_accounting import AccountingError, account_confirmed_swap
 import wallet
 
 log = logging.getLogger("jupiter_executor")
@@ -260,6 +263,27 @@ async def _send_via_rpc(signed_bytes: bytes) -> str:
     return result
 
 
+async def _get_confirmed_transaction(signature: str, attempts: int = 5) -> dict:
+    """Fetch confirmed accounting metadata; never substitute the quote for fills."""
+    payload = {
+        "jsonrpc": "2.0", "id": 1, "method": "getTransaction",
+        "params": [signature, {
+            "encoding": "json", "commitment": "confirmed",
+            "maxSupportedTransactionVersion": 0,
+        }],
+    }
+    for attempt in range(attempts):
+        result = await rpc_client.rpc_post(payload, timeout=15)
+        if isinstance(result, dict) and isinstance(result.get("meta"), dict):
+            return result
+        if attempt + 1 < attempts:
+            await asyncio.sleep(min(2 * (attempt + 1), 6))
+    raise SwapError(
+        f"Transaction {signature} was confirmed but accounting metadata is unavailable; "
+        "the pending signature is retained for manual reconciliation."
+    )
+
+
 async def _confirm_transaction(signature: str, timeout_s: int = None) -> bool:
     """Poll jusqu'à confirmation de la transaction ou timeout."""
     timeout_s = timeout_s or config.TX_CONFIRMATION_TIMEOUT_S
@@ -286,7 +310,7 @@ async def _confirm_transaction(signature: str, timeout_s: int = None) -> bool:
 
 
 async def execute_swap(input_mint: str, output_mint: str, amount_lamports: int, slippage_bps: int,
-                        keypair=None, use_jito: bool = False) -> dict:
+                        keypair=None, use_jito: bool = False, on_signed=None) -> dict:
     """
     Exécute un swap complet réel : quote -> build -> sign -> send -> confirm.
     keypair: si fourni, signe avec ce keypair précis (utilisé par MultiBuy pour
@@ -330,6 +354,20 @@ async def execute_swap(input_mint: str, output_mint: str, amount_lamports: int, 
     signed_bytes = bytes(signed_tx)
     signature = str(signed_tx.signatures[0])
 
+    if on_signed is not None:
+        record = {
+            "signature": signature,
+            "wallet": user_pubkey,
+            "input_mint": input_mint,
+            "output_mint": output_mint,
+            "requested_input_lamports": amount_lamports,
+            "status": "submitted",
+            "created_at": int(time.time()),
+        }
+        callback_result = on_signed(record)
+        if inspect.isawaitable(callback_result):
+            await callback_result
+
     if use_jito and config.JITO_ENABLED:
         try:
             await _send_via_jito(signed_bytes, keypair, blockhash)
@@ -349,9 +387,34 @@ async def execute_swap(input_mint: str, output_mint: str, amount_lamports: int, 
     await _confirm_transaction(signature)
     log.info(f"✅ Transaction confirmée : {signature}")
 
+    try:
+        confirmed = await _get_confirmed_transaction(signature)
+        accounting = account_confirmed_swap(user_pubkey, input_mint, output_mint, confirmed)
+    except AccountingError as exc:
+        raise SwapError(
+            f"Transaction {signature} is confirmed but its balance deltas are unsafe to account: {exc}"
+        ) from exc
+
+    input_delta = accounting.get("input_delta_raw")
+    output_delta = accounting.get("output_delta_raw")
+    if input_mint == config.SOL_MINT:
+        input_amount = max(0, -accounting["native_delta_lamports"])
+    else:
+        input_amount = abs(int(input_delta or 0))
+    if output_mint == config.SOL_MINT:
+        output_amount = max(0, accounting["native_delta_lamports"])
+    else:
+        output_amount = max(0, int(output_delta or 0))
+    if input_amount <= 0 or output_amount <= 0:
+        raise SwapError(
+            f"Transaction {signature} is confirmed but actual swap amounts are unavailable; "
+            "pending state must be reconciled manually."
+        )
+
     return {
         "signature": signature,
-        "input_amount": int(quote["inAmount"]),
-        "output_amount": int(quote["outAmount"]),
+        "input_amount": input_amount,
+        "output_amount": output_amount,
         "price_impact_pct": float(quote.get("priceImpactPct", 0)) * 100,
+        "accounting": accounting,
     }
