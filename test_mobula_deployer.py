@@ -14,4 +14,5 @@ async def main():
     print(f"Résultat : {result}")
     print(f"Nombre de tokens trouvés : {len(result)}")
 
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())
