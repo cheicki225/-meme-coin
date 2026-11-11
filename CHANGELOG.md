@@ -3,7 +3,7 @@
 ## Non publié — phase de fiabilité (11 novembre 2026)
 
 - Revue des 16 fichiers modifiés dans la PR n°3; migration de l'exécuteur vers les endpoints Jupiter Swap API V2 officiels.
-- Rejette les routeurs autres que Metis, les payeurs tiers, les transactions sponsorisées, les frais/loyers au-delà des limites, les programmes top-level inattendus et les blockhash invalides.
+- Verrouille LIVE par défaut derrière un opt-in explicite; résout les Address Lookup Tables et valide les ATA, payeurs, signataires, programmes top-level, blockhash, frais et loyers.
 - Persiste la signature avant exécution, utilise `/execute` sans renvoi automatique et attend `finalized` avant de calculer le PnL.
 - Calcule les flux SOL/token à partir des soldes confirmés, frais et loyer inclus; verrouille les ventes LIVE MultiBuy tant que la comptabilité par wallet manque.
 - Ajoute SQLite WAL, sauvegardes cohérentes et restauration, import JSON initial et protection du numéro de schéma.
