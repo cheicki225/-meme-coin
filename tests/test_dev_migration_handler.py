@@ -47,8 +47,15 @@ def test_migration_candidate_deduplicates_replayed_signature():
     bot.notifier = Notifier()
 
     asyncio.run(bot.on_dev_token_transfer("DevWallet", "ChildWallet", "MintA", 10.0, "same-sig"))
-    asyncio.run(bot.on_dev_token_transfer("DevWallet", "ChildWallet", "MintB", 5.0, "same-sig"))
+    asyncio.run(bot.on_dev_token_transfer("DevWallet", "ChildWallet", "MintA", 10.0, "same-sig"))
     candidate = bot.data_store.state["dev_migration_candidates"]["DevWallet:ChildWallet"]
     assert candidate["transfer_count"] == 1
     assert candidate["token_mints"] == ["MintA"]
     assert len(bot.notifier.messages) == 1
+
+    # Deux mints différents dans la même transaction sont deux indices,
+    # même si la signature on-chain est identique.
+    asyncio.run(bot.on_dev_token_transfer("DevWallet", "ChildWallet", "MintB", 5.0, "same-sig"))
+    assert candidate["transfer_count"] == 2
+    assert candidate["status"] == "suspected_migration"
+    assert len(bot.notifier.messages) == 2
