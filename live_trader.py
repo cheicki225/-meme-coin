@@ -418,7 +418,11 @@ class LiveTrader(PaperTrader):
         }
 
     async def _execute_sell(self, token_mint: str, units: float, current_price: float, settings: dict) -> dict:
-        if units <= 0:
+        try:
+            units = float(units)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(units) or units <= 0:
             return None
 
         unresolved_sells = self.data_store.state.get("safety_unresolved_sell_tokens", {})
@@ -437,8 +441,6 @@ class LiveTrader(PaperTrader):
             )
             return None
 
-        if not math.isfinite(float(units)) or units <= 0:
-            return None
         decimals = await _get_token_decimals(token_mint)
         amount_raw = int(units * (10 ** decimals))
         if amount_raw <= 0:
