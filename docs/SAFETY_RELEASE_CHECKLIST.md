@@ -60,6 +60,9 @@ Known limitations (not represented as completed capabilities):
 - [x] Block repeated sells for a token after an ambiguous confirmation timeout, with a mocked regression test.
 - [x] Fail closed when SPL token decimals cannot be verified, with tests.
 - [x] Persist confirmed buy signature and raw amounts when post-confirmation accounting fails; block further buys for the mint until reconciliation, with regression tests.
+- [x] Atomically persist LIVE safety state and fail closed on disk errors before swap submission.
+- [x] Refuse LIVE startup when the persisted state is unreadable or malformed.
+- [x] Keep confirmed buy intents blocked until the corresponding position is durably saved; support grouped MultiBuy accounting without allowing ambiguous legs to continue.
 - [x] Prevent executor code from downgrading terminal intents; restrict operator resolution to unresolved intents and verified outcomes, with regression tests.
 - [x] Detect and persist SPL transfer-based developer migration candidates with deduplication and escalation tests.
 - [x] Execute Copy Sell percentages through the sell primitive; route Sell Initials through real execution; test both.
