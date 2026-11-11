@@ -135,25 +135,28 @@ def initialize_store(db_path: str | Path = DEFAULT_DB_PATH) -> None:
             raise sqlite3.DatabaseError("SQLite WAL mode could not be enabled")
         with db:
             db.execute("""
-            CREATE TABLE IF NOT EXISTS wallet_activity (
-                signature TEXT NOT NULL,
-                wallet_address TEXT NOT NULL,
-                token_mint TEXT NOT NULL,
-                block_time INTEGER,
-                event_type TEXT NOT NULL,
-                token_delta_raw TEXT NOT NULL,
-                token_decimals INTEGER,
-                sol_delta REAL,
-                classification_confidence TEXT NOT NULL,
-                realized_pnl_sol REAL,
-                entry_price_sol REAL,
-                exit_price_sol REAL,
-                source TEXT NOT NULL,
-                collected_at INTEGER NOT NULL,
-                PRIMARY KEY (wallet_address, signature, token_mint)
+                CREATE TABLE IF NOT EXISTS wallet_activity (
+                    signature TEXT NOT NULL,
+                    wallet_address TEXT NOT NULL,
+                    token_mint TEXT NOT NULL,
+                    block_time INTEGER,
+                    event_type TEXT NOT NULL,
+                    token_delta_raw TEXT NOT NULL,
+                    token_decimals INTEGER,
+                    sol_delta REAL,
+                    classification_confidence TEXT NOT NULL,
+                    realized_pnl_sol REAL,
+                    entry_price_sol REAL,
+                    exit_price_sol REAL,
+                    source TEXT NOT NULL,
+                    collected_at INTEGER NOT NULL,
+                    PRIMARY KEY (wallet_address, signature, token_mint)
+                )
+            """)
+            db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_wallet_activity_time "
+                "ON wallet_activity(wallet_address, block_time)"
             )
-        """)
-        db.execute("CREATE INDEX IF NOT EXISTS idx_wallet_activity_time ON wallet_activity(wallet_address, block_time)")
             db.execute("""
                 CREATE TABLE IF NOT EXISTS wallet_cursors (
                     wallet_address TEXT PRIMARY KEY,
