@@ -88,3 +88,33 @@ def test_execute_swap_accepts_complete_quote_and_returns_validated_amounts(monke
     assert result["input_amount"] == 100_000_000
     assert result["output_amount"] == 250_000
     assert result["price_impact_pct"] == pytest.approx(1.0)
+
+
+
+def test_confirmation_timeout_is_an_unknown_outcome(monkeypatch):
+    async def quote(*args, **kwargs):
+        return _quote()
+
+    async def build(*args, **kwargs):
+        return "signed-build-placeholder"
+
+    def sign(*args, **kwargs):
+        return b"signed", "signature-timeout", "blockhash-1"
+
+    async def send(*args, **kwargs):
+        return "signature-timeout"
+
+    async def confirm(*args, **kwargs):
+        raise executor.SwapOutcomeUnknown("confirmation timeout")
+
+    monkeypatch.setattr(executor, "get_quote", quote)
+    monkeypatch.setattr(executor, "_build_swap_transaction", build)
+    monkeypatch.setattr(executor, "_sign_transaction", sign)
+    monkeypatch.setattr(executor, "_send_via_rpc", send)
+    monkeypatch.setattr(executor, "_confirm_transaction", confirm)
+
+    with pytest.raises(executor.SwapOutcomeUnknown, match="confirmation timeout"):
+        asyncio.run(executor.execute_swap(
+            "So11111111111111111111111111111111111111112",
+            "TokenMint", 100_000_000, 500, keypair=FakeKeypair()
+        ))
