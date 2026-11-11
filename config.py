@@ -135,6 +135,13 @@ except ValueError as exc:
 # Place l'image de bannière dans le dossier du bot et indique son nom ici.
 BANNER_IMAGE_PATH = os.getenv("BANNER_IMAGE_PATH", "banner.jpg")
 DATA_FILE = os.getenv("DATA_FILE", "sniper_data.json")
+DATA_BACKEND = os.getenv("DATA_BACKEND", "sqlite").strip().lower()
+_DEFAULT_SQLITE_PATH = os.path.splitext(DATA_FILE)[0] + ".sqlite3"
+SQLITE_DB_FILE = os.getenv("SQLITE_DB_FILE", _DEFAULT_SQLITE_PATH)
+WALLET_COLLECTOR_ENABLED = os.getenv("WALLET_COLLECTOR_ENABLED", "false").lower() == "true"
+WALLET_COLLECTOR_INTERVAL_S = int(os.getenv("WALLET_COLLECTOR_INTERVAL_S", "300"))
+WALLET_COLLECTOR_SIGNATURES_PER_WALLET = int(os.getenv("WALLET_COLLECTOR_SIGNATURES_PER_WALLET", "10"))
+WALLET_COLLECTOR_MAX_WALLETS_PER_CYCLE = int(os.getenv("WALLET_COLLECTOR_MAX_WALLETS_PER_CYCLE", "5"))
 
 # ── Filtres de découverte des tokens (étape 1 de la vidéo) ──────
 VOLUME_MIN_USD = float(os.getenv("VOLUME_MIN_USD", "30000"))
@@ -151,6 +158,8 @@ SL_PCT = float(os.getenv("SL_PCT", "0"))          # 0 = SL désactivé par défa
 POSITION_SIZE_USD = float(os.getenv("POSITION_SIZE_USD", "50"))
 BUDGET_USD = float(os.getenv("BUDGET_USD", "500"))
 CIRCUIT_BREAKER_USD = float(os.getenv("CIRCUIT_BREAKER_USD", "150"))
+MAX_OPEN_EXPOSURE_USD = float(os.getenv("MAX_OPEN_EXPOSURE_USD", "250"))
+MAX_OPEN_POSITIONS = int(os.getenv("MAX_OPEN_POSITIONS", "10"))
 
 # ── Backtest / validation avant ajout au monitoring ──────────────
 BACKTEST_MIN_TOKENS = int(os.getenv("BACKTEST_MIN_TOKENS", "10"))  # nb de tokens passés à analyser
