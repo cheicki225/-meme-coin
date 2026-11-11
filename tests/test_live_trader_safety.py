@@ -122,3 +122,56 @@ def test_ambiguous_sell_timeout_blocks_repeated_sell(monkeypatch):
     monkeypatch.setattr(live_trader.jupiter_executor, "execute_swap", must_not_execute)
     second = asyncio.run(trader._execute_sell("TokenMint", 100.0, 1.0, {}))
     assert second is None
+
+
+def test_confirmed_buy_is_preserved_when_token_metadata_fails(monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.setenv("BOT_EMERGENCY_STOP", "1")
+    intent = SimpleNamespace(idempotency_key="buy:test-confirmed")
+    state = {"safety_order_intents": {intent.idempotency_key: {"status": "pending"}}}
+    trader = _trader(state)
+    trader._get_execution_keypair = lambda: FakeKeypair()
+
+    async def reserve(**kwargs):
+        return intent
+
+    async def execute(*args, **kwargs):
+        return {
+            "signature": "confirmed-signature",
+            "input_amount": 100_000_000,
+            "output_amount": 250_000,
+            "price_impact_pct": 0.5,
+        }
+
+    async def decimals(*args, **kwargs):
+        raise RuntimeError("RPC metadata unavailable")
+
+    monkeypatch.setattr(trader, "_reserve_live_buy_intent", reserve)
+    monkeypatch.setattr(live_trader.jupiter_executor, "execute_swap", execute)
+    monkeypatch.setattr(live_trader, "_get_token_decimals", decimals)
+
+    result = asyncio.run(trader._execute_buy("TokenMint", 1.0, {"buy_amount_sol": 0.1}))
+    assert result is None
+    assert state["safety_order_intents"][intent.idempotency_key]["status"] == "confirmed"
+    recovery = state["safety_unaccounted_confirmed_buys"]["confirmed-signature"]
+    assert recovery["status"] == "needs_accounting_reconciliation"
+    assert recovery["output_amount_raw"] == 250_000
+    assert recovery["input_amount_raw"] == 100_000_000
+    assert trader.data_store.saved is True
+
+
+def test_unaccounted_confirmed_buy_blocks_another_buy_for_same_token(monkeypatch):
+    trader = _trader({
+        "safety_unaccounted_confirmed_buys": {
+            "sig-1": {"token_mint": "TokenMint", "status": "needs_accounting_reconciliation"}
+        }
+    })
+    with pytest.raises(ValueError, match="accounting reconciliation"):
+        asyncio.run(trader._reserve_live_buy_intent(
+            token_mint="TokenMint",
+            entry_price=1.0,
+            amount_sol=0.1,
+            settings={},
+            keypair=FakeKeypair(),
+        ))
