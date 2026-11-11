@@ -73,7 +73,7 @@ Known limitations (not represented as completed capabilities):
 
 - [x] Add read-only same-pool liquidity-drop and pool-change alerts with bounded sampling and regression tests; alerts do not trigger automatic sells.
 - [x] Add operator-reviewed recovery helpers for unresolved LIVE sell intents; confirmed sells remain blocked until accounting is reconciled.
-- [ ] Run the complete repository test suite. The automated CI suite runs `pytest tests/` and compileall; `test_mobula_deployer.py` is a manual network script with top-level execution, so it must not be imported by pytest. Remaining manual checks still require review.
+- [x] Run `pytest tests/` and Python compileall in GitHub Actions; the full automated suite passes. `test_mobula_deployer.py` remains a manual network script with top-level execution and is intentionally excluded from pytest; manual network checks still require review.
 - [ ] Run the target-runtime PAPER soak using `docs/PAPER_SOAK_RUNBOOK.md`; CI is not a substitute.
 - [ ] Keep LIVE disabled until all unchecked items above are completed.
 
