@@ -427,16 +427,16 @@ class LiveTrader(PaperTrader):
 
         unresolved_sells = self.data_store.state.get("safety_unresolved_sell_tokens", {})
         unaccounted_sells = self.data_store.state.get("safety_unaccounted_confirmed_sells", {})
-        if not isinstance(unresolved_sells, dict) or not isinstance(unaccounted_sells, dict):
+        pending_sells = self.data_store.state.get("safety_pending_sell_tokens", {})
+        if (not isinstance(unresolved_sells, dict) or not isinstance(unaccounted_sells, dict)
+                or not isinstance(pending_sells, dict)):
             log.critical("Registre de ventes corrompu — vente bloquée par sécurité.")
             return None
-        if (token_mint in unresolved_sells
-                or any(
-                    isinstance(item, dict) and item.get("token_mint") == token_mint
-                    for item in unaccounted_sells.values()
-                )):
+        if (token_mint in unresolved_sells or token_mint in pending_sells
+                or any(isinstance(item, dict) and item.get("token_mint") == token_mint
+                       for item in unaccounted_sells.values())):
             log.critical(
-                f"🛑 Vente bloquée pour {token_mint[:8]}...: une vente précédente est ambiguë "
+                f"🛑 Vente bloquée pour {token_mint[:8]}...: une vente précédente est en cours, ambiguë "
                 "ou confirmée mais non comptabilisée; réconciliation requise."
             )
             return None
@@ -450,6 +450,23 @@ class LiveTrader(PaperTrader):
         slippage_bps = int(settings.get("buy_slippage_pct", 50) * 100)
         keypair = self._get_execution_keypair()
 
+        # Persist a sell intent before any network submission. A restart after
+        # this point must reconcile the signature/balance before another sell.
+        pending_registry = self.data_store.state.setdefault("safety_pending_sell_tokens", {})
+        if not isinstance(pending_registry, dict) or token_mint in pending_registry:
+            log.critical("Registre de ventes en cours invalide ou déjà réservé; vente bloquée.")
+            return None
+        sell_intent_id = f"{token_mint}:{time.time_ns()}"
+        pending_registry[token_mint] = {
+            "intent_id": sell_intent_id,
+            "status": "submitting",
+            "units": units,
+            "amount_raw": amount_raw,
+            "source_wallet": str(keypair.pubkey()),
+            "created_at": time.time(),
+        }
+        self.data_store.save()
+
         try:
             result = await jupiter_executor.execute_swap(
                 token_mint, config.SOL_MINT, amount_raw, slippage_bps,
@@ -459,16 +476,23 @@ class LiveTrader(PaperTrader):
             registry = self.data_store.state.setdefault("safety_unresolved_sell_tokens", {})
             registry[token_mint] = {
                 "status": "unknown",
+                "intent_id": sell_intent_id,
                 "units": units,
                 "created_at": time.time(),
                 "error": str(e)[:500],
             }
+            pending_registry[token_mint]["status"] = "unknown"
+            pending_registry[token_mint]["error"] = str(e)[:500]
             self.data_store.save()
             log.critical(
                 f"🛑 Vente LIVE ambiguë sur {token_mint[:8]}...; token bloqué jusqu'à réconciliation: {e}"
             )
             return None
         except jupiter_executor.SwapError as e:
+            # SwapError denotes a definite rejected/failed execution; only this
+            # explicit outcome releases the pre-send reservation.
+            pending_registry.pop(token_mint, None)
+            self.data_store.save()
             log.error(f"❌ Vente LIVE échouée sur {token_mint[:8]}...: {e}")
             return None
         except Exception as e:
@@ -480,10 +504,13 @@ class LiveTrader(PaperTrader):
                 return None
             registry[token_mint] = {
                 "status": "unknown",
+                "intent_id": sell_intent_id,
                 "units": units,
                 "created_at": time.time(),
                 "error": str(e)[:500],
             }
+            pending_registry[token_mint]["status"] = "unknown"
+            pending_registry[token_mint]["error"] = str(e)[:500]
             self.data_store.save()
             log.exception(
                 f"🛑 Vente LIVE à résultat inconnu sur {token_mint[:8]}...; "
@@ -495,6 +522,14 @@ class LiveTrader(PaperTrader):
         # comptabilisés, conserver la preuve et bloquer toute nouvelle vente
         # de ce mint : le prochain poll ne doit jamais renvoyer les mêmes tokens.
         signature = result.get("signature")
+        pending_registry[token_mint].update({
+            "status": "confirmed_awaiting_accounting",
+            "signature": signature,
+            "input_amount_raw": result.get("input_amount"),
+            "output_amount_raw": result.get("output_amount"),
+            "confirmed_at": time.time(),
+        })
+        self.data_store.save()
         try:
             raw_output = result.get("output_amount")
             raw_input = result.get("input_amount")
@@ -535,4 +570,26 @@ class LiveTrader(PaperTrader):
             f"(impact prix {result.get('price_impact_pct', 0):.2f}%) — tx {signature}"
         )
 
-        return {"proceeds_usd": proceeds_usd, "sol_received": sol_received, "signature": signature}
+        return {
+            "proceeds_usd": proceeds_usd,
+            "sol_received": sol_received,
+            "signature": signature,
+            "sell_intent_id": sell_intent_id,
+        }
+
+    def _finalize_sell_intent(self, token_mint: str, sell_intent_id: str) -> bool:
+        """Release a confirmed sell reservation only after position accounting is saved."""
+        registry = self.data_store.state.get("safety_pending_sell_tokens", {})
+        if not isinstance(registry, dict):
+            log.critical("Pending sell registry corrupted; reservation retained.")
+            return False
+        record = registry.get(token_mint)
+        if not isinstance(record, dict) or record.get("intent_id") != sell_intent_id:
+            log.critical("Sell intent mismatch during accounting finalization; reservation retained.")
+            return False
+        if record.get("status") != "confirmed_awaiting_accounting":
+            log.critical("Sell intent is not confirmed; reservation retained.")
+            return False
+        registry.pop(token_mint, None)
+        self.data_store.save()
+        return True
