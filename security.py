@@ -32,14 +32,14 @@ async def check_token_security(token_mint: str) -> dict:
         "is_honeypot": bool,
         "buy_tax": float, "sell_tax": float,
         "lp_locked_pct": float,
-        "owner_renounced": bool,
+        "owner_renounced": None (not established by this provider field),
+        "source_verified": bool,
         "security_score": int (0-100),
         "error": str | None,
     }
     """
     if not config.GOPLUS_API_KEY and not config.GOPLUS_API_SECRET:
-        # Pas de clé configurée : on ne bloque jamais silencieusement un achat,
-        # on retourne un score neutre avec une erreur explicite dans les logs.
+        # Vérification activée sans credentials : absence de preuve = blocage.
         log.warning("GoPlus non configuré — vérification requise indisponible; sécurité fail-closed.")
         return {"error": "no_api_key", "security_score": 0, "is_honeypot": None}
 
