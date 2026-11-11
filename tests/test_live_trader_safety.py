@@ -175,3 +175,47 @@ def test_unaccounted_confirmed_buy_blocks_another_buy_for_same_token(monkeypatch
             settings={},
             keypair=FakeKeypair(),
         ))
+
+
+
+def test_confirmed_sell_is_preserved_when_price_accounting_fails(monkeypatch):
+    async def decimals(*args, **kwargs):
+        return 6
+
+    async def execute(*args, **kwargs):
+        return {
+            "signature": "sell-confirmed-signature",
+            "input_amount": 100_000_000,
+            "output_amount": 250_000_000,
+            "price_impact_pct": 0.4,
+        }
+
+    async def unavailable_price():
+        raise RuntimeError("price feed unavailable")
+
+    monkeypatch.setattr(live_trader, "_get_token_decimals", decimals)
+    monkeypatch.setattr(live_trader.jupiter_executor, "execute_swap", execute)
+    monkeypatch.setattr(live_trader, "get_sol_usd_rate", unavailable_price)
+    trader = _trader({"open_positions": []})
+    trader._get_execution_keypair = lambda: FakeKeypair()
+
+    result = asyncio.run(trader._execute_sell("TokenMint", 100.0, 1.0, {}))
+    assert result is None
+    recovery = trader.data_store.state["safety_unaccounted_confirmed_sells"]["sell-confirmed-signature"]
+    assert recovery["status"] == "needs_accounting_reconciliation"
+    assert recovery["token_mint"] == "TokenMint"
+    assert recovery["output_amount_raw"] == 250_000_000
+    assert recovery["input_amount_raw"] == 100_000_000
+    assert trader.data_store.saved is True
+
+    async def must_not_execute(*args, **kwargs):
+        raise AssertionError("confirmed sell awaiting accounting must not be resubmitted")
+
+    monkeypatch.setattr(live_trader.jupiter_executor, "execute_swap", must_not_execute)
+    assert asyncio.run(trader._execute_sell("TokenMint", 100.0, 1.0, {})) is None
+
+
+def test_invalid_sell_units_are_rejected_before_rpc_or_swap():
+    trader = _trader({})
+    for units in (0, -1, float("nan"), float("inf")):
+        assert asyncio.run(trader._execute_sell("TokenMint", units, 1.0, {})) is None
