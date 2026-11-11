@@ -51,12 +51,11 @@ class DataStore:
                 self._sqlite_store = SQLiteStateStore(config.SQLITE_DB_FILE)
             except StateStoreCorruptError:
                 recovered = False
-                for candidate in sorted(
-                    glob.glob(os.path.join(self._backup_dir, "sniper_state_*.sqlite3")),
-                    reverse=True,
-                ):
+                for candidate in self._backup_candidates("sniper_state_*.sqlite3"):
                     try:
                         backup_store = SQLiteStateStore(candidate)
+                        if not backup_store.has_committed_state():
+                            continue
                         backup_store.load(self._default_state)
                         backup_store.backup_to(config.SQLITE_DB_FILE)
                         self._sqlite_store = SQLiteStateStore(config.SQLITE_DB_FILE)
@@ -73,28 +72,45 @@ class DataStore:
         elif os.path.exists(self.path):
             self._create_backup(reason="startup")
 
+    def _backup_candidates(self, pattern: str) -> list[str]:
+        candidates = glob.glob(os.path.join(self._backup_dir, pattern))
+        return sorted(candidates, key=lambda item: os.path.getmtime(item), reverse=True)
+
     def _load(self) -> dict:
         loaded = None
         if self._sqlite_store:
             try:
                 loaded = self._sqlite_store.load(self._default_state, legacy_json_path=self.path)
             except StateStoreError as exc:
-                # Recover from the newest valid legacy JSON backup. Never reset
-                # to defaults after a corrupt database or damaged state file.
-                for candidate in sorted(
-                    glob.glob(os.path.join(os.path.dirname(os.path.abspath(self.path)), BACKUP_DIR_NAME, "sniper_data_*.json")),
-                    reverse=True,
-                ):
-                    try:
-                        with open(candidate, "r", encoding="utf-8") as source:
-                            restored = json.load(source)
-                        if isinstance(restored, dict):
+                if (not isinstance(exc, StateStoreCorruptError)
+                        and self._sqlite_store.has_committed_state()):
+                    # Never downgrade a database written by a newer schema.
+                    raise
+                if isinstance(exc, StateStoreCorruptError):
+                    for candidate in self._backup_candidates("sniper_state_*.sqlite3"):
+                        try:
+                            backup_store = SQLiteStateStore(candidate)
+                            if not backup_store.has_committed_state():
+                                continue
+                            restored = backup_store.load(self._default_state)
+                            self._sqlite_store.save(restored)
                             loaded = restored
-                            self._sqlite_store.save(loaded)
-                            log.warning("State imported from JSON backup %s after load failure: %s", candidate, exc)
+                            log.warning("State restored from SQLite backup %s after load failure: %s", candidate, exc)
                             break
-                    except (OSError, json.JSONDecodeError) as backup_error:
-                        log.error("JSON backup %s is not recoverable: %s", candidate, backup_error)
+                        except (StateStoreError, OSError) as backup_error:
+                            log.error("SQLite backup %s is not recoverable: %s", candidate, backup_error)
+                if loaded is None:
+                    for candidate in self._backup_candidates("sniper_data_*.json"):
+                        try:
+                            with open(candidate, "r", encoding="utf-8") as source:
+                                restored = json.load(source)
+                            if isinstance(restored, dict):
+                                loaded = restored
+                                self._sqlite_store.save(loaded)
+                                log.warning("State imported from JSON backup %s after load failure: %s", candidate, exc)
+                                break
+                        except (OSError, json.JSONDecodeError, StateStoreError) as backup_error:
+                            log.error("JSON backup %s is not recoverable: %s", candidate, backup_error)
                 if loaded is None:
                     raise
         elif os.path.exists(self.path):
@@ -315,9 +331,10 @@ class DataStore:
     def _prune_old_backups(self):
         try:
             patterns = ("sniper_data_*.json", "sniper_state_*.sqlite3")
-            backups = sorted(
+            backups = [
                 path for pattern in patterns for path in glob.glob(os.path.join(self._backup_dir, pattern))
-            )
+            ]
+            backups.sort(key=lambda item: os.path.getmtime(item))
             while len(backups) > MAX_BACKUPS:
                 os.remove(backups.pop(0))
         except Exception as exc:
@@ -328,7 +345,7 @@ class DataStore:
         paths = []
         for pattern in ("sniper_state_*.sqlite3", "sniper_data_*.json"):
             paths.extend(glob.glob(os.path.join(self._backup_dir, pattern)))
-        return sorted(paths, reverse=True)
+        return sorted(paths, key=lambda item: os.path.getmtime(item), reverse=True)
 
     def restore_from_backup(self, backup_path: str) -> bool:
         """Restore a JSON or SQLite backup, preserving the current state first."""
