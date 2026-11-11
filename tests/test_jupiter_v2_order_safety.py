@@ -3,7 +3,7 @@ import asyncio
 import pytest
 
 import config
-from jupiter_executor import SwapError, _build_swap_transaction, _validate_order, _validate_quote, get_quote
+from jupiter_executor import SwapError, _build_swap_transaction, _validate_order, _validate_quote, execute_swap, get_quote
 
 
 WALLET = "Wallet111111111111111111111111111111111111"
@@ -63,3 +63,10 @@ def test_quote_requires_api_key_before_network_access(monkeypatch):
     monkeypatch.setattr(config, "JUPITER_API_KEY", "", raising=False)
     with pytest.raises(SwapError, match="JUPITER_API_KEY"):
         asyncio.run(get_quote(config.SOL_MINT, _order()["outputMint"], 1_000_000, 100, WALLET))
+
+
+def test_executor_refuses_live_mode_without_second_opt_in(monkeypatch):
+    monkeypatch.setattr(config, "TRADING_MODE", "LIVE", raising=False)
+    monkeypatch.setattr(config, "LIVE_EXECUTION_ENABLED", False, raising=False)
+    with pytest.raises(SwapError, match="LIVE execution is disabled"):
+        asyncio.run(execute_swap(config.SOL_MINT, _order()["outputMint"], 1_000_000, 100))
