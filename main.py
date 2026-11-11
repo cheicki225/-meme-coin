@@ -373,11 +373,11 @@ class SniperBot:
             label = "⚠️ Migration potentielle" if suspected else "🔎 Transfert SPL à surveiller"
             await self.notifier.notify(
                 "rugger_alert",
-                f"{label}\\nDev source: `{source_wallet[:8]}...`\\n"
-                f"Wallet destinataire: `{destination}`\\n"
-                f"Mint transféré: `{token_mint[:8]}...`\\n"
-                f"Transferts distincts: {candidate['transfer_count']} | Mints distincts: {len(candidate['token_mints'])}\\n"
-                f"Signature: `{signature[:16]}...`\\n"
+                f"{label}\nDev source: `{source_wallet[:8]}...`\n"
+                f"Wallet destinataire: `{destination}`\n"
+                f"Mint transféré: `{token_mint[:8]}...`\n"
+                f"Transferts distincts: {candidate['transfer_count']} | Mints distincts: {len(candidate['token_mints'])}\n"
+                f"Signature: `{signature[:16]}...`\n"
                 "_Indice heuristique uniquement : destinataire non ajouté automatiquement._",
             )
 
