@@ -355,7 +355,10 @@ class SniperBot:
             candidate["signatures"] = []
         if not isinstance(candidate.get("token_mints"), list):
             candidate["token_mints"] = []
-        if signature in candidate["signatures"]:
+        if not isinstance(candidate.get("transfer_events"), list):
+            candidate["transfer_events"] = []
+        event_key = f"{signature}:{token_mint}"
+        if event_key in candidate["transfer_events"]:
             return
         try:
             candidate["transfer_count"] = max(0, int(candidate.get("transfer_count", 0) or 0))
@@ -367,12 +370,15 @@ class SniperBot:
         if token_mint not in candidate["token_mints"]:
             candidate["token_mints"].append(token_mint)
         candidate["token_mints"] = candidate["token_mints"][:10]
-        candidate["signatures"].append(signature)
+        if signature not in candidate["signatures"]:
+            candidate["signatures"].append(signature)
         candidate["signatures"] = candidate["signatures"][-50:]
+        candidate["transfer_events"].append(event_key)
+        candidate["transfer_events"] = candidate["transfer_events"][-100:]
 
         # Deux mints distincts ou trois transactions indépendantes constituent
         # un signal plus fort, mais toujours heuristique (pas une preuve).
-        suspected = len(candidate["token_mints"]) >= 2 or candidate["transfer_count"] >= 3
+        suspected = len(candidate["token_mints"]) >= 2 or len(candidate["signatures"]) >= 3
         candidate["status"] = "suspected_migration" if suspected else "candidate"
         should_notify = (
             candidate.get("last_notified_status") != candidate["status"]
