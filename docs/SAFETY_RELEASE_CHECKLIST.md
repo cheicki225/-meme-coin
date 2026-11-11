@@ -20,6 +20,8 @@ This checklist is required before enabling LIVE trading.
 - Ambiguous executor failures are kept blocked to prevent duplicate buys after restart.
 - Confirmation timeouts are explicitly classified as `unknown` (not definite failures); live buy and MultiBuy persist that state and do not retry automatically.
 - An ambiguous LIVE sell blocks further sells for that token until operator reconciliation, preventing repeated sell submissions on each monitoring poll.
+- Every LIVE sell now persists a per-token `safety_pending_sell_tokens` intent before submission; a restart or ambiguous outcome leaves the token blocked until on-chain reconciliation.
+- A confirmed sell intent remains `confirmed_awaiting_accounting` until the position/PnL update is saved; only then is the reservation released.
 - SPL token decimals are verified strictly; missing, malformed, boolean, or out-of-range metadata blocks conversion rather than assuming 6 decimals.
 - Network-free reconciliation helpers list unresolved intents and apply explicit operator-confirmed resolutions.
 - Automated pytest checks in GitHub Actions include guard + runtime/idempotency + reconciliation tests.
@@ -61,6 +63,7 @@ Known limitations (not represented as completed capabilities):
 - [x] Detect and persist SPL transfer-based developer migration candidates with deduplication and escalation tests.
 - [x] Execute Copy Sell percentages through the sell primitive; route Sell Initials through real execution; test both.
 - [x] Persist confirmed sell accounting failures and unexpected sell outcomes; block automatic repeat sells.
+- [x] Persist LIVE sell intent before network submission and release it only after position/accounting persistence; cover restart-safe blocking with mocked tests.
 - [x] Fail closed when enabled anti-rug provider checks or configured developer-behavior data are unavailable.
 - [x] Add network-free reconciliation helpers for intents left in `unknown` state.
 - [ ] Run the complete repository test suite (the dedicated `tests/` CI suite passes; root-level/manual checks remain to be audited).
