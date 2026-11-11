@@ -44,7 +44,8 @@ Known limitations (not represented as completed capabilities):
 - SPL migration detection is heuristic and does not prove common ownership; it intentionally does not auto-add destinations.
 - Front Run Sell remains polling-based/best-effort, not same-block execution.
 - Auto-Sell on Big Buy remains an approximate pool-transaction heuristic.
-- No comprehensive LP-liquidity lock/migration monitor or deterministic rug-proof classifier is implemented.
+- A read-only DexScreener pool-liquidity monitor now samples open positions at a bounded cadence and alerts on same-pool liquidity drops or pool-address changes. It is heuristic, depends on DexScreener indexing, and does not verify LP locks, token vault balances, or all Solana DEX programs; it never auto-sells.
+- No deterministic rug-proof classifier is implemented.
 
 ## Required before LIVE activation
 
@@ -66,6 +67,9 @@ Known limitations (not represented as completed capabilities):
 - [x] Persist LIVE sell intent before network submission and release it only after position/accounting persistence; cover restart-safe blocking with mocked tests.
 - [x] Fail closed when enabled anti-rug provider checks or configured developer-behavior data are unavailable.
 - [x] Add network-free reconciliation helpers for intents left in `unknown` state.
+
+- [x] Add read-only same-pool liquidity-drop and pool-change alerts with bounded sampling and regression tests; alerts do not trigger automatic sells.
+- [x] Add operator-reviewed recovery helpers for unresolved LIVE sell intents; confirmed sells remain blocked until accounting is reconciled.
 - [ ] Run the complete repository test suite (the dedicated `tests/` CI suite passes; root-level/manual checks remain to be audited).
 - [ ] Run PAPER mode soak testing before any LIVE transaction.
 - [ ] Keep LIVE disabled until all unchecked items above are completed.
