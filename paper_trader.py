@@ -378,8 +378,8 @@ class PaperTrader:
                 if self.notifier:
                     await self.notifier.notify(
                         "buy_skipped",
-                        f"🛑 *Buy Skipped* — vérification anti-rug indisponible\\n"
-                        f"Token: `{token_mint[:8]}...`\\nRaison: `{security.get('error')}`",
+                        f"🛑 *Buy Skipped* — vérification anti-rug indisponible\n"
+                        f"Token: `{token_mint[:8]}...`\nRaison: `{security.get('error')}`",
                     )
                 return None
             if security.get("is_honeypot") is True:
@@ -969,8 +969,8 @@ class PaperTrader:
         if self.notifier:
             await self.notifier.notify(
                 "sell_success",
-                f"💰 *Sell Initials*\\nToken: `{position['token_mint'][:8]}...`\\n"
-                f"Produit: {proceeds:.2f}$\\n"
+                f"💰 *Sell Initials*\nToken: `{position['token_mint'][:8]}...`\n"
+                f"Produit: {proceeds:.2f}$\n"
                 f"{'Mise récupérée — le solde devient free-ride.' if position.get('initials_sold') else 'Récupération partielle; coût restant conservé.'}",
             )
         return True
