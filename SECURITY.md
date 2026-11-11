@@ -2,12 +2,12 @@
 
 ## Mode de fonctionnement
 
-Gardez `TRADING_MODE=PAPER`. Le code LIVE existe, mais il n'a pas été validé avec un RPC de production, un portefeuille de test, ni un soak test. Aucun swap réel n'a été exécuté au cours de cette mise à jour.
+Gardez `TRADING_MODE=PAPER` et `LIVE_EXECUTION_ENABLED=false`. Le code LIVE exige ces deux opt-ins simultanément, mais il n'a pas été validé avec un RPC de production, un portefeuille de test, ni un soak test. Aucun swap réel n'a été exécuté au cours de cette mise à jour.
 
 ## Garde-fous implémentés
 
 - Jupiter Swap API V2 utilise les endpoints officiels fixes `/swap/v2/order` et `/swap/v2/execute`, avec `JUPITER_API_KEY`. Les routeurs JupiterZ, Dflow et OKX sont exclus; seule une route Metis est acceptée.
-- Avant signature, l'exécuteur vérifie les mints et montants, le minimum reçu, le slippage, l'impact, le wallet taker/payeur, le nombre de signataires, les programmes top-level, le blockhash, les frais réseau et le loyer de comptes estimé. Une donnée manquante ou un programme inconnu fait échouer la transaction.
+- Avant signature, l'exécuteur résout les Address Lookup Tables depuis le RPC, puis vérifie les mints et montants, le minimum reçu, le slippage, l'impact, le wallet taker/payeur, le nombre de signataires, les programmes top-level, les ATA du wallet, le blockhash, les frais réseau et le loyer de comptes estimé. Une donnée manquante ou un programme inconnu fait échouer la transaction.
 - La signature est créée localement. L'API reçoit la transaction signée pour l'inclusion; la clé privée n'est jamais envoyée.
 - La signature est persistée avant l'appel d'exécution. Les issues incertaines ne sont jamais renvoyées automatiquement et activent l'arrêt d'urgence.
 - Une vente/position n'est comptabilisée qu'après confirmation `finalized` et lecture du `getTransaction`. Le PnL SOL inclut les frais réseau et le loyer réellement reflétés dans les soldes du wallet. La conversion USD utilise le cours SOL récupéré au moment du trade; elle n'est pas une valorisation historique de marché.
