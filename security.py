@@ -17,6 +17,7 @@ config.DEFAULT_WALLET_SETTINGS) — à activer explicitement si voulu.
 """
 
 import logging
+import math
 import aiohttp
 
 import config
@@ -39,8 +40,8 @@ async def check_token_security(token_mint: str) -> dict:
     if not config.GOPLUS_API_KEY and not config.GOPLUS_API_SECRET:
         # Pas de clé configurée : on ne bloque jamais silencieusement un achat,
         # on retourne un score neutre avec une erreur explicite dans les logs.
-        log.debug("Aucune clé GoPlus configurée — vérification sécurité ignorée.")
-        return {"error": "no_api_key", "security_score": 50, "is_honeypot": False}
+        log.warning("GoPlus non configuré — vérification requise indisponible; sécurité fail-closed.")
+        return {"error": "no_api_key", "security_score": 0, "is_honeypot": None}
 
     url = f"https://api.gopluslabs.io/api/v1/solana/token_security?contract_addresses={token_mint}"
     headers = {"Accept": "application/json"}
@@ -54,24 +55,27 @@ async def check_token_security(token_mint: str) -> dict:
             async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                 if resp.status != 200:
                     log.debug(f"GoPlus statut {resp.status} pour {token_mint[:8]}...")
-                    return {"error": f"http_{resp.status}", "security_score": 50, "is_honeypot": False}
+                    return {"error": f"http_{resp.status}", "security_score": 0, "is_honeypot": None}
                 data = await resp.json()
     except Exception as e:
-        log.debug(f"Erreur GoPlus pour {token_mint[:8]}...: {e}")
-        return {"error": str(e), "security_score": 50, "is_honeypot": False}
+        log.warning(f"GoPlus indisponible pour {token_mint[:8]}...: {e}")
+        return {"error": "provider_unavailable", "security_score": 0, "is_honeypot": None}
 
-    result = data.get("result", {})
+    if not isinstance(data, dict) or not isinstance(data.get("result"), dict):
+        return {"error": "invalid_provider_response", "security_score": 0, "is_honeypot": None}
+    result = data["result"]
     token_data = result.get(token_mint.lower(), result.get(token_mint, {}))
 
-    if not token_data:
-        # Très courant pour un token Pump.fun tout juste créé — pas encore indexé
-        return {"error": "not_indexed", "security_score": 50, "is_honeypot": False}
+    if not isinstance(token_data, dict) or not token_data:
+        # Token non indexé = absence de preuve, jamais un score neutre permissif.
+        return {"error": "not_indexed", "security_score": 0, "is_honeypot": None}
 
     buy_tax = _safe_float(token_data.get("buy_tax", 0))
     sell_tax = _safe_float(token_data.get("sell_tax", 0))
     lp_locked = _safe_float(token_data.get("lp_locked_percent", token_data.get("lp_locked", 0)))
     honeypot = str(token_data.get("is_honeypot", "0")) == "1"
-    renounced = str(token_data.get("is_open_source", "0")) == "1"
+    # GoPlus "is_open_source" signifie source vérifiée, pas ownership renounced.
+    source_verified = str(token_data.get("is_open_source", "0")) == "1"
     mintable = str(token_data.get("is_mintable", "0")) == "1"
 
     score = 100
@@ -92,8 +96,6 @@ async def check_token_security(token_mint: str) -> dict:
             score -= 15
         if mintable:
             score -= 15
-        if renounced:
-            score += 10
     score = max(0, min(100, score))
 
     return {
@@ -101,7 +103,8 @@ async def check_token_security(token_mint: str) -> dict:
         "buy_tax": buy_tax,
         "sell_tax": sell_tax,
         "lp_locked_pct": lp_locked,
-        "owner_renounced": renounced,
+        "owner_renounced": None,  # is_open_source ne prouve pas une renonciation d'autorité.
+        "source_verified": source_verified,
         "is_mintable": mintable,
         "security_score": score,
         "error": None,
@@ -110,6 +113,7 @@ async def check_token_security(token_mint: str) -> dict:
 
 def _safe_float(v, default=0.0) -> float:
     try:
-        return float(v)
+        number = float(v)
+        return number if math.isfinite(number) else default
     except (TypeError, ValueError):
         return default
