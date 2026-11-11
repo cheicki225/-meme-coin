@@ -467,7 +467,16 @@ class PaperTrader:
         self.data_store.state.setdefault("open_positions", []).append(position)
         if settings.get("buy_only_once", True):
             self.data_store.mark_bought(source_wallet, token_mint)
-        self.data_store.save()
+        # A real confirmed swap must never be treated as accounted if the
+        # position JSON could not be durably committed.
+        durable_saver = getattr(self.data_store, "save_or_raise", None)
+        if buy_signature and callable(durable_saver):
+            durable_saver()
+        else:
+            self.data_store.save()
+        finalize_buy = getattr(self, "_finalize_buy_accounting", None)
+        if buy_signature and callable(finalize_buy):
+            finalize_buy(token_mint, buy_result)
 
         log.info(
             f"📈 [{config.TRADING_MODE}] Position ouverte sur {token_mint} @ ${actual_entry_price:.8f} "
