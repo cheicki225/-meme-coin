@@ -105,6 +105,13 @@ class PaperTrader:
         units = cost_basis_usd / entry_price
         return {"units": units, "cost_basis_usd": cost_basis_usd, "actual_price": entry_price, "signature": None}
 
+    def _finalize_sell_accounting(self, token_mint: str, sell_result: dict) -> None:
+        """Finalize LIVE sell reservation after local position/accounting state is durable."""
+        intent_id = sell_result.get("sell_intent_id") if isinstance(sell_result, dict) else None
+        finalize = getattr(self, "_finalize_sell_intent", None)
+        if intent_id and callable(finalize):
+            finalize(token_mint, intent_id)
+
     async def _execute_sell(self, token_mint: str, units: float, current_price: float, settings: dict) -> dict:
         """Version PAPER : conversion directe au prix coté, aucun slippage simulé.
         Retourne None seulement si la vente doit être annulée (jamais en PAPER)."""
@@ -961,6 +968,7 @@ class PaperTrader:
             "signature": sell_result.get("signature"),
         })
         self.data_store.save()
+        self._finalize_sell_accounting(position["token_mint"], sell_result)
 
         log.info(
             f"💰 [{config.TRADING_MODE}] Sell Initials sur {position['token_mint'][:8]}... "
@@ -1230,6 +1238,7 @@ class PaperTrader:
             "sell_ratio": sell_ratio, "result_pct": change_pct, "pnl_usd": pnl_usd, "time": time.time(),
         })
         self.data_store.save()
+        self._finalize_sell_accounting(position["token_mint"], sell_result)
 
         log.info(
             f"✅ [{config.TRADING_MODE}] Vente partielle sur {position['token_mint']} "
@@ -1287,6 +1296,7 @@ class PaperTrader:
             state["session_losses_usd"] = state.get("session_losses_usd", 0) + abs(pnl_usd)
 
         self.data_store.save()
+        self._finalize_sell_accounting(position["token_mint"], sell_result)
 
         just_paused = self.data_store.record_trade_result(position["source_wallet"], is_win=(pnl_usd >= 0))
 
