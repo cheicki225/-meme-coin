@@ -641,8 +641,13 @@ class SniperBot:
                     log.info(f"📋 Copy sell détecté : {label} a vendu {token_mint[:8]}... — clôture miroir.")
                     data = await backtest._get_pair_data(token_mint)
                     price = float(data.get("priceUsd", position["entry_price"]) or position["entry_price"])
-                    change_pct = self.trader._pnl_pct(position, price)
-                    await self.trader._close_remaining(position, price, change_pct, "COPY_SELL")
+                    sell_pct = position.get("settings", {}).get("copy_sell_pct", 100.0)
+                    sold = await self.trader.copy_sell(position, price, sell_pct)
+                    if sold:
+                        log.info(
+                            f"📋 Copy Sell exécuté sur {token_mint[:8]}... "
+                            f"({sell_pct}% de la position restante)."
+                        )
             return
 
         if mode == "buy_on_dev_sell":
