@@ -138,6 +138,8 @@ DATA_FILE = os.getenv("DATA_FILE", "sniper_data.json")
 DATA_BACKEND = os.getenv("DATA_BACKEND", "sqlite").strip().lower()
 _DEFAULT_SQLITE_PATH = os.path.splitext(DATA_FILE)[0] + ".sqlite3"
 SQLITE_DB_FILE = os.getenv("SQLITE_DB_FILE", _DEFAULT_SQLITE_PATH)
+_WALLET_DB_DEFAULT = os.path.join(os.path.dirname(DATA_FILE) or ".", "wallet_intelligence.sqlite3")
+WALLET_ACTIVITY_DB_FILE = os.getenv("WALLET_ACTIVITY_DB_FILE", _WALLET_DB_DEFAULT)
 WALLET_COLLECTOR_ENABLED = os.getenv("WALLET_COLLECTOR_ENABLED", "false").lower() == "true"
 WALLET_COLLECTOR_INTERVAL_S = int(os.getenv("WALLET_COLLECTOR_INTERVAL_S", "300"))
 WALLET_COLLECTOR_SIGNATURES_PER_WALLET = int(os.getenv("WALLET_COLLECTOR_SIGNATURES_PER_WALLET", "10"))
