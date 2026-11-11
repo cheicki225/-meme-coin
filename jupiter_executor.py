@@ -281,7 +281,7 @@ async def _get_confirmed_transaction(signature: str, attempts: int = 5) -> dict:
     payload = {
         "jsonrpc": "2.0", "id": 1, "method": "getTransaction",
         "params": [signature, {
-            "encoding": "json", "commitment": "confirmed",
+            "encoding": "json", "commitment": "finalized",
             "maxSupportedTransactionVersion": 0,
         }],
     }
@@ -315,7 +315,7 @@ async def _confirm_transaction(signature: str, timeout_s: int = None) -> bool:
             if status.get("err"):
                 raise SwapError(f"Transaction {signature} a échoué on-chain : {status['err']}")
             confirmation_status = status.get("confirmationStatus")
-            if confirmation_status in ("confirmed", "finalized"):
+            if confirmation_status == "finalized":
                 return True
         await asyncio.sleep(interval)
         elapsed += interval
