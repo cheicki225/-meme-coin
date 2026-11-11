@@ -184,7 +184,7 @@ def _validate_unsigned_transaction(
                     raise SwapError("Instruction de transfert SOL non autorisée dans la transaction Jupiter.")
 
             if program_id == str(associated_program):
-                if len(data) not in (0, 1) or data not in (b"", b"\\x01") or len(accounts) < 6:
+                if len(data) not in (0, 1) or data not in (b"", b"\x01") or len(accounts) < 6:
                     raise SwapError("Instruction de création de compte associé non autorisée.")
                 mint = accounts[3]
                 token_program_id = str(accounts[5])
