@@ -423,11 +423,14 @@ class LiveTrader(PaperTrader):
 
         unresolved_sells = self.data_store.state.get("safety_unresolved_sell_tokens", {})
         unaccounted_sells = self.data_store.state.get("safety_unaccounted_confirmed_sells", {})
-        if ((isinstance(unresolved_sells, dict) and token_mint in unresolved_sells)
-                or (isinstance(unaccounted_sells, dict) and any(
+        if not isinstance(unresolved_sells, dict) or not isinstance(unaccounted_sells, dict):
+            log.critical("Registre de ventes corrompu — vente bloquée par sécurité.")
+            return None
+        if (token_mint in unresolved_sells
+                or any(
                     isinstance(item, dict) and item.get("token_mint") == token_mint
                     for item in unaccounted_sells.values()
-                ))):
+                )):
             log.critical(
                 f"🛑 Vente bloquée pour {token_mint[:8]}...: une vente précédente est ambiguë "
                 "ou confirmée mais non comptabilisée; réconciliation requise."
@@ -465,6 +468,25 @@ class LiveTrader(PaperTrader):
             return None
         except jupiter_executor.SwapError as e:
             log.error(f"❌ Vente LIVE échouée sur {token_mint[:8]}...: {e}")
+            return None
+        except Exception as e:
+            # Toute erreur inattendue après le début de l'envoi est ambiguë :
+            # bloquer le token plutôt que risquer une seconde vente au prochain poll.
+            registry = self.data_store.state.setdefault("safety_unresolved_sell_tokens", {})
+            if not isinstance(registry, dict):
+                log.critical("Registre de ventes ambiguës corrompu; arrêt fail-closed.")
+                return None
+            registry[token_mint] = {
+                "status": "unknown",
+                "units": units,
+                "created_at": time.time(),
+                "error": str(e)[:500],
+            }
+            self.data_store.save()
+            log.exception(
+                f"🛑 Vente LIVE à résultat inconnu sur {token_mint[:8]}...; "
+                "nouvel envoi bloqué jusqu'à réconciliation."
+            )
             return None
 
         # Le swap est confirmé. Si le prix ou les montants ne peuvent pas être
