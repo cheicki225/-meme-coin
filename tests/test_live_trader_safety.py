@@ -329,3 +329,63 @@ def test_live_buy_reservation_aborts_when_durable_save_fails(monkeypatch):
     # reservation persistence raised before _reserve_live_buy_intent returned.
     assert trader.data_store.state["safety_order_intents"]
     assert trader.data_store.saved is False
+
+
+
+def test_confirmed_buy_requires_accounting_before_another_buy(monkeypatch):
+    trader = _trader({
+        "safety_order_intents": {
+            "buy:old": {
+                "side": "buy",
+                "token_mint": "TokenMint",
+                "source_wallet": "WalletPubkey",
+                "status": "confirmed",
+                "accounting_status": "awaiting_accounting",
+            }
+        }
+    })
+    trader._get_execution_keypair = lambda: FakeKeypair()
+
+    async def rpc_balance(*args, **kwargs):
+        return {"value": 5_000_000_000}
+
+    monkeypatch.setattr(live_trader.rpc_client, "rpc_post", rpc_balance)
+    with pytest.raises(ValueError, match="position accounting"):
+        asyncio.run(trader._reserve_live_buy_intent(
+            token_mint="TokenMint",
+            entry_price=2.0,  # a different signal price must not bypass recovery
+            amount_sol=0.1,
+            settings={"max_position_sol": 0.5},
+            keypair=FakeKeypair(),
+        ))
+
+
+def test_buy_accounting_finalization_requires_confirmed_matching_intent():
+    trader = _trader({
+        "safety_order_intents": {
+            "buy:one": {
+                "side": "buy",
+                "token_mint": "TokenMint",
+                "status": "confirmed",
+                "accounting_status": "awaiting_accounting",
+            }
+        }
+    })
+    trader._finalize_buy_accounting("TokenMint", {"buy_intent_ids": ["buy:one"]})
+    assert trader.data_store.state["safety_order_intents"]["buy:one"]["accounting_status"] == "accounted"
+    assert trader.data_store.saved is True
+
+
+def test_buy_accounting_finalization_rejects_wrong_token():
+    trader = _trader({
+        "safety_order_intents": {
+            "buy:one": {
+                "side": "buy",
+                "token_mint": "OtherMint",
+                "status": "confirmed",
+                "accounting_status": "awaiting_accounting",
+            }
+        }
+    })
+    with pytest.raises(ValueError, match="mismatch"):
+        trader._finalize_buy_accounting("TokenMint", {"buy_intent_ids": ["buy:one"]})
