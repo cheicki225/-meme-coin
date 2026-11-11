@@ -172,6 +172,7 @@ class LiveTrader(PaperTrader):
             "signature": result["signature"],
             "fee_lamports": int(accounting.get("fee_lamports", 0)),
             "sol_cashflow": sol_spent,
+            "token_decimals": decimals,
         }
 
     async def _execute_multibuy(self, token_mint: str, entry_price: float, settings: dict) -> dict:
@@ -259,7 +260,17 @@ class LiveTrader(PaperTrader):
         if units <= 0:
             return None
 
-        decimals = await _get_token_decimals(token_mint)
+        position = next(
+            (item for item in self.data_store.state.get("open_positions", [])
+             if item.get("token_mint") == token_mint),
+            None,
+        )
+        decimals = position.get("token_decimals") if position else None
+        if not isinstance(decimals, int) or not 0 <= decimals <= 18:
+            self.data_store.activate_emergency_stop("cannot verify token decimals for confirmed position")
+            raise jupiter_executor.SwapError(
+                f"Verified decimals are missing for {token_mint[:8]}...; refusing an uncertain sell amount."
+            )
         amount_raw = int(units * (10 ** decimals))
         if amount_raw <= 0:
             log.warning(f"Montant à vendre trop petit après conversion decimals pour {token_mint[:8]}...")
