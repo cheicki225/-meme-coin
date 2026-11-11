@@ -29,17 +29,16 @@ from safety_runtime import mark_intent, preflight_buy, reserve_intent
 
 
 async def _get_token_decimals(mint: str) -> int:
-    """Récupère le nombre de décimales du token. Défaut 6 si indisponible —
-    c'est la valeur la plus courante pour les tokens Pump.fun, mais PAS une
-    garantie universelle SPL (le standard est 9 ailleurs) : à vérifier si un
-    token se comporte de façon inattendue."""
+    """Récupère les décimales SPL; une réponse inconnue bloque l'exécution."""
     payload = {"jsonrpc": "2.0", "id": 1, "method": "getTokenSupply", "params": [mint]}
     result = await rpc_client.rpc_post(payload, timeout=10)
     try:
-        return int(result["value"]["decimals"])
-    except (KeyError, TypeError, ValueError):
-        log.warning(f"Décimales introuvables pour {mint[:8]}..., valeur par défaut 6 utilisée.")
-        return 6
+        decimals = result["value"]["decimals"]
+    except (KeyError, TypeError):
+        raise ValueError(f"Impossible de vérifier les décimales du token {mint[:8]}...") from None
+    if not isinstance(decimals, int) or isinstance(decimals, bool) or not 0 <= decimals <= 18:
+        raise ValueError(f"Décimales SPL invalides pour {mint[:8]}...")
+    return decimals
 
 
 def _truthy(value) -> bool:
