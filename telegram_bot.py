@@ -3679,7 +3679,6 @@ class SniperTelegramBot:
 
             wallet_label = state["wallet_label"]
             destination = state["destination"]
-            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
             keyboard = InlineKeyboardMarkup([[
                 InlineKeyboardButton("✅ Confirmer l'envoi", callback_data=f"confirmdisperse_{wallet_label}|{destination}|{amount}"),
                 InlineKeyboardButton("❌ Annuler", callback_data="menu_wallets"),
