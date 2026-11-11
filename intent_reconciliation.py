@@ -125,6 +125,7 @@ def resolve_sell_intent(
         raise ValueError("A verified transaction signature is required for a confirmed sell")
     confirmed = dict(record)
     confirmed.update({
+        "token_mint": token_mint,
         "status": "confirmed_awaiting_accounting",
         "signature": signature.strip(),
         "reconciliation_note": (note or "operator verified on-chain")[:500],
