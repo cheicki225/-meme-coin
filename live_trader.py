@@ -192,6 +192,10 @@ class LiveTrader(PaperTrader):
             result = await jupiter_executor.execute_swap(
                 config.SOL_MINT, token_mint, amount_lamports, slippage_bps, keypair=keypair, use_jito=use_jito
             )
+        except jupiter_executor.SwapOutcomeUnknown as e:
+            self._mark_live_intent(intent, "unknown", error=str(e))
+            log.critical(f"🛑 Achat LIVE à réconcilier sur {token_mint[:8]}...; aucun nouvel essai automatique: {e}")
+            return None
         except jupiter_executor.SwapError as e:
             self._mark_live_intent(intent, "failed", error=str(e))
             log.error(f"❌ Achat LIVE échoué sur {token_mint[:8]}...: {e}")
@@ -305,6 +309,9 @@ class LiveTrader(PaperTrader):
                 total_sol_spent += sol_spent
                 signatures.append(result["signature"])
                 log.info(f"💰 [MultiBuy {i+1}/{n}] '{label}' : {sol_spent:.4f} SOL -> {units:.2f} tokens")
+            except jupiter_executor.SwapOutcomeUnknown as e:
+                self._mark_live_intent(intent, "unknown", error=str(e))
+                log.critical(f"🛑 [MultiBuy {i+1}/{n}] '{label}' à réconcilier; aucun nouvel essai: {e}")
             except jupiter_executor.SwapError as e:
                 self._mark_live_intent(intent, "failed", error=str(e))
                 log.error(f"❌ [MultiBuy {i+1}/{n}] échec sur '{label}': {e}")
