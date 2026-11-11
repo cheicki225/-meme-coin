@@ -690,6 +690,9 @@ class PaperTrader:
                                 threshold_pct=settings.get("liquidity_drop_alert_pct", 40),
                                 sampled_at=now,
                             )
+                            if liquidity_result.get("snapshot"):
+                                # Persist the baseline so comparisons survive process restarts.
+                                self.data_store.save()
                             if liquidity_result.get("alert"):
                                 status = liquidity_result.get("status")
                                 if status == "liquidity_drop":
@@ -704,7 +707,6 @@ class PaperTrader:
                                     f"⚠️ Alerte liquidité {position['token_mint'][:8]}...: {detail}. "
                                     "Vérification manuelle requise; aucune vente automatique."
                                 )
-                                self.data_store.save()
                                 if self.notifier:
                                     await self.notifier.notify(
                                         "liquidity_alert",
