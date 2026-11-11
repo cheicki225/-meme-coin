@@ -499,3 +499,47 @@ def test_sell_reservation_stays_locked_when_release_persistence_fails():
         trader._finalize_sell_intent("TokenMint", "sell-1")
 
     assert state["safety_pending_sell_tokens"]["TokenMint"]["status"] == "confirmed_awaiting_accounting"
+
+
+
+def test_live_exposure_includes_unresolved_buy_reservations(monkeypatch):
+    async def rpc_balance(*args, **kwargs):
+        return {"value": 5_000_000_000}
+
+    monkeypatch.setattr(live_trader.rpc_client, "rpc_post", rpc_balance)
+    trader = _trader({
+        "open_positions": [{"total_sol_invested": 0.2}],
+        "daily_pnl_sol": 0.0,
+        "safety_order_intents": {
+            "pending": {"side": "buy", "status": "pending", "amount_sol": 0.1},
+            "unknown": {"side": "buy", "status": "unknown", "amount_sol": 0.15},
+            "confirmed": {
+                "side": "buy", "status": "confirmed",
+                "accounting_status": "awaiting_accounting", "amount_sol": 0.05,
+            },
+            "accounted": {
+                "side": "buy", "status": "confirmed",
+                "accounting_status": "accounted", "amount_sol": 0.4,
+            },
+            "failed": {"side": "buy", "status": "failed", "amount_sol": 0.3},
+        },
+    })
+
+    snapshot = asyncio.run(trader._build_live_safety_state(FakeKeypair()))
+    assert snapshot["already_exposed_sol"] == pytest.approx(0.5)
+
+
+def test_corrupt_unresolved_buy_reservation_fails_closed(monkeypatch):
+    async def rpc_balance(*args, **kwargs):
+        return {"value": 5_000_000_000}
+
+    monkeypatch.setattr(live_trader.rpc_client, "rpc_post", rpc_balance)
+    trader = _trader({
+        "open_positions": [],
+        "daily_pnl_sol": 0.0,
+        "safety_order_intents": {
+            "unknown": {"side": "buy", "status": "unknown", "amount_sol": float("nan")}
+        },
+    })
+    with pytest.raises(ValueError, match="unresolved buy reservation"):
+        asyncio.run(trader._build_live_safety_state(FakeKeypair()))
