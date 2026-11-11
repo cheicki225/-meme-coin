@@ -50,8 +50,12 @@ class LiveTrader(PaperTrader):
         """Persist each signature before broadcast and fail closed on unresolved state."""
         async with self._swap_lock:
             state = self.data_store.state
-            if state.get("emergency_stop") or state.get("pending_transactions"):
-                if state.get("pending_transactions") and not state.get("emergency_stop"):
+            unresolved = [
+                item for item in state.get("pending_transactions", [])
+                if item.get("status") != "accounted"
+            ]
+            if state.get("emergency_stop") or unresolved:
+                if unresolved and not state.get("emergency_stop"):
                     self.data_store.activate_emergency_stop("unresolved transaction requires reconciliation")
                 if self.notifier:
                     await self.notifier.notify(
@@ -65,10 +69,16 @@ class LiveTrader(PaperTrader):
                 # If durable persistence fails, execute_swap will not broadcast.
                 self.data_store.record_pending_transaction(record)
 
+            def persist_accounting(record: dict) -> None:
+                self.data_store.mark_pending_transaction_accounted(
+                    record["signature"], record["accounting"]
+                )
+
             try:
                 result = await jupiter_executor.execute_swap(
                     input_mint, output_mint, amount, slippage_bps,
-                    keypair=keypair, use_jito=use_jito, on_signed=persist_signature,
+                    keypair=keypair, use_jito=use_jito,
+                    on_signed=persist_signature, on_accounted=persist_accounting,
                 )
                 return result
             except jupiter_executor.SwapError as exc:
