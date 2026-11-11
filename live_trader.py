@@ -50,11 +50,9 @@ class LiveTrader(PaperTrader):
         """Persist each signature before broadcast and fail closed on unresolved state."""
         async with self._swap_lock:
             state = self.data_store.state
-            unresolved = [
-                item for item in state.get("pending_transactions", [])
-                if item.get("status") != "accounted"
-            ]
-            if state.get("emergency_stop") or unresolved:
+            pending = state.get("pending_transactions", [])
+            unresolved = [item for item in pending if item.get("status") != "accounted"]
+            if state.get("emergency_stop") or pending:
                 if unresolved and not state.get("emergency_stop"):
                     self.data_store.activate_emergency_stop("unresolved transaction requires reconciliation")
                 if self.notifier:
@@ -93,6 +91,21 @@ class LiveTrader(PaperTrader):
                             f"Vérifier la signature dans l'état persistant avant reprise.\nErreur: {exc}",
                         )
                 raise
+    def _get_position_keypair(self, wallet_pubkey: str):
+        if not wallet_pubkey:
+            raise jupiter_executor.SwapError("Position has no recorded execution wallet; refusing to sell from an arbitrary wallet.")
+        from wallet_manager import WalletManager
+        wm = WalletManager(self.data_store)
+        for label, metadata in self.data_store.state.get("managed_wallets", {}).items():
+            if metadata.get("pubkey") == wallet_pubkey:
+                return wm.get_keypair(label)
+        import wallet
+        if wallet.get_public_key() == wallet_pubkey:
+            return wallet.load_keypair()
+        raise jupiter_executor.SwapError(
+            "The wallet that opened this position is unavailable; refusing to use the currently active wallet."
+        )
+
     def _get_execution_keypair(self):
         """
         Retourne le keypair à utiliser pour une exécution simple (non-MultiBuy) :
@@ -172,7 +185,7 @@ class LiveTrader(PaperTrader):
             "signature": result["signature"],
             "fee_lamports": int(accounting.get("fee_lamports", 0)),
             "sol_cashflow": sol_spent,
-            "token_decimals": decimals,
+            "token_decimals": decimals,            "execution_wallet": str(keypair.pubkey()),
         }
 
     async def _execute_multibuy(self, token_mint: str, entry_price: float, settings: dict) -> dict:
@@ -277,7 +290,7 @@ class LiveTrader(PaperTrader):
             return None
 
         slippage_bps = int(settings.get("buy_slippage_pct", 50) * 100)
-        keypair = self._get_execution_keypair()
+        keypair = self._get_position_keypair(position.get("execution_wallet"))
 
         try:
             result = await self._execute_swap_tracked(
