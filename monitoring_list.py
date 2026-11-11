@@ -23,9 +23,11 @@ import json
 import logging
 import os
 import shutil
+import tempfile
 import time
 
 import config
+from sqlite_state import SQLiteStateStore, StateStoreCorruptError, StateStoreError
 
 BACKUP_DIR_NAME = "backups"
 BACKUP_INTERVAL_S = 300   # 5 minutes entre deux backups automatiques
@@ -39,31 +41,93 @@ class DataStore:
 
     def __init__(self, path: str = None):
         self.path = path or config.DATA_FILE
-        self.state = self._load()
+        self._use_sqlite = path is None and getattr(config, "DATA_BACKEND", "json") == "sqlite"
+        db_path = config.SQLITE_DB_FILE if self._use_sqlite else self.path
+        self._backup_dir = os.path.join(os.path.dirname(os.path.abspath(db_path)) or ".", BACKUP_DIR_NAME)
         self._last_backup_time = 0
-        self._backup_dir = os.path.join(os.path.dirname(os.path.abspath(self.path)) or ".", BACKUP_DIR_NAME)
-        # Backup immédiat au démarrage — capture le dernier état connu avant
-        # que cette session ne commence à modifier quoi que ce soit.
-        if os.path.exists(self.path):
+        self._sqlite_store = None
+        if self._use_sqlite:
+            try:
+                self._sqlite_store = SQLiteStateStore(config.SQLITE_DB_FILE)
+            except StateStoreCorruptError:
+                recovered = False
+                for candidate in sorted(
+                    glob.glob(os.path.join(self._backup_dir, "sniper_state_*.sqlite3")),
+                    reverse=True,
+                ):
+                    try:
+                        backup_store = SQLiteStateStore(candidate)
+                        backup_store.load(self._default_state)
+                        backup_store.backup_to(config.SQLITE_DB_FILE)
+                        self._sqlite_store = SQLiteStateStore(config.SQLITE_DB_FILE)
+                        recovered = True
+                        log.warning("SQLite state restored from backup %s", candidate)
+                        break
+                    except (StateStoreError, OSError) as exc:
+                        log.error("SQLite backup %s is not recoverable: %s", candidate, exc)
+                if not recovered:
+                    raise
+        self.state = self._load()
+        if self._use_sqlite and os.path.exists(config.SQLITE_DB_FILE):
+            self._create_backup(reason="startup")
+        elif os.path.exists(self.path):
             self._create_backup(reason="startup")
 
     def _load(self) -> dict:
-        if os.path.exists(self.path):
+        loaded = None
+        if self._sqlite_store:
             try:
-                with open(self.path, "r", encoding="utf-8") as f:
-                    loaded = json.load(f)
-                    default = self._default_state()
-                    for key, value in default.items():
-                        loaded.setdefault(key, value)
-                    self._backfill_wallet_settings(loaded)
-                    self._migrate_force_buy_only_once(loaded)
-                    self._migrate_force_profit_trail_enabled(loaded)
-                    self._migrate_reset_legacy_already_bought(loaded)
-                    return loaded
-            except (json.JSONDecodeError, OSError) as e:
-                log.error(f"Erreur lecture {self.path}: {e} — réinitialisation.")
+                loaded = self._sqlite_store.load(self._default_state, legacy_json_path=self.path)
+            except StateStoreError as exc:
+                # Recover from the newest valid legacy JSON backup. Never reset
+                # to defaults after a corrupt database or damaged state file.
+                for candidate in sorted(
+                    glob.glob(os.path.join(os.path.dirname(os.path.abspath(self.path)), BACKUP_DIR_NAME, "sniper_data_*.json")),
+                    reverse=True,
+                ):
+                    try:
+                        with open(candidate, "r", encoding="utf-8") as source:
+                            restored = json.load(source)
+                        if isinstance(restored, dict):
+                            loaded = restored
+                            self._sqlite_store.save(loaded)
+                            log.warning("State imported from JSON backup %s after load failure: %s", candidate, exc)
+                            break
+                    except (OSError, json.JSONDecodeError) as backup_error:
+                        log.error("JSON backup %s is not recoverable: %s", candidate, backup_error)
+                if loaded is None:
+                    raise
+        elif os.path.exists(self.path):
+            try:
+                with open(self.path, "r", encoding="utf-8") as source:
+                    loaded = json.load(source)
+                if not isinstance(loaded, dict):
+                    raise StateStoreError("JSON state root must be an object")
+            except (json.JSONDecodeError, OSError, StateStoreError) as exc:
+                backup_dir = os.path.join(os.path.dirname(os.path.abspath(self.path)), BACKUP_DIR_NAME)
+                for candidate in sorted(glob.glob(os.path.join(backup_dir, "sniper_data_*.json")), reverse=True):
+                    try:
+                        with open(candidate, "r", encoding="utf-8") as source:
+                            restored = json.load(source)
+                        if isinstance(restored, dict):
+                            loaded = restored
+                            log.warning("State restored from JSON backup %s after load failure: %s", candidate, exc)
+                            break
+                    except (OSError, json.JSONDecodeError) as backup_error:
+                        log.error("JSON backup %s is not recoverable: %s", candidate, backup_error)
+                if loaded is None:
+                    raise StateStoreError(f"State file is unreadable and no valid backup exists: {self.path}") from exc
+        else:
+            loaded = self._default_state()
 
-        return self._default_state()
+        default = self._default_state()
+        for key, value in default.items():
+            loaded.setdefault(key, value)
+        self._backfill_wallet_settings(loaded)
+        self._migrate_force_buy_only_once(loaded)
+        self._migrate_force_profit_trail_enabled(loaded)
+        self._migrate_reset_legacy_already_bought(loaded)
+        return loaded
 
     def _backfill_wallet_settings(self, state: dict):
         """
@@ -186,6 +250,11 @@ class DataStore:
             "global_ai_enabled": True,
             "notification_prefs": dict(config.DEFAULT_NOTIFICATION_PREFS),
             "telegram_chat_id": None,
+            "emergency_stop": False,
+            "emergency_stop_reason": None,
+            "emergency_stop_at": None,
+            "pending_transactions": [],
+            "resolved_transactions": [],
             "referral": dict(config.DEFAULT_REFERRAL_STATE),
             "linked_wallet_groups": {},
             "pending_dev_sell_watch": {},
@@ -199,82 +268,130 @@ class DataStore:
         }
 
     def save(self):
-        # CORRIGÉ suite à une question explicite sur la persistance des
-        # données : cette fonction n'a jamais créé le dossier parent de
-        # self.path avant d'écrire. Si DATA_FILE pointe vers un chemin de
-        # volume (ex: /app/data/sniper_data.json) et que ce dossier n'existe
-        # pas encore, l'écriture échouait SILENCIEUSEMENT (juste une ligne
-        # de log, aucun plantage visible) — les données n'étaient alors
-        # JAMAIS réellement sauvegardées, sans que rien ne le signale
-        # clairement dans l'usage normal du bot.
         try:
-            parent_dir = os.path.dirname(self.path)
-            if parent_dir:
+            if self._sqlite_store:
+                self._sqlite_store.save(self.state)
+            else:
+                parent_dir = os.path.dirname(os.path.abspath(self.path))
                 os.makedirs(parent_dir, exist_ok=True)
-            with open(self.path, "w", encoding="utf-8") as f:
-                json.dump(self.state, f, indent=2, ensure_ascii=False)
-        except OSError as e:
-            log.error(f"Erreur sauvegarde {self.path}: {e}")
-            return
+                with tempfile.NamedTemporaryFile(
+                    mode="w", encoding="utf-8", dir=parent_dir,
+                    prefix=".sniper-state-", suffix=".tmp", delete=False,
+                ) as temporary:
+                    json.dump(self.state, temporary, indent=2, ensure_ascii=False, allow_nan=False)
+                    temporary.flush()
+                    os.fsync(temporary.fileno())
+                    temporary_path = temporary.name
+                os.replace(temporary_path, self.path)
+        except Exception as exc:
+            log.error("State persistence failed: %s", exc)
+            raise
 
-        # Backup périodique (pas à chaque save() — save() est appelé très
-        # fréquemment, un backup à chaque fois serait excessif en I/O disque)
         now = time.time()
         if now - self._last_backup_time >= BACKUP_INTERVAL_S:
             self._create_backup(reason="periodic")
             self._last_backup_time = now
 
     def _create_backup(self, reason: str = "periodic"):
-        """Copie horodatée de sniper_data.json dans backups/, avec rotation
-        (garde les MAX_BACKUPS plus récentes, supprime les plus vieilles)."""
-        if not os.path.exists(self.path):
-            return
+        """Create a consistent SQLite snapshot or atomic legacy JSON backup."""
         try:
             os.makedirs(self._backup_dir, exist_ok=True)
             timestamp = time.strftime("%Y%m%d_%H%M%S")
-            backup_filename = f"sniper_data_{timestamp}_{reason}.json"
-            backup_path = os.path.join(self._backup_dir, backup_filename)
-            shutil.copy2(self.path, backup_path)
+            if self._sqlite_store:
+                backup_path = os.path.join(self._backup_dir, f"sniper_state_{timestamp}_{reason}.sqlite3")
+                self._sqlite_store.backup_to(backup_path)
+            else:
+                if not os.path.exists(self.path):
+                    return
+                backup_path = os.path.join(self._backup_dir, f"sniper_data_{timestamp}_{reason}.json")
+                temporary = backup_path + ".tmp"
+                shutil.copy2(self.path, temporary)
+                os.replace(temporary, backup_path)
             self._prune_old_backups()
-            log.debug(f"💾 Backup créé : {backup_filename}")
-        except Exception as e:
-            log.error(f"Erreur création backup : {e}")
+            log.debug("State backup created: %s", backup_path)
+        except Exception as exc:
+            log.error("State backup failed: %s", exc)
 
     def _prune_old_backups(self):
         try:
-            pattern = os.path.join(self._backup_dir, "sniper_data_*.json")
-            backups = sorted(glob.glob(pattern))  # tri alphabétique = tri chronologique (format horodatage)
+            patterns = ("sniper_data_*.json", "sniper_state_*.sqlite3")
+            backups = sorted(
+                path for pattern in patterns for path in glob.glob(os.path.join(self._backup_dir, pattern))
+            )
             while len(backups) > MAX_BACKUPS:
-                oldest = backups.pop(0)
-                os.remove(oldest)
-        except Exception as e:
-            log.error(f"Erreur rotation des backups : {e}")
+                os.remove(backups.pop(0))
+        except Exception as exc:
+            log.error("Backup rotation failed: %s", exc)
 
     def list_backups(self) -> list:
-        """Retourne la liste des backups disponibles, du plus récent au plus ancien."""
-        pattern = os.path.join(self._backup_dir, "sniper_data_*.json")
-        return sorted(glob.glob(pattern), reverse=True)
+        """Return JSON and SQLite backups, newest first."""
+        paths = []
+        for pattern in ("sniper_state_*.sqlite3", "sniper_data_*.json"):
+            paths.extend(glob.glob(os.path.join(self._backup_dir, pattern)))
+        return sorted(paths, reverse=True)
 
     def restore_from_backup(self, backup_path: str) -> bool:
-        """
-        Restaure l'état depuis un fichier de backup. Crée d'abord un backup
-        de l'état ACTUEL (reason="pre_restore") avant d'écraser — au cas où
-        la restauration elle-même serait une erreur, rien n'est perdu.
-        """
+        """Restore a JSON or SQLite backup, preserving the current state first."""
         if not os.path.exists(backup_path):
-            log.error(f"Backup introuvable : {backup_path}")
+            log.error("Backup not found: %s", backup_path)
             return False
         try:
             self._create_backup(reason="pre_restore")
-            with open(backup_path, "r", encoding="utf-8") as f:
-                restored_state = json.load(f)
+            if backup_path.lower().endswith((".sqlite3", ".db")):
+                restored_state = SQLiteStateStore(backup_path).load(self._default_state)
+            else:
+                with open(backup_path, "r", encoding="utf-8") as source:
+                    restored_state = json.load(source)
+            if not isinstance(restored_state, dict):
+                raise StateStoreError("Backup root must be an object")
             self.state = restored_state
+            for key, value in self._default_state().items():
+                self.state.setdefault(key, value)
             self.save()
-            log.info(f"✅ État restauré depuis {os.path.basename(backup_path)}")
+            log.info("State restored from backup %s", os.path.basename(backup_path))
             return True
-        except Exception as e:
-            log.error(f"Erreur restauration depuis {backup_path}: {e}")
+        except Exception as exc:
+            log.error("Restore from backup %s failed: %s", backup_path, exc)
             return False
+
+    def activate_emergency_stop(self, reason: str) -> None:
+        self.state["emergency_stop"] = True
+        self.state["emergency_stop_reason"] = str(reason)[:500]
+        self.state["emergency_stop_at"] = int(time.time())
+        self.save()
+
+    def clear_emergency_stop(self) -> bool:
+        if self.state.get("pending_transactions"):
+            return False
+        self.state["emergency_stop"] = False
+        self.state["emergency_stop_reason"] = None
+        self.state["emergency_stop_at"] = None
+        self.save()
+        return True
+
+    def record_pending_transaction(self, record: dict) -> None:
+        signature = record.get("signature")
+        if not signature:
+            raise ValueError("pending transaction signature is required")
+        pending = self.state.setdefault("pending_transactions", [])
+        if not any(item.get("signature") == signature for item in pending):
+            pending.append(dict(record))
+        self.save()
+
+    def resolve_pending_transaction(self, signature: str, outcome: dict | None = None) -> bool:
+        pending = self.state.setdefault("pending_transactions", [])
+        match = next((item for item in pending if item.get("signature") == signature), None)
+        if match is None:
+            return False
+        pending.remove(match)
+        resolved = dict(match)
+        resolved["outcome"] = outcome or {}
+        resolved["resolved_at"] = int(time.time())
+        history = self.state.setdefault("resolved_transactions", [])
+        history.append(resolved)
+        del history[:-500]
+        self.save()
+        return True
 
     # ── Gestion des wallets dev surveillés ──────────────────────
     def add_dev_wallet(self, address: str, label: str, scheme: str, backtest_ratio: float,
