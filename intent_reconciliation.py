@@ -85,7 +85,14 @@ def list_unaccounted_confirmed_buys(state: Mapping[str, Any]) -> list[dict[str, 
                 None,
             )
             items.append(item)
-    return sorted(items, key=lambda item: float(item.get("created_at", 0) or 0))
+    def _created_at(item):
+        try:
+            value = float(item.get("created_at", 0) or 0)
+            return value if math.isfinite(value) else 0.0
+        except (TypeError, ValueError, OverflowError):
+            return 0.0
+
+    return sorted(items, key=_created_at)
 
 
 def resolve_confirmed_buy_accounting(
