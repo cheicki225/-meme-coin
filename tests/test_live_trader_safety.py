@@ -71,3 +71,29 @@ def test_unverifiable_balance_blocks_live_intent(monkeypatch):
         ))
     assert trader.data_store.state.get("safety_order_intents") is None
     assert trader.data_store.saved is False
+
+
+def test_token_decimals_rejects_missing_rpc_field(monkeypatch):
+    async def malformed(*args, **kwargs):
+        return {"value": {}}
+
+    monkeypatch.setattr(live_trader.rpc_client, "rpc_post", malformed)
+    with pytest.raises(ValueError, match="Impossible de vérifier"):
+        asyncio.run(live_trader._get_token_decimals("TokenMint"))
+
+
+def test_token_decimals_accepts_verified_integer(monkeypatch):
+    async def valid(*args, **kwargs):
+        return {"value": {"decimals": 9}}
+
+    monkeypatch.setattr(live_trader.rpc_client, "rpc_post", valid)
+    assert asyncio.run(live_trader._get_token_decimals("TokenMint")) == 9
+
+
+def test_token_decimals_rejects_boolean_or_out_of_range(monkeypatch):
+    async def invalid(*args, **kwargs):
+        return {"value": {"decimals": True}}
+
+    monkeypatch.setattr(live_trader.rpc_client, "rpc_post", invalid)
+    with pytest.raises(ValueError, match="Décimales SPL invalides"):
+        asyncio.run(live_trader._get_token_decimals("TokenMint"))
