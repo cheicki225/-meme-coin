@@ -69,6 +69,13 @@ async def check_token_security(token_mint: str) -> dict:
     if not isinstance(token_data, dict) or not token_data:
         # Token non indexé = absence de preuve, jamais un score neutre permissif.
         return {"error": "not_indexed", "security_score": 0, "is_honeypot": None}
+    required_groups = (
+        ("is_honeypot",), ("buy_tax",), ("sell_tax",), ("is_mintable",),
+        ("lp_locked_percent", "lp_locked"),
+    )
+    if any(not any(key in token_data and token_data.get(key) is not None for key in group)
+           for group in required_groups):
+        return {"error": "incomplete_security_data", "security_score": 0, "is_honeypot": None}
 
     buy_tax = _safe_float(token_data.get("buy_tax", 0))
     sell_tax = _safe_float(token_data.get("sell_tax", 0))
