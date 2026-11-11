@@ -4,7 +4,7 @@ Implémentation de la méthode "sniping de rugger" décrite dans la vidéo Faomo
 détection temps réel des créations de tokens Pump.fun, traçage du financement
 du wallet dev, backtest automatique, et ajout au monitoring si rentable.
 
-**Mode PAPER par défaut.** Le code LIVE existe, mais n'est pas validé pour des fonds réels. Aucun swap réel n'a été exécuté pendant cette phase.
+**Mode PAPER par défaut.** Le code LIVE existe, mais n'est pas validé pour des fonds réels. Il exige `TRADING_MODE=LIVE` et `LIVE_EXECUTION_ENABLED=true`; aucun swap réel n'a été exécuté pendant cette phase.
 
 **Le mode LIVE n'est pas validé pour des fonds réels.** Les contrôles ajoutés ne remplacent pas un audit indépendant, les prix/API peuvent manquer ou être inexacts, et un timeout de transaction doit être réconcilié avant toute nouvelle tentative. Configurez `TELEGRAM_ALLOWED_USER_IDS` pour limiter l'accès Telegram. Voir [SECURITY.md](SECURITY.md), [INSTALLATION.md](INSTALLATION.md) et [AUDIT_COMPLET.md](AUDIT_COMPLET.md).
 
