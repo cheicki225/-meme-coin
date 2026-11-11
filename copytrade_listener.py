@@ -36,6 +36,7 @@ d'agrégation) plutôt qu'un nativeTransfer direct sur le wallet lui-même.
 import asyncio
 import json
 import logging
+import math
 import time
 import websockets
 
@@ -338,7 +339,7 @@ class CopyTradeListener:
                 amount = float(transfer.get("tokenAmount", 0) or 0)
             except (TypeError, ValueError):
                 continue
-            if amount <= 0:
+            if not math.isfinite(amount) or amount <= 0:
                 continue
             await self.on_dev_token_transfer(source, destination, mint, amount, signature)
 
