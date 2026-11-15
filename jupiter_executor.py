@@ -8,6 +8,7 @@ import logging
 import math
 import inspect
 import time
+import re
 
 import aiohttp
 from solders.transaction import VersionedTransaction
@@ -25,6 +26,19 @@ class SwapError(Exception):
     pass
 
 
+def _strict_uint(value, field: str) -> int:
+    """Parse an unsigned integer without accepting bools or truncating floats."""
+    if type(value) is int:
+        parsed = value
+    elif isinstance(value, str) and value and re.fullmatch(r"[0-9]+", value):
+        parsed = int(value)
+    else:
+        raise SwapError(f"Champ numérique invalide dans le devis Jupiter ({field}).")
+    if parsed < 0:
+        raise SwapError(f"Champ numérique négatif dans le devis Jupiter ({field}).")
+    return parsed
+
+
 def _validate_quote(quote: dict, input_mint: str, output_mint: str,
                     amount_lamports: int, slippage_bps: int) -> None:
     """Refuse les devis incohérents ou au-delà des limites de risque locales."""
@@ -33,23 +47,30 @@ def _validate_quote(quote: dict, input_mint: str, output_mint: str,
     if quote.get("inputMint") != input_mint or quote.get("outputMint") != output_mint:
         raise SwapError("Le devis Jupiter ne correspond pas aux mints demandés.")
     try:
-        quoted_in = int(quote["inAmount"])
-        quoted_out = int(quote["outAmount"])
-        threshold = int(quote["otherAmountThreshold"])
-        if quote.get("priceImpact") is not None:
-            impact = abs(float(quote["priceImpact"]))
+        quoted_in = _strict_uint(quote["inAmount"], "inAmount")
+        quoted_out = _strict_uint(quote["outAmount"], "outAmount")
+        threshold = _strict_uint(quote["otherAmountThreshold"], "otherAmountThreshold")
+        raw_impact = quote.get("priceImpact")
+        if raw_impact is None:
+            raw_impact = quote.get("priceImpactPct", 0)
+            if isinstance(raw_impact, bool):
+                raise ValueError("boolean price impact")
+            impact = abs(float(raw_impact) * 100)
         else:
-            impact = abs(float(quote.get("priceImpactPct", 0)) * 100)
-    except (KeyError, TypeError, ValueError, OverflowError) as exc:
+            if isinstance(raw_impact, bool):
+                raise ValueError("boolean price impact")
+            impact = abs(float(raw_impact))
+    except (KeyError, TypeError, ValueError, OverflowError, SwapError) as exc:
         raise SwapError("Devis Jupiter incomplet ou mal formé.") from exc
-    if amount_lamports <= 0 or quoted_in != amount_lamports or quoted_out <= 0:
+    if (type(amount_lamports) is not int or amount_lamports <= 0
+            or quoted_in != amount_lamports or quoted_out <= 0):
         raise SwapError("Montants du devis Jupiter invalides ou inattendus.")
-    if not 0 < slippage_bps <= config.MAX_SLIPPAGE_BPS:
+    if type(slippage_bps) is not int or not 0 < slippage_bps <= config.MAX_SLIPPAGE_BPS:
         raise SwapError(f"Slippage demandé hors limite (maximum {config.MAX_SLIPPAGE_BPS} bps).")
     try:
-        if int(quote["slippageBps"]) != slippage_bps:
+        if _strict_uint(quote["slippageBps"], "slippageBps") != slippage_bps:
             raise SwapError("Le slippage du devis ne correspond pas à la demande.")
-    except (KeyError, TypeError, ValueError) as exc:
+    except (KeyError, TypeError, ValueError, SwapError) as exc:
         raise SwapError("Le devis Jupiter ne précise pas son slippage.") from exc
     if not 0 < threshold <= quoted_out:
         raise SwapError("Minimum reçu du devis Jupiter invalide.")
@@ -270,8 +291,7 @@ async def get_quote(input_mint: str, output_mint: str, amount_lamports: int,
             timeout=aiohttp.ClientTimeout(total=15),
         ) as resp:
             if resp.status != 200:
-                text = await resp.text()
-                raise SwapError(f"Jupiter order a échoué ({resp.status}): {text[:200]}")
+                raise SwapError(f"Jupiter order a échoué (HTTP {resp.status}).")
             data = await resp.json()
             if not isinstance(data, dict):
                 raise SwapError("Réponse Jupiter order invalide.")
@@ -288,16 +308,14 @@ def _validate_order(order: dict, user_pubkey: str) -> None:
         raise SwapError("Le taker de l'ordre Jupiter ne correspond pas au wallet actif.")
     if order.get("router") != "metis":
         raise SwapError("Routeur Jupiter non autorisé; seul Metis est accepté.")
-    if order.get("gasless") is True:
+    if order.get("gasless") is not False:
         raise SwapError("Les swaps sponsorisés sont désactivés.")
     if not isinstance(order.get("requestId"), str) or not order["requestId"]:
         raise SwapError("L'ordre Jupiter ne contient pas de requestId.")
-    if not isinstance(order.get("lastValidBlockHeight"), (str, int)):
-        raise SwapError("L'ordre Jupiter ne contient pas de durée de validité.")
     try:
-        last_valid_height = int(order["lastValidBlockHeight"])
-        rent = int(order.get("rentFeeLamports", 0) or 0)
-    except (TypeError, ValueError, OverflowError) as exc:
+        last_valid_height = _strict_uint(order.get("lastValidBlockHeight"), "lastValidBlockHeight")
+        rent = _strict_uint(order.get("rentFeeLamports", 0), "rentFeeLamports")
+    except SwapError as exc:
         raise SwapError("Les frais ou la validité de l'ordre Jupiter sont mal formés.") from exc
     if last_valid_height <= 0:
         raise SwapError("La hauteur d'expiration Jupiter est invalide.")
@@ -337,8 +355,7 @@ async def _execute_order(order: dict, signed_bytes: bytes, signature: str) -> di
             timeout=aiohttp.ClientTimeout(total=30),
         ) as resp:
             if resp.status != 200:
-                text = await resp.text()
-                raise SwapError(f"Jupiter execute a échoué ({resp.status}): {text[:200]}")
+                raise SwapError(f"Jupiter execute a échoué (HTTP {resp.status}).")
             data = await resp.json()
     if not isinstance(data, dict):
         raise SwapError("Réponse Jupiter execute invalide.")

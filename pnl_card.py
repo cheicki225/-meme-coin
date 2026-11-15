@@ -195,7 +195,7 @@ def build_pnl_card(token_label: str, result_pct: float, bought_sol: float, sold_
             img = img.convert("RGB")
             draw = ImageDraw.Draw(img)  # redraw handle après conversion
         except Exception as e:
-            log.warning(f"Mascotte introuvable/erreur ({e}) — repli sur la fusée vectorielle.")
+            log.warning(f"Mascotte introuvable/erreur ({type(e).__name__}) — repli sur la fusée vectorielle.")
             _draw_rocket(draw, CARD_WIDTH - 90, 170, size=38, color=accent)
     else:
         _draw_broken_arrow(draw, CARD_WIDTH - 150, 150, size=45, color=accent)

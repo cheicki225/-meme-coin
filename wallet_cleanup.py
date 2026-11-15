@@ -73,7 +73,7 @@ class WalletCleanup:
                 self.data_store.state["wallet_cleanup_last_pass_at"] = time.time()
                 self.data_store.save()
             except Exception as e:
-                log.warning(f"⚠️ Erreur pendant le nettoyage automatique : {e}")
+                log.warning(f"⚠️ Erreur pendant le nettoyage automatique : {type(e).__name__}")
             await asyncio.sleep(config.WALLET_CLEANUP_INTERVAL_S)
 
     def stop(self):
@@ -104,7 +104,7 @@ class WalletCleanup:
                         address, entry.get("mode", "track_creation")
                     )
                 except Exception as e:
-                    log.debug(f"Erreur calcul pertes consécutives pour {address[:8]}...: {e}")
+                    log.debug(f"Erreur calcul pertes consécutives pour {address[:8]}...: {type(e).__name__}")
                     consecutive_losses = 0
                 if consecutive_losses >= settings["max_consecutive_losses"]:
                     reason = f"{consecutive_losses} pertes consécutives"

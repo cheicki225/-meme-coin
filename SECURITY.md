@@ -16,6 +16,9 @@ Gardez `TRADING_MODE=PAPER` et `LIVE_EXECUTION_ENABLED=false`. Le code LIVE exig
 - L'état du bot est stocké en SQLite WAL avec commits atomiques, import initial depuis l'ancien JSON, sauvegardes et restauration depuis un instantané valide. Une version de schéma plus récente n'est jamais rétrogradée.
 - `/halt` déclenche un arrêt d'urgence durable; `/resume` ne le retire pas tant qu'une signature reste pendante. La limite de positions et d'exposition globale est vérifiée avant un nouvel achat et protégée contre les entrées concurrentes.
 - Le collecteur de wallets et le moniteur RPC sont en lecture seule; leurs erreurs génèrent des alertes Telegram avec cooldown.
+- Les parseurs numériques rejettent booléens, flottants et formats mal formés pour les montants/frais Jupiter et les deltas de comptabilité. Les outils réseau ne journalisent plus le corps brut ni les messages d'exception contenant potentiellement une URL avec clé.
+- En absence de clé Helius, le bot PAPER démarre avec HTTP RPC standard en mode dégradé; le démarrage LIVE est bloqué. Le fournisseur configuré au déploiement reste inconnu.
+- Les méthodes `Buy the Dip` et `Sell Initials` héritées du simulateur sont bloquées en LIVE tant qu'elles ne passent pas par un swap réel confirmé.
 
 ## Limites avant toute activation LIVE
 
@@ -23,7 +26,7 @@ Gardez `TRADING_MODE=PAPER` et `LIVE_EXECUTION_ENABLED=false`. Le code LIVE exig
 2. Les signatures pendantes non attachées à une position mettent le bot en arrêt d'urgence. Leur réconciliation après redémarrage reste manuelle; aucun retry ni reconstruction approximative de position n'est effectué.
 3. L'intégration Jupiter V2 n'a pas été exécutée sur devnet/mainnet. Les tests sont mockés et ne prouvent ni la disponibilité des routes ni le comportement du RPC cible.
 4. Le calcul USD utilise un cours SOL instantané au moment de l'exécution; les historiques de prix complets, les frais de fournisseur et les écarts de valeur SOL/USD entre entrée et sortie ne sont pas reconstruits.
-5. Le moteur de backtest OHLC requiert des données de chandelles fournies par l'opérateur. Aucun fournisseur historique n'est encore branché et le scoring historique de wallets du bot demeure heuristique.
+5. Le replay OHLC déterministe et le chemin GeckoTerminal existent, mais le moteur OHLC n'est pas relié à tout le pipeline de sélection; coûts Solana/Jupiter, provenance, trous de données et scoring wallet demeurent incomplets/heuristiques.
 6. SQLite garantit l'atomicité du document d'état pour un processus du bot; aucun verrouillage multi-processus ni sauvegarde hors machine n'est fourni.
 7. Les fonctionnalités existantes de copy trading, de Buy on Dev Sell et de détection de régularité conservent les limites documentées dans README.
 

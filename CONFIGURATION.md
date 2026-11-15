@@ -4,7 +4,8 @@ Les paramètres viennent de l'environnement ou d'un fichier `.env` local. Gardez
 
 ## Accès et clés
 
-- RPC Solana : `HELIUS_API_KEY`; `ALCHEMY_API_KEY` est un fournisseur de secours facultatif.
+- RPC HTTP primaire : `SOLANA_RPC_URL` si défini; sinon Helius si `HELIUS_API_KEY` est défini; sinon endpoint public Solana. `ALCHEMY_API_KEY` est un secours HTTP facultatif.
+- WebSocket et transactions Helius Enhanced : exigent `HELIUS_API_KEY` dans cette version. Sans cette clé, PAPER peut démarrer en mode dégradé mais détection, copy trade, protection et flux prix WebSocket ne sont pas disponibles.
 - Telegram : `BOT_TOKEN` et `TELEGRAM_ALLOWED_USER_IDS` (identifiants numériques séparés par des virgules). Une allowlist vide refuse les commandes et callbacks.
 - Wallet : `SOLANA_PRIVATE_KEY` est seulement nécessaire au code LIVE; `WALLET_ENCRYPTION_KEY` protège les wallets gérés par Telegram. Ne versionnez jamais ces secrets.
 - Jupiter : `JUPITER_API_KEY` est envoyé uniquement aux endpoints officiels codés en dur `api.jup.ag/swap/v2/order` et `/execute`.
@@ -24,3 +25,5 @@ Les paramètres viennent de l'environnement ou d'un fichier `.env` local. Gardez
 - `CIRCUIT_BREAKER_USD` active l'arrêt d'urgence après les pertes configurées.
 
 Les valeurs complètes sont décrites dans `config.py` et `.env.example`. L'exécution LIVE et les intégrations on-chain restent non validées; voir `SECURITY.md`.
+
+Le RPC public est un endpoint de développement soumis à des limites et sans disponibilité garantie; Solana indique qu'il n'est pas destiné aux applications de production. Le service réellement configuré au déploiement n'est pas vérifié par ce dépôt. Voir [RPC_PUBLIC_LIMITATIONS.md](RPC_PUBLIC_LIMITATIONS.md).

@@ -13,6 +13,22 @@ class AccountingError(ValueError):
     """Raised when confirmed metadata is insufficient for reliable accounting."""
 
 
+def _nonnegative_int(value: Any, field: str) -> int:
+    """Parse RPC integer fields without bool coercion or float truncation."""
+    if type(value) is int:
+        parsed = value
+    elif isinstance(value, str) and value.isascii() and value.isdecimal():
+        try:
+            parsed = int(value)
+        except ValueError as exc:
+            raise AccountingError(f"{field} is outside the supported integer range") from exc
+    else:
+        raise AccountingError(f"{field} must be an integer or an ASCII digit string")
+    if parsed < 0:
+        raise AccountingError(f"{field} cannot be negative")
+    return parsed
+
+
 def _pubkey(value: Any) -> str | None:
     if isinstance(value, str):
         return value
@@ -34,9 +50,9 @@ def _token_amounts(rows: Any, wallet: str) -> tuple[dict[str, int], dict[str, in
         if not isinstance(mint, str) or not mint:
             continue
         try:
-            amounts[mint] = amounts.get(mint, 0) + int(amount)
-            precision = int(precision)
-        except (TypeError, ValueError, OverflowError) as exc:
+            amounts[mint] = amounts.get(mint, 0) + _nonnegative_int(amount, "token amount")
+            precision = _nonnegative_int(precision, "token decimals")
+        except (AccountingError, TypeError, OverflowError) as exc:
             raise AccountingError("Token balance metadata is malformed") from exc
         previous = decimals.setdefault(mint, precision)
         if previous != precision:
@@ -78,12 +94,13 @@ def account_confirmed_swap(
     if wallet_index >= len(pre_balances) or wallet_index >= len(post_balances):
         raise AccountingError("Wallet SOL balances are incomplete")
     try:
-        native_delta = int(post_balances[wallet_index]) - int(pre_balances[wallet_index])
-        fee = int(meta["fee"])
-    except (KeyError, TypeError, ValueError, OverflowError) as exc:
+        native_delta = (
+            _nonnegative_int(post_balances[wallet_index], "post SOL balance")
+            - _nonnegative_int(pre_balances[wallet_index], "pre SOL balance")
+        )
+        fee = _nonnegative_int(meta["fee"], "transaction fee")
+    except (KeyError, TypeError, AccountingError, OverflowError) as exc:
         raise AccountingError("SOL balance or fee metadata is malformed") from exc
-    if fee < 0:
-        raise AccountingError("Transaction fee cannot be negative")
     if not keys or keys[0] != wallet:
         raise AccountingError("Wallet is not the transaction fee payer")
 
@@ -136,7 +153,7 @@ def account_confirmed_sol_transfer(
     """Verify a simple native SOL transfer from confirmed balance deltas."""
     if not wallet or not destination or wallet == destination:
         raise AccountingError("Distinct source and destination wallets are required")
-    if not isinstance(amount_lamports, int) or isinstance(amount_lamports, bool) or amount_lamports <= 0:
+    if type(amount_lamports) is not int or amount_lamports <= 0:
         raise AccountingError("Transfer amount must be a positive integer")
     if not isinstance(transaction, dict) or not isinstance(transaction.get("meta"), dict):
         raise AccountingError("Confirmed transfer metadata is missing")
@@ -152,12 +169,18 @@ def account_confirmed_sol_transfer(
     if max(source_index, destination_index) >= min(len(pre), len(post)):
         raise AccountingError("Transfer balance metadata is incomplete")
     try:
-        fee = int(meta["fee"])
-        source_delta = int(post[source_index]) - int(pre[source_index])
-        destination_delta = int(post[destination_index]) - int(pre[destination_index])
-    except (KeyError, TypeError, ValueError, OverflowError) as exc:
+        fee = _nonnegative_int(meta["fee"], "transaction fee")
+        source_delta = (
+            _nonnegative_int(post[source_index], "post SOL balance")
+            - _nonnegative_int(pre[source_index], "pre SOL balance")
+        )
+        destination_delta = (
+            _nonnegative_int(post[destination_index], "post SOL balance")
+            - _nonnegative_int(pre[destination_index], "pre SOL balance")
+        )
+    except (KeyError, TypeError, AccountingError, OverflowError) as exc:
         raise AccountingError("Transfer balance or fee metadata is malformed") from exc
-    if fee < 0 or source_delta != -(amount_lamports + fee) or destination_delta != amount_lamports:
+    if source_delta != -(amount_lamports + fee) or destination_delta != amount_lamports:
         raise AccountingError("Confirmed SOL deltas do not match the requested transfer")
     if meta.get("preTokenBalances") or meta.get("postTokenBalances"):
         before, _ = _token_amounts(meta.get("preTokenBalances"), wallet)

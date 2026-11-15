@@ -38,6 +38,7 @@ import wallet
 from wallet_collector_service import WalletCollectorService
 from execution_recovery import classify_pending_transactions
 from rpc_health_monitor import RpcHealthMonitor
+from runtime_capabilities import assess_provider_startup
 
 # CORRIGÉ suite à un vrai crash en boucle signalé : logging.FileHandler()
 # ne crée JAMAIS le dossier parent de LOG_FILE tout seul — si config.LOG_FILE
@@ -126,12 +127,12 @@ class SniperBot:
     async def run(self):
         log.info(f"🚀 Sniper Bot démarré — mode : {config.TRADING_MODE}")
         await self._recover_pending_transactions()
-        if not config.HELIUS_API_KEY:
-            log.error(
-                "❌ Aucune clé HELIUS_API_KEY configurée. Le bot ne peut pas fonctionner "
-                "correctement sans accès WebSocket premium. Voir README.md."
-            )
+        provider_status = assess_provider_startup(config.TRADING_MODE, config.HELIUS_API_KEY)
+        if not provider_status["can_start"]:
+            log.error("Provider startup blocked: %s", provider_status["message"])
             return
+        if provider_status["status"] == "degraded_public_http":
+            log.warning("Provider capabilities degraded: %s", provider_status["message"])
 
         if config.TRADING_MODE == "LIVE":
             if not config.SOLANA_PRIVATE_KEY:
@@ -145,7 +146,7 @@ class SniperBot:
                     log.error("❌ Solde SOL nul ou introuvable — arrêt par sécurité, aucun ordre ne sera passé.")
                     return
             except Exception as e:
-                log.error(f"❌ Impossible de charger le wallet LIVE : {e}. Arrêt.")
+                log.error("❌ Impossible de charger le wallet LIVE (%s). Arrêt.", type(e).__name__)
                 return
 
         # Scan permanent Pump.fun (détection + évaluation) — désactivable
@@ -252,7 +253,7 @@ class SniperBot:
         try:
             await self._evaluate_new_dev(dev_address, token_mint)
         except Exception as e:
-            log.error(f"❌ Erreur pendant l'évaluation en arrière-plan de {dev_address[:8]}...: {e}")
+            log.error(f"❌ Erreur pendant l'évaluation en arrière-plan de {dev_address[:8]}...: {type(e).__name__}")
 
     async def on_copytrade_buy(self, wallet_address: str, token_mint: str, signature: str,
                                 source_sol_spent_lamports: int = 0, source_tokens_received: float = 0):
@@ -414,7 +415,7 @@ class SniperBot:
                 balance_line = f"Solde USDC restant : `{summary['usdc_balance']:.2f}` USDC\n"
             balance_line += f"Valeur totale du wallet (SOL + USDC) : `${summary['total_value_usd']:,.2f}`\n"
         except Exception as e:
-            log.debug(f"Erreur lecture valeur totale pour {wallet_address}: {e}")
+            log.debug(f"Erreur lecture valeur totale pour {wallet_address}: {type(e).__name__}")
             balance_line = ""
 
         # CORRIGÉ suite à un vrai effet en cascade observé : une adresse

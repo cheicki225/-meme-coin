@@ -54,12 +54,13 @@ class Notifier:
             # astérisque) et casser le parsing Telegram — repli en texte
             # brut plutôt que de perdre la notification entièrement, comme
             # déjà fait ailleurs dans le bot pour ce même risque.
-            log.warning(f"Erreur Markdown notification Telegram ({category}): {e} — repli en texte brut.")
+            # Telegram exception text can include the bot token embedded in its API URL.
+            log.warning("Telegram Markdown notification failed for %s (%s); retrying as plain text", category, type(e).__name__)
             try:
                 plain_text = text.replace("*", "").replace("`", "").replace("_", "")
                 await self.bot.send_message(chat_id=chat_id, text=plain_text, reply_markup=reply_markup)
             except Exception as e2:
-                log.error(f"Échec du repli texte brut pour notification ({category}): {e2}")
+                log.error("Telegram plain-text notification failed for %s (%s)", category, type(e2).__name__)
 
     async def notify_photo(self, category: str, photo_bytes: bytes, caption: str = "", reply_markup=None):
         """Envoie une image (ex: carte PNL générée par pnl_card.py) avec légende optionnelle."""
@@ -80,4 +81,4 @@ class Notifier:
                 caption=caption, parse_mode="Markdown", reply_markup=reply_markup,
             )
         except Exception as e:
-            log.error(f"Erreur envoi photo Telegram ({category}): {e}")
+            log.error("Telegram photo notification failed for %s (%s)", category, type(e).__name__)

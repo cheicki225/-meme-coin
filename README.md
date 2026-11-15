@@ -8,6 +8,8 @@ du wallet dev, backtest automatique, et ajout au monitoring si rentable.
 
 **Le mode LIVE n'est pas validé pour des fonds réels.** Les contrôles ajoutés ne remplacent pas un audit indépendant, les prix/API peuvent manquer ou être inexacts, et un timeout de transaction doit être réconcilié avant toute nouvelle tentative. Configurez `TELEGRAM_ALLOWED_USER_IDS` pour limiter l'accès Telegram. Voir [SECURITY.md](SECURITY.md), [INSTALLATION.md](INSTALLATION.md) et [AUDIT_COMPLET.md](AUDIT_COMPLET.md).
 
+La configuration peut utiliser un RPC HTTP public en PAPER, mais sans Helius les fonctions WebSocket et Enhanced sont désactivées. Le RPC public ne constitue pas une configuration de production. Consultez [PROGRESS.md](PROGRESS.md), [RPC_PUBLIC_LIMITATIONS.md](RPC_PUBLIC_LIMITATIONS.md), [TESTING.md](TESTING.md) et [LIVE_READINESS.md](LIVE_READINESS.md) pour les états et limites vérifiés.
+
 ---
 
 ## ⚠️ À VÉRIFIER AVANT TOUTE UTILISATION — IMPORTANT

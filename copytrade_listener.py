@@ -118,7 +118,7 @@ class CopyTradeListener:
             try:
                 await self._run_connection()
             except Exception as e:
-                log.error(f"Connexion copytrade WebSocket perdue ({e}), reconnexion dans 5s...")
+                log.error("External operation failed (%s)", type(e).__name__)
                 await asyncio.sleep(5)
 
     async def stop(self):
@@ -146,7 +146,7 @@ class CopyTradeListener:
             try:
                 await self._sync_subscriptions()
             except Exception as e:
-                log.debug(f"Erreur sync copytrade: {e}")
+                log.debug("External operation failed (%s)", type(e).__name__)
 
     async def _sync_subscriptions(self):
         """Ajoute les souscriptions pour les nouveaux wallets track_buy/track_sell.
@@ -208,7 +208,7 @@ class CopyTradeListener:
 
             await self._process_transaction(signature, is_swap_related)
         except Exception as e:
-            log.debug(f"Erreur traitement message copytrade: {e}")
+            log.debug("External operation failed (%s)", type(e).__name__)
 
     def _already_processed(self, signature: str) -> bool:
         """
@@ -292,7 +292,7 @@ class CopyTradeListener:
             try:
                 current_balance = await wallet.get_sol_balance_of(from_account)
             except Exception as e:
-                log.debug(f"Erreur lecture solde pour {from_account}: {e}")
+                log.debug("External operation failed (%s)", type(e).__name__)
                 continue
 
             prior_balance_estimate = current_balance + amount_sol

@@ -14,15 +14,33 @@ class BacktestInputError(ValueError):
     """Raised when candle data or strategy parameters are invalid."""
 
 
+def _finite_number(value, field: str) -> float:
+    """Accept JSON-style numeric values only, excluding bools and strings."""
+    if type(value) not in (int, float):
+        raise BacktestInputError(f"{field} must be a finite number")
+    try:
+        number = float(value)
+    except (OverflowError, TypeError, ValueError) as exc:
+        raise BacktestInputError(f"{field} must be a finite number") from exc
+    if not isfinite(number):
+        raise BacktestInputError(f"{field} must be a finite number")
+    return number
+
+
 def _validate_candles(candles: list[dict]) -> None:
     previous_time = None
     for index, candle in enumerate(candles):
         if not isinstance(candle, dict):
             raise BacktestInputError(f"candle {index} must be an object")
+        timestamp = candle.get("timestamp")
+        if type(timestamp) is not int or timestamp < 0:
+            raise BacktestInputError(f"candle {index} timestamp must be a non-negative integer")
         try:
-            timestamp = int(candle["timestamp"])
-            opened, high, low, close = (float(candle[key]) for key in ("open", "high", "low", "close"))
-        except (KeyError, TypeError, ValueError, OverflowError) as exc:
+            opened, high, low, close = (
+                _finite_number(candle[key], f"candle {index} {key}")
+                for key in ("open", "high", "low", "close")
+            )
+        except KeyError as exc:
             raise BacktestInputError(f"candle {index} is incomplete") from exc
         if not all(isfinite(value) and value > 0 for value in (opened, high, low, close)):
             raise BacktestInputError(f"candle {index} prices must be finite and positive")
@@ -58,11 +76,14 @@ def run_backtest(
     signals = sorted(set(raw_signals))
     if any(not isinstance(index, int) or isinstance(index, bool) or index < 0 or index >= len(rows) - 1 for index in signals):
         raise BacktestInputError("entry signals must point to a candle with a following candle")
-    if isinstance(position_usd, bool) or not isfinite(position_usd) or position_usd <= 0:
+    position_usd = _finite_number(position_usd, "position_usd")
+    take_profit_pct = _finite_number(take_profit_pct, "take_profit_pct")
+    stop_loss_pct = _finite_number(stop_loss_pct, "stop_loss_pct")
+    if position_usd <= 0:
         raise BacktestInputError("position_usd must be finite and positive")
-    if isinstance(take_profit_pct, bool) or not isfinite(take_profit_pct) or take_profit_pct <= 0:
+    if take_profit_pct <= 0:
         raise BacktestInputError("take_profit_pct must be finite and positive")
-    if isinstance(stop_loss_pct, bool) or not isfinite(stop_loss_pct) or not 0 < stop_loss_pct < 100:
+    if not 0 < stop_loss_pct < 100:
         raise BacktestInputError("stop_loss_pct must be between 0 and 100")
     if any(not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= 10_000 for value in (fee_bps, slippage_bps)):
         raise BacktestInputError("fee_bps and slippage_bps must be integers from 0 to 10000")

@@ -41,6 +41,42 @@ def test_v2_order_accepts_negative_price_impact_as_a_bounded_percent():
 
 
 @pytest.mark.parametrize("changes", [
+    {"gasless": None},
+    {"gasless": "false"},
+    {"gasless": True},
+    {"gasless": "missing"},
+    {"lastValidBlockHeight": True},
+    {"lastValidBlockHeight": 1000.5},
+    {"lastValidBlockHeight": "1.0"},
+    {"rentFeeLamports": True},
+    {"rentFeeLamports": 2.5},
+    {"rentFeeLamports": "2e6"},
+])
+def test_v2_order_rejects_missing_or_non_integer_fee_metadata(changes):
+    if changes == {"gasless": "missing"}:
+        invalid = _order()
+        invalid.pop("gasless")
+    else:
+        invalid = _order(**changes)
+    with pytest.raises(SwapError):
+        _validate_order(invalid, WALLET)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("inAmount", 1_000_000.9),
+    ("outAmount", True),
+    ("otherAmountThreshold", "850000.0"),
+    ("slippageBps", 100.5),
+    ("priceImpact", True),
+])
+def test_quote_rejects_malformed_numeric_values(field, value):
+    quote = _order()
+    quote[field] = value
+    with pytest.raises(SwapError):
+        _validate_quote(quote, config.SOL_MINT, quote["outputMint"], 1_000_000, 100)
+
+
+@pytest.mark.parametrize("changes", [
     {"router": "jupiterz"},
     {"taker": OTHER},
     {"gasless": True},

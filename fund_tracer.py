@@ -198,7 +198,7 @@ async def _finish_funder_classification(funder_address: str, amount_sol: float, 
                     exchange_name = mobula_result["entity_name"]
                     mobula_verified = True
         except Exception as e:
-            log.debug(f"Erreur vérification Mobula pour {funder_address[:8]}...: {e}")
+            log.debug(f"Erreur vérification Mobula pour {funder_address[:8]}...: {type(e).__name__}")
 
     # Repli par COMPORTEMENT (volume de transactions) — ni notre liste locale
     # ni Mobula ne connaissent TOUS les exchanges (des dizaines d'adresses
@@ -218,7 +218,7 @@ async def _finish_funder_classification(funder_address: str, amount_sol: float, 
                 exchange_name = "Exchange non identifié (volume élevé)"
                 detected_by_volume = True
         except Exception as e:
-            log.debug(f"Erreur vérification volume pour {funder_address[:8]}...: {e}")
+            log.debug(f"Erreur vérification volume pour {funder_address[:8]}...: {type(e).__name__}")
 
     scheme = "exchange" if exchange_name else "simple"
 
@@ -363,7 +363,7 @@ def _extract_transfer_source(tx: dict, target_wallet: str) -> dict:
             "amount_sol": delta_lamports / 1_000_000_000,
         }
     except (KeyError, IndexError, ValueError) as e:
-        log.debug(f"Erreur extraction transfert: {e}")
+        log.debug(f"Erreur extraction transfert: {type(e).__name__}")
         return None
 
 

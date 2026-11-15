@@ -90,7 +90,7 @@ async def get_wallet_labels(address: str, token_address: str = None) -> dict:
                     "funder_identity": funder_metadata.get("entityName"),
                 }
     except Exception as e:
-        log.debug(f"Erreur requête Mobula pour {address[:8]}...: {e}")
+        log.debug(f"Erreur requête Mobula pour {address[:8]}...: {type(e).__name__}")
         return None
 
 
@@ -182,5 +182,5 @@ async def get_deployer_tokens(wallet_address: str, blockchain: str = "solana") -
 
                 return results
     except Exception as e:
-        log.debug(f"Erreur Mobula wallet/deployer pour {wallet_address[:8]}...: {e}")
+        log.debug(f"Erreur Mobula wallet/deployer pour {wallet_address[:8]}...: {type(e).__name__}")
         return []

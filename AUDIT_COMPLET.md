@@ -20,32 +20,30 @@ Les principaux points relevés étaient l'utilisation des anciens endpoints Jupi
 - **Backtest :** moteur de replay OHLC déterministe accessible via `backtest.replay_historical_ohlc`; entrée à la bougie suivante, frais et slippage sur chaque jambe, SL d'abord si une bougie touche TP et SL. Le moteur requiert des données de chandelles fournies et ne prétend pas générer un historique.
 - **Risque :** expositions réservées sous verrou contre les achats concurrents, plafond de positions et d'exposition, arrêt persistant après dépassement de pertes, commandes Telegram `/halt` et `/resume`; transferts manuels bloqués en PAPER et plafonnés en LIVE.
 
-## Pourcentage réel d'avancement
+## Progression et limites au 15 novembre 2026
 
-Estimation du travail d'implémentation et de couverture automatisée, sans compter les preuves de déploiement ou une revue indépendante :
+La revue des 16 fichiers de la PR #3 est consignée ci-dessus. Depuis cette revue, la branche de suivi ajoute la validation transactionnelle Jupiter, SQLite/récupération, collecte wallet, contrôles de risque et tests. La correction du 15 novembre durcit les nombres RPC/Jupiter, retries, journaux, mode RPC public dégradé et replay chronologique.
 
-| Objectif | Avancement | Limite restante |
-|---|---:|---|
-| Revue des 16 fichiers de la PR n°3 | 100 % | Aucun |
-| Sécurité Jupiter et transactions | 78 % | Revue CPI/DEX détaillée et intégration V2 réelle |
-| Intégration du wallet collector | 85 % | Soak avec RPC cible |
-| PnL réel, frais compris | 80 % | Cours SOL/USD instantané; validation on-chain absente |
-| SQLite et reprise après redémarrage | 85 % | Réconciliation des signatures demeure opérateur |
-| Performances RPC et erreurs | 70 % | Pas de test de charge prolongé |
-| Monitoring et alertes Telegram | 80 % | Vérification en environnement de déploiement |
-| Système de backtesting | 70 % | Pas encore de fournisseur/historique OHLC branché |
-| Tests automatisés | 70 % | CI de la branche de suivi à terminer; pas de tests mainnet |
-| Pertes, expositions et arrêt d'urgence | 80 % | Aucun soak PAPER prolongé ni preuve d'exploitation |
+Le score actualisé et son barème sont maintenus dans [PROGRESS.md](PROGRESS.md): **70 % d'avancement de développement pondéré** (10 objectifs à poids égal; VERIFIED=100, TESTED=75, IMPLEMENTED=50, IN PROGRESS=25, NOT STARTED/BLOCKED=0). Il ne signifie ni disponibilité de production, ni résultat financier, ni readiness LIVE.
 
-**Avancement global estimé : 78 %.** Ce chiffre mesure l'implémentation, pas l'état de préparation au LIVE.
+## États distincts
+
+- **Développement :** 70 % selon le barème publié.
+- **Tests locaux :** `compileall` réussi et 170 tests passés sur le commit de travail; voir [TESTING.md](TESTING.md).
+- **Sécurité :** IN PROGRESS. Jupiter/comptabilité sont couverts par tests mockés; l'audit indépendant CPI/DEX et le nouveau résultat pip-audit/Gitleaks restent à confirmer.
+- **PAPER :** mode par défaut et code testé, mais soak, restauration déployée, frais simulés PnL et service RPC cible restent à vérifier.
+- **LIVE : BLOCKED / NOT READY.** Aucune transaction réelle exécutée. Aucun test mainnet, portefeuille financé, soak ni audit indépendant complet.
 
 ## Travaux encore ouverts
 
-1. Exécuter et corriger la CI complète sur la nouvelle PR (compilation, suite de tests, Ruff, pip-audit, scan Gitleaks).
-2. Exécuter un soak PAPER dans l'environnement cible et tester une restauration de base depuis une sauvegarde.
-3. Ajouter une réconciliation guidée des signatures pendantes à partir des statuts et métadonnées RPC; garder le bot en arrêt tant que l'issue financière n'est pas certaine.
-4. Brancher un fournisseur de chandelles historiques, valider les stratégies contre des jeux de données horodatés et éviter le biais de sélection.
-5. Vérifier le comportement complet de Jupiter V2 et les routes Metis avec des tests d'intégration read-only/simulation; une revue programme par programme reste nécessaire.
-6. Revoir les autres heuristiques du bot, notamment l'historique de wallets, l'analyse de migration et les fonctions signalées comme stubs dans README.
+1. Confirmer sur GitHub la CI complète du nouveau commit (compilation, tests, Ruff, pip-audit et scan Gitleaks) et corriger tout échec.
+2. Exécuter un soak PAPER dans l'environnement cible; vérifier alertes Telegram, reprise après arrêt et restauration de sauvegarde.
+3. Ajouter une réconciliation guidée de signatures pendantes à partir du RPC; garder l'arrêt tant que l'issue financière n'est pas certaine.
+4. Relier le replay OHLC aux entrées historiques de la stratégie et à un dataset versionné; mesurer la provenance, les gaps, les coûts et le risque de lookahead.
+5. Faire une revue CPI/DEX indépendante de la politique de transaction et vérifier le contrat de l'API Jupiter courant.
+6. Mesurer les limites, fraîcheur et charge du fournisseur RPC réellement configuré; le déploiement n'a pas été inspecté.
+7. Décider et tester une version explicite du modèle de frais PAPER. Les frais simulés actuels sont enregistrés mais ne sont pas déduits du PnL PAPER.
+
+Voir aussi [PROJECT_ROADMAP.md](PROJECT_ROADMAP.md), [RPC_PUBLIC_LIMITATIONS.md](RPC_PUBLIC_LIMITATIONS.md), [BACKTESTING.md](BACKTESTING.md) et [LIVE_READINESS.md](LIVE_READINESS.md).
 
 Aucune transaction réelle n'a été exécutée. `TRADING_MODE=PAPER` reste la valeur par défaut et le code LIVE n'est pas déclaré prêt.

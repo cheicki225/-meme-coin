@@ -248,13 +248,13 @@ async def collect_wallet(wallet: str, limit: int = 100, db_path: str | Path = DE
         raise ValueError("wallet address is required")
     if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 1000:
         raise ValueError("limit must be between 1 and 1000")
-    if not config.HELIUS_API_KEY:
-        return {"status": "unavailable", "reason": "helius_not_configured", "wallet": wallet}
     cursor = get_collection_cursor(wallet, db_path)
     try:
-        signatures = await wallet_history._get_signatures(wallet, limit=limit, until=cursor)
+        signatures = await wallet_history._get_signatures(
+            wallet, limit=limit, until=cursor, max_retries=1, strict=True
+        )
     except Exception as exc:
-        log.warning("Wallet signature collection failed: %s", exc)
+        log.warning("Wallet signature collection failed (%s)", type(exc).__name__)
         return {"status": "error", "reason": "signature_fetch_failed", "wallet": wallet}
     if not isinstance(signatures, list):
         return {"status": "error", "reason": "invalid_signature_response", "wallet": wallet}
@@ -283,7 +283,7 @@ async def collect_wallet(wallet: str, limit: int = 100, db_path: str | Path = DE
             if newest:
                 set_collection_cursor(wallet, newest, db_path)
     except (OSError, sqlite3.Error) as exc:
-        log.exception("Wallet activity persistence failed")
+        log.error("Wallet activity persistence failed (%s)", type(exc).__name__)
         return {"status": "error", "reason": "storage_failed", "wallet": wallet}
     return {
         "status": "partial" if failed else "ok",

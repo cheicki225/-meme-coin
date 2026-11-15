@@ -46,7 +46,7 @@ class WalletCollectorService:
                 try:
                     result = await _collect_wallet(address, limit, config.WALLET_ACTIVITY_DB_FILE)
                 except Exception as exc:
-                    log.exception("Read-only collection failed for monitored wallet")
+                    log.error("Read-only collection failed (%s)", type(exc).__name__)
                     result = {"status": "error", "reason": type(exc).__name__}
                 results.append(result)
                 if result.get("status") in {"error", "unavailable"}:
@@ -77,9 +77,6 @@ class WalletCollectorService:
     async def start(self) -> None:
         if not config.WALLET_COLLECTOR_ENABLED:
             log.info("Wallet data collector disabled by configuration")
-            return
-        if not config.HELIUS_API_KEY:
-            await self._alert_failure("helius_not_configured")
             return
         interval = max(30, int(config.WALLET_COLLECTOR_INTERVAL_S))
         while True:

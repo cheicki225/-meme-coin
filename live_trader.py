@@ -119,7 +119,7 @@ class LiveTrader(PaperTrader):
             if wm.get_active_label():
                 return wm.get_active_keypair()
         except Exception as e:
-            log.debug(f"Pas de wallet géré actif ({e}), retombe sur wallet.py")
+            log.debug("Managed wallet is unavailable (%s); trying the configured wallet", type(e).__name__)
         import wallet
         return wallet.load_keypair()
 
@@ -144,7 +144,7 @@ class LiveTrader(PaperTrader):
                 config.SOL_MINT, token_mint, amount_lamports, slippage_bps, keypair, use_jito
             )
         except jupiter_executor.SwapError as e:
-            log.error(f"❌ Achat LIVE échoué sur {token_mint[:8]}...: {e}")
+            log.error(f"❌ Achat LIVE échoué sur {token_mint[:8]}...: {type(e).__name__}")
             if self.notifier:
                 await self.notifier.notify(
                     "buy_failed",
@@ -227,7 +227,7 @@ class LiveTrader(PaperTrader):
                 keypair, settings.get("use_jito", False),
             )
         except jupiter_executor.SwapError as e:
-            log.error(f"❌ Vente LIVE échouée sur {token_mint[:8]}...: {e}")
+            log.error(f"❌ Vente LIVE échouée sur {token_mint[:8]}...: {type(e).__name__}")
             return None
 
         if result is None:

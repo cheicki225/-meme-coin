@@ -39,8 +39,8 @@ def test_sqlite_events_are_idempotent_and_cursor_survives_restart(tmp_path):
     assert collector.read_wallet_activity(WALLET, path)[0]["token_delta_raw"] == "4"
 
 
-def test_collector_advances_cursor_only_after_all_transactions_are_available(monkeypatch, tmp_path):
-    monkeypatch.setattr(config, "HELIUS_API_KEY", "configured")
+def test_collector_works_with_public_http_rpc_and_advances_cursor_safely(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "HELIUS_API_KEY", "")
     monkeypatch.setattr(wallet_history, "_get_signatures", _signatures)
     monkeypatch.setattr(wallet_history, "_get_raw_transaction", _transaction)
     monkeypatch.setattr(collector, "normalize_transaction", lambda wallet, signature, tx: None)
@@ -58,7 +58,31 @@ def test_collector_advances_cursor_only_after_all_transactions_are_available(mon
     assert collector.get_collection_cursor(WALLET, tmp_path / "events.sqlite3") == "newest"
 
 
-async def _signatures(wallet, limit, until=None):
+def test_collector_reports_rpc_failure_instead_of_empty_history(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "HELIUS_API_KEY", "")
+
+    async def rpc_failure(*args, **kwargs):
+        raise wallet_history.rpc_client.RpcUnavailableError("RPC unavailable")
+
+    monkeypatch.setattr(wallet_history, "_get_signatures", rpc_failure)
+    result = asyncio.run(collector.collect_wallet(WALLET, limit=5, db_path=tmp_path / "failed.sqlite3"))
+    assert result["status"] == "error"
+    assert result["reason"] == "signature_fetch_failed"
+
+
+def test_empty_rpc_history_is_a_successful_empty_collection(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "HELIUS_API_KEY", "")
+
+    async def no_activity(*args, **kwargs):
+        return []
+
+    monkeypatch.setattr(wallet_history, "_get_signatures", no_activity)
+    result = asyncio.run(collector.collect_wallet(WALLET, limit=5, db_path=tmp_path / "empty.sqlite3"))
+    assert result["status"] == "ok"
+    assert result["events_detected"] == 0
+
+
+async def _signatures(wallet, limit, until=None, strict=False, max_retries=4):
     return [{"signature": "newest"}, {"signature": "older"}]
 
 

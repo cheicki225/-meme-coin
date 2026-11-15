@@ -25,6 +25,7 @@ import time
 import random
 import logging
 import asyncio
+import math
 
 import config
 import risk_controls
@@ -41,6 +42,20 @@ log = logging.getLogger("paper_trader")
 HARDCORE_FAIL_RATE = 0.25          # ~20-30% de fails documentés en Hardcore
 HARDCORE_MAX_FEE_SOL = 0.027       # cap documenté (priority+tip)
 SIMPLE_TYPICAL_FEE_SOL = 0.003     # ordre de grandeur pour un mode "tranquille"
+
+
+async def _sold_sol_cashflow(sell_result: dict, proceeds_usd: float) -> float:
+    """Use confirmed SOL proceeds when supplied; estimate only in PAPER mode."""
+    if "sol_cashflow" in sell_result:
+        cashflow = sell_result["sol_cashflow"]
+        if (not isinstance(cashflow, (int, float)) or isinstance(cashflow, bool)
+                or not math.isfinite(cashflow) or cashflow < 0):
+            raise ValueError("Confirmed SOL cashflow is malformed")
+        return float(cashflow)
+    sol_usd = await get_sol_usd_rate()
+    if not isinstance(sol_usd, (int, float)) or isinstance(sol_usd, bool) or not math.isfinite(sol_usd) or sol_usd <= 0:
+        raise ValueError("SOL/USD rate must be a finite positive number")
+    return proceeds_usd / sol_usd
 
 
 def _build_position_keyboard(token_mint: str):
@@ -509,7 +524,7 @@ class PaperTrader:
                     speed_line = f"\nVitesse: bloc+{delta} (création: {creation_slot}, achat: {our_slot})"
                     log.info(f"⚡ Vitesse d'exécution : bloc+{delta} sur {token_mint[:8]}...")
             except Exception as e:
-                log.debug(f"Impossible de calculer la télémétrie de vitesse : {e}")
+                log.debug(f"Impossible de calculer la télémétrie de vitesse : {type(e).__name__}")
 
         if self.notifier:
             sig_line = f"\nTx: `{buy_signature[:16]}...`" if buy_signature else ""
@@ -806,6 +821,9 @@ class PaperTrader:
     # ══════════════════════════════════════════════════════════
 
     async def _check_buy_the_dip(self, position: dict, price: float):
+        if config.TRADING_MODE == "LIVE":
+            log.error("LIVE buy-the-dip is disabled because no confirmed add-on swap is implemented.")
+            return
         data = await _get_pair_data(position["token_mint"])
         market_cap = float(data.get("marketCap", data.get("fdv", 0)) or 0)
         if market_cap <= 0 or position["ath_market_cap"] <= 0:
@@ -942,6 +960,9 @@ class PaperTrader:
 
     async def sell_initials(self, position: dict, price: float) -> bool:
         """Vend exactement de quoi récupérer la mise investie (cost_basis_usd), garde le reste."""
+        if config.TRADING_MODE == "LIVE":
+            log.error("LIVE sell-initials is disabled because it does not submit a confirmed swap.")
+            return False
         if position.get("initials_sold"):
             return False
 
@@ -993,7 +1014,7 @@ class PaperTrader:
         try:
             big_buys = await self._fetch_recent_buy_sizes(pair_address)
         except Exception as e:
-            log.debug(f"Erreur détection big buy: {e}")
+            log.debug(f"Erreur détection big buy: {type(e).__name__}")
             return None
 
         levels = position["settings"].get("auto_sell_big_buy_levels", [])
@@ -1073,7 +1094,7 @@ class PaperTrader:
         try:
             balances = await self._fetch_token_balances(group, position["token_mint"])
         except Exception as e:
-            log.debug(f"Erreur Front Run Sell: {e}")
+            log.debug(f"Erreur Front Run Sell: {type(e).__name__}")
             return False
 
         total = sum(balances.values())
@@ -1174,12 +1195,13 @@ class PaperTrader:
 
         proceeds = sell_result["proceeds_usd"]
         sell_signature = sell_result.get("signature")
+        sol_received = await _sold_sol_cashflow(sell_result, proceeds)
         cost_removed = position["cost_basis_usd"] * sell_ratio
         pnl_usd = proceeds - cost_removed
 
         position["units"] -= units_sold
         position["cost_basis_usd"] -= cost_removed
-        position["total_sol_received"] = position.get("total_sol_received", 0) + (proceeds / await get_sol_usd_rate())
+        position["total_sol_received"] = position.get("total_sol_received", 0) + sol_received
         if sell_signature:
             position.setdefault("tx_signatures", []).append(sell_signature)
         position["fee_lamports"] = int(position.get("fee_lamports", 0)) + int(sell_result.get("fee_lamports", 0))
@@ -1234,6 +1256,7 @@ class PaperTrader:
 
         proceeds = sell_result["proceeds_usd"]
         sell_signature = sell_result.get("signature")
+        sol_received = await _sold_sol_cashflow(sell_result, proceeds)
         pnl_usd = proceeds - position["cost_basis_usd"]
 
         position["status"] = "closed"
@@ -1241,7 +1264,7 @@ class PaperTrader:
         position["exit_time"] = time.time()
         position["result_pct"] = change_pct
         position["close_reason"] = close_reason
-        position["total_sol_received"] = position.get("total_sol_received", 0) + (proceeds / await get_sol_usd_rate())
+        position["total_sol_received"] = position.get("total_sol_received", 0) + sol_received
         position["units"] = 0
         position["cost_basis_usd"] = 0
         if sell_signature:
@@ -1350,7 +1373,7 @@ class PaperTrader:
                 )
                 await self.notifier.notify_photo("sell_success", card_bytes, caption="")
             except Exception as e:
-                log.debug(f"Erreur génération/envoi carte PNL: {e}")
+                log.debug(f"Erreur génération/envoi carte PNL: {type(e).__name__}")
 
             if just_paused:
                 await self.notifier.notify(

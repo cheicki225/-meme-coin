@@ -78,7 +78,7 @@ class ProtectionScanner:
             try:
                 await self._run_connection()
             except Exception as e:
-                log.error(f"Connexion WebSocket protection perdue ({e}), reconnexion dans 5s...")
+                log.error("External operation failed (%s)", type(e).__name__)
                 await asyncio.sleep(5)
 
     def stop(self):
@@ -105,7 +105,7 @@ class ProtectionScanner:
             try:
                 await self._sync_subscriptions()
             except Exception as e:
-                log.debug(f"Erreur sync protection: {e}")
+                log.debug("External operation failed (%s)", type(e).__name__)
 
     async def _sync_subscriptions(self):
         """Ajoute les souscriptions pour les nouvelles cibles de protection —
@@ -143,7 +143,7 @@ class ProtectionScanner:
 
             await self._process_live_transaction(signature)
         except Exception as e:
-            log.debug(f"Erreur traitement message protection: {e}")
+            log.debug("External operation failed (%s)", type(e).__name__)
 
     def _already_processed(self, signature: str) -> bool:
         now = time.time()
@@ -223,7 +223,7 @@ class ProtectionScanner:
             try:
                 await self._scan_one_target(label, target)
             except Exception as e:
-                log.error(f"Erreur scan protection '{label}': {e}")
+                log.error("External operation failed (%s)", type(e).__name__)
 
     async def _scan_one_target(self, label: str, target: dict):
         """Scan RPC batch — utilisé UNE SEULE FOIS au démarrage (voir start())

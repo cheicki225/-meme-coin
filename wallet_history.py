@@ -152,9 +152,6 @@ async def has_created_any_token(address: str, max_signatures_checked: int = 200)
 
         _stats["helius_fallback"] += 1
 
-    if not config.HELIUS_API_KEY:
-        return None
-
     signatures = await _get_signatures(address, limit=max_signatures_checked)
     if not signatures:
         return None
@@ -185,10 +182,6 @@ async def get_created_tokens(dev_address: str, max_results: int = 15, max_signat
     initialement) pour avoir une meilleure chance de remonter à des
     créations plus anciennes sans avoir à paginer indéfiniment.
     """
-    if not config.HELIUS_API_KEY:
-        log.warning("Pas de clé Helius — impossible de récupérer l'historique.")
-        return []
-
     signatures = await _get_signatures(dev_address, limit=max_signatures_scanned)
     if not signatures:
         return []
@@ -228,10 +221,6 @@ async def get_recent_buys(wallet_address: str, max_results: int = 10, max_signat
     Retourne une liste de dicts triés du plus récent au plus ancien :
     [{"token_mint": str, "signature": str, "block_time": int | None}, ...]
     """
-    if not config.HELIUS_API_KEY:
-        log.warning("Pas de clé Helius — impossible de récupérer l'historique d'achats.")
-        return []
-
     signatures = await _get_signatures(wallet_address, limit=max_signatures_scanned)
     if not signatures:
         return []
@@ -386,10 +375,6 @@ async def get_all_created_tokens(dev_address: str, max_pages: int = 20, on_progr
     manuelle approfondie (find_all_dev_tokens.py), pas dans la boucle
     temps réel du bot qui a besoin de rester rapide.
     """
-    if not config.HELIUS_API_KEY:
-        log.warning("Pas de clé Helius — impossible de récupérer l'historique.")
-        return []
-
     signatures = await get_all_signatures_paginated(dev_address, max_pages=max_pages, on_progress=on_progress)
     if not signatures:
         return []
@@ -413,7 +398,7 @@ async def get_all_created_tokens(dev_address: str, max_pages: int = 20, on_progr
 
 
 async def _get_signatures(address: str, limit: int = 300, max_retries: int = 4,
-                         until: str | None = None) -> list:
+                         until: str | None = None, strict: bool = False) -> list:
     """
     CORRIGÉ suite à un vrai faux-négatif : aucun réessai ici signifiait
     qu'un seul échec RPC (rate limit après une session de tests intensive)
@@ -435,12 +420,28 @@ async def _get_signatures(address: str, limit: int = 300, max_retries: int = 4,
             **({"until": until} if until else {}),
         }],
     }
+    last_error = None
     for attempt in range(max_retries):
-        result = await rpc_client.rpc_post(payload, timeout=15)
+        try:
+            if strict:
+                result = await rpc_client.rpc_post_strict(payload, timeout=15)
+            else:
+                result = await rpc_client.rpc_post(payload, timeout=15)
+        except rpc_client.RpcUnavailableError as exc:
+            last_error = exc
+            result = None
         if isinstance(result, list):
             return result
+        if strict and result is not None:
+            last_error = rpc_client.RpcUnavailableError(
+                "RPC returned an invalid signature-list response"
+            )
         if attempt < max_retries - 1:
             await asyncio.sleep(1.0 * (2 ** attempt))
+    if strict:
+        raise rpc_client.RpcUnavailableError(
+            "Unable to retrieve wallet signatures from the configured RPC"
+        ) from last_error
     return []
 
 

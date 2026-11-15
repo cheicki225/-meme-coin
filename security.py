@@ -57,7 +57,7 @@ async def check_token_security(token_mint: str) -> dict:
                     return {"error": f"http_{resp.status}", "security_score": 50, "is_honeypot": False}
                 data = await resp.json()
     except Exception as e:
-        log.debug(f"Erreur GoPlus pour {token_mint[:8]}...: {e}")
+        log.debug(f"Erreur GoPlus pour {token_mint[:8]}...: {type(e).__name__}")
         return {"error": str(e), "security_score": 50, "is_honeypot": False}
 
     result = data.get("result", {})

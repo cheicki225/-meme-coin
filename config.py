@@ -24,13 +24,22 @@ except ImportError:
 # PAPER = simulation complète, aucun ordre réel envoyé (défaut, toujours garder ainsi
 #         tant que le bot n'a pas été validé sur plusieurs semaines)
 # LIVE  = exécution réelle via Jupiter (à activer uniquement plus tard)
-TRADING_MODE = os.getenv("TRADING_MODE", "PAPER")
+def _normalize_trading_mode(value: str) -> str:
+    mode = str(value).strip().upper()
+    if mode not in {"PAPER", "LIVE"}:
+        raise ValueError("TRADING_MODE must be PAPER or LIVE.")
+    return mode
+
+
+TRADING_MODE = _normalize_trading_mode(os.getenv("TRADING_MODE", "PAPER"))
 # LIVE swaps and manual transfers require a second explicit opt-in.
 LIVE_EXECUTION_ENABLED = os.getenv("LIVE_EXECUTION_ENABLED", "false").lower() == "true"
 
 # ── Accès RPC / WebSocket Solana ────────────────────────────────
+# The legacy HELIUS_RPC_URL name is also used for SOLANA_RPC_URL and may point
+# to a public or another provider's HTTP endpoint. Never log its value.
 HELIUS_API_KEY = os.getenv("HELIUS_API_KEY", "")
-HELIUS_RPC_URL = os.getenv("SOLANA_RPC_URL") or (f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}" if HELIUS_API_KEY else "https://api.mainnet-beta.solana.com")
+HELIUS_RPC_URL = os.getenv("SOLANA_RPC_URL") or (f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}" if HELIUS_API_KEY else "https://api.mainnet.solana.com")
 HELIUS_WS_URL = f"wss://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}" if HELIUS_API_KEY else None
 # API "Enhanced Transactions" de Helius : parse déjà les instructions Pump.fun
 HELIUS_PARSE_TX_URL = f"https://api.helius.xyz/v0/transactions/?api-key={HELIUS_API_KEY}"

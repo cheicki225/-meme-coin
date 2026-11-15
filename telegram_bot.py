@@ -405,7 +405,7 @@ class SniperTelegramBot:
                     )
                 return
             except Exception as e:
-                log.warning(f"Impossible d'envoyer la bannière ({e}) — retombe sur le texte seul.")
+                log.warning(f"Impossible d'envoyer la bannière ({type(e).__name__}) — retombe sur le texte seul.")
 
         await update.message.reply_text(welcome_text, parse_mode="Markdown", reply_markup=keyboard)
 
@@ -1701,7 +1701,7 @@ class SniperTelegramBot:
         try:
             await msg.edit_text(text, parse_mode="Markdown", reply_markup=keyboard, disable_web_page_preview=True)
         except Exception as e:
-            log.warning(f"Erreur d'affichage Markdown pour l'analyse de {token_mint}: {e}")
+            log.warning(f"Erreur d'affichage Markdown pour l'analyse de {token_mint}: {type(e).__name__}")
             try:
                 # Repli : même contenu, sans aucun formatage Markdown — ne
                 # peut plus jamais échouer pour une histoire de caractère
@@ -1709,7 +1709,7 @@ class SniperTelegramBot:
                 plain_text = text.replace("*", "").replace("`", "").replace("_", "")
                 await msg.edit_text(plain_text, reply_markup=keyboard, disable_web_page_preview=True)
             except Exception as e2:
-                log.error(f"Échec du repli texte brut pour {token_mint}: {e2}")
+                log.error(f"Échec du repli texte brut pour {token_mint}: {type(e2).__name__}")
                 await msg.edit_text("❌ Erreur d'affichage — relance l'analyse.")
 
     async def show_pnl_journal(self, query, page: int = 0):
@@ -1779,7 +1779,7 @@ class SniperTelegramBot:
         try:
             await msg.edit_text(text, parse_mode="Markdown", reply_markup=keyboard, disable_web_page_preview=True)
         except Exception as e:
-            log.warning(f"Erreur d'affichage Markdown pour la sécurité de {token_mint}: {e}")
+            log.warning(f"Erreur d'affichage Markdown pour la sécurité de {token_mint}: {type(e).__name__}")
             plain_text = text.replace("*", "").replace("`", "").replace("_", "")
             await msg.edit_text(plain_text, reply_markup=keyboard, disable_web_page_preview=True)
 
@@ -1876,7 +1876,7 @@ class SniperTelegramBot:
         try:
             await msg.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard), disable_web_page_preview=True)
         except Exception as e:
-            log.warning(f"Erreur d'affichage Markdown pour le résumé rapide de {wallet_address}: {e}")
+            log.warning(f"Erreur d'affichage Markdown pour le résumé rapide de {wallet_address}: {type(e).__name__}")
             plain_text = text.replace("*", "").replace("`", "").replace("_", "")
             await msg.edit_text(plain_text, reply_markup=InlineKeyboardMarkup(keyboard), disable_web_page_preview=True)
 
@@ -1954,7 +1954,7 @@ class SniperTelegramBot:
         try:
             await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard), disable_web_page_preview=True)
         except Exception as e:
-            log.warning(f"Erreur d'affichage Markdown pour les achats récents de {wallet_address}: {e}")
+            log.warning(f"Erreur d'affichage Markdown pour les achats récents de {wallet_address}: {type(e).__name__}")
             plain_text = text.replace("*", "").replace("`", "").replace("_", "")
             await query.edit_message_text(plain_text, reply_markup=InlineKeyboardMarkup(keyboard), disable_web_page_preview=True)
 
@@ -2083,7 +2083,7 @@ class SniperTelegramBot:
                 text += f"   G — Cohérence d'entrée : {consistency['reason']}\n"
                 text += "   _B, C1, C2 nécessitent un token de référence précis — non inclus ici._\n"
             except Exception as e:
-                log.warning(f"Erreur checklist copy trading pour {wallet_address}: {e}")
+                log.warning(f"Erreur checklist copy trading pour {wallet_address}: {type(e).__name__}")
                 text += "\n📋 _Checklist copy trading indisponible (erreur pendant le calcul)._\n"
 
         all_results = dev_results + trader_results
@@ -2150,7 +2150,7 @@ class SniperTelegramBot:
         try:
             await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard), disable_web_page_preview=True)
         except Exception as e:
-            log.warning(f"Erreur d'affichage Markdown pour le détail de {wallet_address}: {e}")
+            log.warning(f"Erreur d'affichage Markdown pour le détail de {wallet_address}: {type(e).__name__}")
             plain_text = text.replace("*", "").replace("`", "").replace("_", "")
             await query.edit_message_text(plain_text, reply_markup=InlineKeyboardMarkup(keyboard), disable_web_page_preview=True)
 
@@ -2248,7 +2248,7 @@ class SniperTelegramBot:
         try:
             await msg.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard), disable_web_page_preview=True)
         except Exception as e:
-            log.warning(f"Erreur d'affichage Markdown pour l'analyse de dev {dev_address}: {e}")
+            log.warning(f"Erreur d'affichage Markdown pour l'analyse de dev {dev_address}: {type(e).__name__}")
             plain_text = text.replace("*", "").replace("`", "").replace("_", "")
             await msg.edit_text(plain_text, reply_markup=InlineKeyboardMarkup(keyboard), disable_web_page_preview=True)
 
@@ -2327,7 +2327,7 @@ class SniperTelegramBot:
         try:
             await msg.edit_text(text, parse_mode="Markdown", reply_markup=keyboard, disable_web_page_preview=True)
         except Exception as e:
-            log.warning(f"Erreur d'affichage Markdown pour le score IA de {dev_address}: {e}")
+            log.warning(f"Erreur d'affichage Markdown pour le score IA de {dev_address}: {type(e).__name__}")
             plain_text = text.replace("*", "").replace("`", "").replace("_", "")
             await msg.edit_text(plain_text, reply_markup=keyboard, disable_web_page_preview=True)
 
@@ -3676,7 +3676,7 @@ class SniperTelegramBot:
             try:
                 await update.message.delete()
             except Exception as e:
-                log.warning(f"Impossible de supprimer le message contenant la clé privée : {e}")
+                log.warning(f"Impossible de supprimer le message contenant la clé privée : {type(e).__name__}")
 
             try:
                 result = wm.import_wallet(label, text.strip())
@@ -3994,7 +3994,7 @@ class SniperTelegramBot:
         try:
             await self.app.bot.delete_message(chat_id=chat_id, message_id=message_id)
         except Exception as e:
-            log.debug(f"Suppression différée du message {message_id} impossible : {e}")
+            log.debug(f"Suppression différée du message {message_id} impossible : {type(e).__name__}")
 
     async def _execute_disperse(self, query, wallet_label: str, destination: str, amount_sol: float):
         from wallet_manager import WalletManager

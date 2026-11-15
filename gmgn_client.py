@@ -82,7 +82,7 @@ async def _get(sub_path: str, params: dict = None) -> dict:
                 # gère les deux cas plutôt que de supposer l'un ou l'autre.
                 return data.get("data", data) if isinstance(data, dict) else data
     except Exception as e:
-        log.warning(f"⚠️ GMGN — erreur requête {sub_path}: {e}")
+        log.warning(f"⚠️ GMGN — erreur requête {sub_path}: {type(e).__name__}")
         return {}
 
 
@@ -157,5 +157,5 @@ async def get_wallet_profits(wallet_address: str, chain: str = "sol") -> dict:
                 data = await resp.json()
                 return data.get("data", data) if isinstance(data, dict) else data
     except Exception as e:
-        log.warning(f"⚠️ GMGN — erreur requête wallet_profits: {e}")
+        log.warning(f"⚠️ GMGN — erreur requête wallet_profits: {type(e).__name__}")
         return {}

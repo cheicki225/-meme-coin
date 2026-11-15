@@ -13,6 +13,7 @@ l'historique de prix (paires OHLC) de chaque token.
 import asyncio
 import base64
 import logging
+import math
 import struct
 import time
 
@@ -97,7 +98,7 @@ async def get_sol_usd_rate() -> float:
                             return price
                     log.warning("⚠️ Taux SOL/USD — aucune paire avec SOL en baseToken trouvée chez DexScreener.")
     except Exception as e:
-        log.warning(f"⚠️ Taux SOL/USD — échec de rafraîchissement DexScreener : {e}")
+        log.warning(f"⚠️ Taux SOL/USD — échec de rafraîchissement DexScreener : {type(e).__name__}")
 
     if _sol_price_cache["rate"] is not None:
         return _sol_price_cache["rate"]  # dernière valeur connue, même périmée — mieux qu'une constante figée depuis des mois
@@ -194,7 +195,7 @@ async def get_bonding_curve_price(token_mint: str, retries: int = 2, retry_delay
     try:
         bonding_curve_address = _get_bonding_curve_address(token_mint)
     except Exception as e:
-        log.warning(f"⚠️ Bonding curve — erreur dérivation PDA pour {token_mint}: {e}")
+        log.warning(f"⚠️ Bonding curve — erreur dérivation PDA pour {token_mint}: {type(e).__name__}")
         return {}
 
     payload = {
@@ -244,7 +245,7 @@ async def get_bonding_curve_price(token_mint: str, retries: int = 2, retry_delay
     try:
         raw = base64.b64decode(value["data"][0])
     except (KeyError, IndexError, TypeError) as e:
-        log.warning(f"⚠️ Bonding curve — erreur décodage base64 pour {token_mint}: {e}")
+        log.warning(f"⚠️ Bonding curve — erreur décodage base64 pour {token_mint}: {type(e).__name__}")
         return {}
 
     decoded = _decode_bonding_curve_bytes(raw)
@@ -374,7 +375,7 @@ async def _gecko_get(path: str, params: dict = None) -> dict:
                     return {}
                 return await resp.json()
     except Exception as e:
-        log.debug(f"Erreur GeckoTerminal {path}: {e}")
+        log.debug(f"Erreur GeckoTerminal {path}: {type(e).__name__}")
         return {}
 
 
@@ -408,21 +409,81 @@ async def _get_ohlcv(pool_address: str, timeframe: str = "minute", aggregate: in
     return sorted(candle_list, key=lambda c: c[0])
 
 
+def replay_ohlcv_path(candles: list, tp_pct: float, sl_pct: float) -> dict | None:
+    """Replay OHLC candles chronologically, choosing SL on same-bar ambiguity.
+
+    The entry is the close of the first candle at/after the signal. That
+    candle's earlier high/low are excluded from exit evaluation. Results are
+    gross price changes and exclude fees, rent, and execution slippage.
+    """
+    if not isinstance(candles, list) or len(candles) < 2:
+        return None
+    if isinstance(tp_pct, bool) or not isinstance(tp_pct, (int, float)):
+        return None
+    if isinstance(sl_pct, bool) or not isinstance(sl_pct, (int, float)):
+        return None
+    try:
+        tp_pct = float(tp_pct)
+        sl_pct = float(sl_pct)
+        parsed = []
+        previous_timestamp = -1
+        for candle in candles:
+            if not isinstance(candle, (list, tuple)) or len(candle) < 5:
+                return None
+            timestamp = candle[0]
+            if type(timestamp) is not int or timestamp < 0 or timestamp <= previous_timestamp:
+                return None
+            previous_timestamp = timestamp
+            if any(isinstance(value, bool) or not isinstance(value, (int, float)) for value in candle[1:5]):
+                return None
+            opened, high, low, close = (float(value) for value in candle[1:5])
+            if not all(math.isfinite(value) and value > 0 for value in (opened, high, low, close)):
+                return None
+            if low > min(opened, close) or high < max(opened, close) or high < low:
+                return None
+            parsed.append((timestamp, opened, high, low, close))
+    except (IndexError, TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(tp_pct) or tp_pct <= 0 or not math.isfinite(sl_pct) or not 0 <= sl_pct < 100:
+        return None
+    entry_price = parsed[0][4]
+    if not math.isfinite(entry_price) or entry_price <= 0:
+        return None
+
+    tp_price = entry_price * (1 + tp_pct / 100)
+    sl_price = entry_price * (1 - sl_pct / 100) if sl_pct else None
+    future = parsed[1:]
+    max_price_after = max(candle[2] for candle in future)
+    for _timestamp, _opened, high, low, _close in future:
+        hit_tp = high >= tp_price
+        hit_sl = sl_price is not None and low <= sl_price
+        if hit_sl:
+            return {
+                "result_pct": -sl_pct, "hit_tp": False, "hit_sl": True,
+                "reason": "Stop-loss reached first or same-candle order ambiguous; stop-loss wins",
+            }
+        if hit_tp:
+            return {
+                "result_pct": tp_pct, "hit_tp": True, "hit_sl": False,
+                "reason": "Take-profit reached before any later stop-loss candle",
+            }
+
+    final_close = future[-1][4]
+    max_gain_pct = ((max_price_after - entry_price) / entry_price) * 100
+    return {
+        "result_pct": ((final_close - entry_price) / entry_price) * 100,
+        "hit_tp": False, "hit_sl": False,
+        "reason": f"No threshold reached; maximum post-entry change: +{max_gain_pct:.0f}%",
+    }
+
+
 async def backtest_token_pathaware(token_mint: str, entry_block_time: int,
                                     tp_pct: float = None, sl_pct: float = None) -> dict:
     """
-    MÉTHODE DEMANDÉE : compare le prix d'entrée au prix MAXIMUM atteint
-    après l'achat (ATH post-entrée), plutôt que de parcourir bougie par
-    bougie dans l'ordre. Plus simple, et — puisque le SL est désactivé par
-    défaut maintenant (config.SL_PCT=0) — exactement équivalente à un
-    parcours chronologique dans le cas courant (sans SL, l'ordre n'a pas
-    d'importance : soit le TP a été touché à un moment donné, soit non).
-
-    Si un SL est explicitement fourni/réactivé (sl_pct > 0), le calcul reste
-    une approximation : il vérifie séparément si le TP a été atteint (via le
-    plus haut) ET si le SL a été touché (via le plus bas), sans savoir lequel
-    est arrivé en premier chronologiquement — c'est la limite documentée et
-    acceptée explicitement pour cette méthode.
+    Rejoue les chandelles OHLC dans l'ordre après un signal d'entrée. L'entrée
+    se fait à la clôture de la première chandelle à partir de l'heure du
+    signal; les sorties commencent à la suivante. Si TP et SL sont atteints
+    dans une même chandelle, le SL gagne par prudence.
 
     LIMITE (inchangée) : GeckoTerminal n'indexe le pool d'un token Pump.fun
     QU'APRÈS sa migration vers PumpSwap/Raydium (bonding curve complétée).
@@ -448,31 +509,10 @@ async def backtest_token_pathaware(token_mint: str, entry_block_time: int,
         return None
 
     candles = [c for c in candles if c[0] >= entry_block_time]
-    if len(candles) < 2:
+    replay = replay_ohlcv_path(candles, tp_pct=tp_pct, sl_pct=sl_pct)
+    if replay is None:
         return None
-
-    # Prix d'entrée = clôture de la 1ère bougie après l'achat (reproduit la
-    # méthodologie "achat à la fin de la 1ère bougie" déjà documentée ici).
-    entry_price = candles[0][4]
-    if not entry_price or entry_price <= 0:
-        return None
-
-    max_price_after = max(c[2] for c in candles[1:])  # plus haut ('high') de chaque bougie
-    min_price_after = min(c[3] for c in candles[1:])  # plus bas ('low') de chaque bougie
-    max_gain_pct = ((max_price_after - entry_price) / entry_price) * 100
-    max_drop_pct = ((min_price_after - entry_price) / entry_price) * 100  # négatif
-
-    if max_gain_pct >= tp_pct:
-        return {"token_mint": token_mint, "result_pct": tp_pct, "hit_tp": True, "hit_sl": False,
-                "reason": f"TP atteint (+{tp_pct}%) [MC max après entrée: +{max_gain_pct:.0f}% — GeckoTerminal]"}
-    if sl_pct and max_drop_pct <= -sl_pct:
-        return {"token_mint": token_mint, "result_pct": -sl_pct, "hit_tp": False, "hit_sl": True,
-                "reason": f"SL touché (-{sl_pct}%) [MC min après entrée: {max_drop_pct:.0f}% — GeckoTerminal]"}
-
-    last_close = candles[-1][4]
-    result_pct = ((last_close - entry_price) / entry_price) * 100
-    return {"token_mint": token_mint, "result_pct": result_pct, "hit_tp": False, "hit_sl": False,
-            "reason": f"Ni TP ni SL — MC max atteint: +{max_gain_pct:.0f}% [GeckoTerminal]"}
+    return {"token_mint": token_mint, **replay, "source": "GeckoTerminal OHLC; gross estimate"}
 
 
 
@@ -957,7 +997,7 @@ async def _get_pair_data(token_mint: str, retries: int = 3, retry_delay_s: float
                         if pairs:
                             return pairs[0]
         except Exception as e:
-            log.debug(f"Erreur DexScreener pour {token_mint} (essai {attempt + 1}/{retries}): {e}")
+            log.debug(f"Erreur DexScreener pour {token_mint} (essai {attempt + 1}/{retries}): {type(e).__name__}")
 
         if attempt < retries - 1:
             await asyncio.sleep(retry_delay_s)
