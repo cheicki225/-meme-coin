@@ -21,6 +21,7 @@ import aiohttp
 from aiohttp.resolver import ThreadedResolver
 
 import config
+from execution_metrics import measure_execution
 
 log = logging.getLogger("rpc_client")
 
@@ -126,24 +127,28 @@ def get_http_connector():
 
 async def rpc_post(payload: dict, timeout: int = 12) -> dict:
     """Try the configured primary HTTP RPC then optional Alchemy fallback."""
-    method = str(payload.get("method", "unknown"))
-    started = time.monotonic()
-    result = await _try_endpoint(config.HELIUS_RPC_URL, payload, timeout)
-    used_fallback = False
-    if result is None and config.ALCHEMY_RPC_URL:
-        used_fallback = True
-        log.debug("Primary RPC failed for %s; trying configured fallback", method)
-        result = await _try_endpoint(config.ALCHEMY_RPC_URL, payload, timeout)
+    with measure_execution("rpc.request", "solana_rpc") as metric:
+        method = str(payload.get("method", "unknown"))
+        started = time.monotonic()
+        result = await _try_endpoint(config.HELIUS_RPC_URL, payload, timeout)
+        used_fallback = False
+        if result is None and config.ALCHEMY_RPC_URL:
+            used_fallback = True
+            log.debug("Primary RPC failed for %s; trying configured fallback", method)
+            result = await _try_endpoint(config.ALCHEMY_RPC_URL, payload, timeout)
 
-    ok = result is not None
-    _record_request(method, ok=ok, elapsed_ms=(time.monotonic() - started) * 1000, fallback=used_fallback)
-    if ok:
-        return result
-    log.warning(
-        "RPC request failed for method %s (primary%s)",
-        method, " + fallback" if config.ALCHEMY_RPC_URL else "",
-    )
-    return {}
+        metric["provider"] = "rpc_fallback" if used_fallback else "rpc_primary"
+
+        ok = result is not None
+        _record_request(method, ok=ok, elapsed_ms=(time.monotonic() - started) * 1000, fallback=used_fallback)
+        if ok:
+            return result
+        metric["outcome"] = "failure"
+        log.warning(
+            "RPC request failed for method %s (primary%s)",
+            method, " + fallback" if config.ALCHEMY_RPC_URL else "",
+        )
+        return {}
 
 
 async def rpc_post_strict(payload: dict, timeout: int = 12):

@@ -41,6 +41,7 @@ import websockets
 
 import config
 import rpc_client
+from execution_metrics import measure_async, measure_execution
 import wallet
 
 log = logging.getLogger("copytrade")
@@ -171,6 +172,14 @@ class CopyTradeListener:
             log.info(f"🔔 {len(new_wallets)} nouveau(x) wallet(s) souscrit(s) en copytrade.")
 
     async def _handle_message(self, message: str):
+        with measure_execution("websocket.copytrade_message", "helius") as metric:
+            try:
+                await self._handle_message_impl(message)
+            except Exception as e:
+                metric["outcome"] = "failure"
+                log.debug("External operation failed (%s)", type(e).__name__)
+
+    async def _handle_message_impl(self, message: str):
         try:
             data = json.loads(message)
 
@@ -208,8 +217,8 @@ class CopyTradeListener:
                 return
 
             await self._process_transaction(signature, is_swap_related)
-        except Exception as e:
-            log.debug("External operation failed (%s)", type(e).__name__)
+        except Exception:
+            raise
 
     def _already_processed(self, signature: str) -> bool:
         """
@@ -230,6 +239,7 @@ class CopyTradeListener:
         """Mémorise uniquement les signatures dont le fetch RPC a réussi."""
         self._recent_signatures[signature] = time.time()
 
+    @measure_async("copytrade.process_transaction", "helius")
     async def _process_transaction(self, signature: str, is_swap_related: bool = False):
         if signature in self._processing_signatures or self._already_processed(signature):
             log.debug(f"Signature {signature[:8]}... déjà traitée récemment — doublon ignoré.")

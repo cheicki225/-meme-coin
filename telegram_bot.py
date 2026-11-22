@@ -44,6 +44,8 @@ from telegram.ext import (
 import re
 import config
 import paper_trader
+from execution_metrics import format_metrics_report
+from execution_recovery import reconcile_pending_transactions_readonly
 from translations import t
 
 log = logging.getLogger("telegram_bot")
@@ -346,6 +348,8 @@ class SniperTelegramBot:
 
         self.app.add_handler(CommandHandler("start", self.cmd_start))
         self.app.add_handler(CommandHandler("stats", self.cmd_stats))
+        self.app.add_handler(CommandHandler("performance", self.cmd_performance))
+        self.app.add_handler(CommandHandler("reconcile", self.cmd_reconcile))
         self.app.add_handler(CommandHandler("ruggers", self.cmd_ruggers))
         self.app.add_handler(CommandHandler("copytrade", self.cmd_copytrade))
         self.app.add_handler(CommandHandler("wallets", self.cmd_wallets))
@@ -393,6 +397,8 @@ class SniperTelegramBot:
             BotCommand("wallet", "🔎 Analyse de wallet"),
             BotCommand("dev", "🕵️ Analyse de dev"),
             BotCommand("stats", "📊 Statistiques du bot"),
+            BotCommand("performance", "⏱️ Latences et erreurs RPC"),
+            BotCommand("reconcile", "🔎 Vérifier les signatures pendantes"),
             BotCommand("settings", "⚙️ Settings"),
             BotCommand("help", "ℹ️ Aide"),
         ])
@@ -407,9 +413,19 @@ class SniperTelegramBot:
 
     async def cmd_halt(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = update.effective_user
-        self.data_store.activate_emergency_stop(
-            f"manual Telegram halt by user {user.id if user else 'unknown'}"
-        )
+        try:
+            self.data_store.activate_emergency_stop(
+                f"manual Telegram halt by user {user.id if user else 'unknown'}"
+            )
+        except Exception as exc:
+            # DataStore sets the in-memory guard before saving. Do not imply
+            # that a failed disk write is durable across a process restart.
+            await update.effective_message.reply_text(
+                "🛑 Arrêt d'urgence activé en mémoire, mais sa sauvegarde a échoué "
+                f"({type(exc).__name__}). Ne redémarrez pas le bot avant d'avoir "
+                "rétabli la persistance et vérifié l'état."
+            )
+            return
         await update.effective_message.reply_text(
             "🛑 Arrêt d'urgence activé. Les nouvelles opérations sont suspendues."
         )
@@ -492,11 +508,82 @@ class SniperTelegramBot:
             f"Copy Trading: {n_copytrade}\n"
             f"Total: {self.data_store.count_wallets()}/{config.MAX_MONITORED_WALLETS}"
         )
+        failed_fees = state.get("unapplied_failed_transaction_fees_lamports", 0)
+        if isinstance(failed_fees, int) and not isinstance(failed_fees, bool) and failed_fees > 0:
+            text += (
+                f"\nFrais de swaps échoués à rapprocher du PnL : "
+                f"{failed_fees} lamports ({failed_fees / 1_000_000_000:.9f} SOL)"
+            )
         pnl_warning = _pnl_fee_history_warning(self.data_store, state.get("language", "fr"))
         if pnl_warning:
             text += f"\n\n{pnl_warning}"
         text += "\n\n" + _format_risk_status(state, config.CIRCUIT_BREAKER_USD)
         await update.message.reply_text(text, parse_mode="Markdown")
+
+    async def cmd_performance(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show privacy-filtered stage latency and failure metrics."""
+        try:
+            report = await asyncio.wait_for(asyncio.to_thread(format_metrics_report), timeout=2.0)
+        except asyncio.TimeoutError:
+            report = "Mesures temporairement indisponibles; les opérations de trading continuent."
+        await update.effective_message.reply_text(
+            "⏱️ Performance locale\n\n" + report,
+        )
+
+    async def cmd_reconcile(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Read finalized Solana status only; never signs or submits a transaction."""
+        pending = self.data_store.state.get("pending_transactions", [])
+        if not isinstance(pending, list):
+            try:
+                self.data_store.activate_emergency_stop("invalid pending transaction state during reconciliation")
+            except Exception as exc:
+                await update.effective_message.reply_text(
+                    "État des transactions invalide et arrêt d'urgence en mémoire; "
+                    f"sauvegarde impossible ({type(exc).__name__}). Vérifiez le stockage avant redémarrage."
+                )
+                return
+            await update.effective_message.reply_text(
+                "État des transactions invalide. Arrêt d'urgence activé; aucune requête RPC n'a été lancée."
+            )
+            return
+        if not pending:
+            await update.effective_message.reply_text("Aucune transaction en attente de réconciliation.")
+            return
+        try:
+            if not self.data_store.state.get("emergency_stop"):
+                self.data_store.activate_emergency_stop("pending transaction reconciliation in progress")
+            result = await reconcile_pending_transactions_readonly(self.data_store)
+        except Exception as exc:
+            # Do not display provider exception text, which can contain a URL
+            # or credential. A persistence failure leaves pending state intact.
+            await update.effective_message.reply_text(
+                f"Réconciliation interrompue ({type(exc).__name__}). "
+                "Les signatures restent bloquées; vérifiez les journaux locaux."
+            )
+            return
+
+        lines = [
+            "🔎 *Réconciliation en lecture seule*",
+            f"Signatures vérifiées : {result['checked']}",
+            f"Transactions déjà comptabilisées : {result['resolved_from_positions']}",
+            f"Échecs finalisés enregistrés : {result['finalized_failures_resolved']}",
+            f"Succès finalisés sans position durable : {result['confirmed_unaccounted']}",
+            f"En attente ou résultat inconnu : {result['pending_or_unknown']}",
+            f"Enregistrements invalides : {result['invalid']}",
+            f"Signatures encore bloquées : {result['remaining']}",
+        ]
+        if result["deferred"]:
+            lines.append(f"Non vérifiées (limite par commande) : {result['deferred']}")
+        if result["finalized_failures_resolved"]:
+            lines.append(
+                "Les frais réseau de ces échecs sont conservés en lamports et restent "
+                "à rapprocher du PnL USD. Le coupe-circuit reste actif jusqu'à /resume."
+            )
+        if result["confirmed_unaccounted"] or result["pending_or_unknown"]:
+            lines.append(
+                "Les signatures non comptabilisées restent bloquées. Aucun swap n'a été envoyé."
+            )
+        await update.effective_message.reply_text("\n".join(lines), parse_mode="Markdown")
 
     # ── Nouvelles commandes slash — raccourcis directs vers les menus,
     # pour que le bouton "Menu" natif de Telegram donne accès à tout,

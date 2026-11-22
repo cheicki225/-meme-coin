@@ -14,7 +14,7 @@ Gardez `TRADING_MODE=PAPER` et `LIVE_EXECUTION_ENABLED=false`. Le code LIVE exig
 - Les décimales de tokens sont prises dans les métadonnées confirmées. Les positions LIVE MultiBuy sont refusées jusqu'à une comptabilisation par wallet.
 - Les transferts SOL manuels sont bloqués en PAPER, limités par montant en LIVE et refusés pendant l'arrêt d'urgence ou une transaction pendante. Les bundles Jito avec transfert de tip séparé restent désactivés.
 - L'état du bot est stocké en SQLite WAL avec commits atomiques, import initial depuis l'ancien JSON, sauvegardes et restauration depuis un instantané valide. Une version de schéma plus récente n'est jamais rétrogradée.
-- `/halt` déclenche un arrêt d'urgence durable; `/resume` ne le retire pas tant qu'une signature reste pendante. La limite de positions et d'exposition globale est vérifiée avant un nouvel achat et protégée contre les entrées concurrentes.
+- `/halt` déclenche l'arrêt d'urgence avant de sauvegarder. Si la sauvegarde échoue, le bot reste arrêté en mémoire et Telegram indique que cet état ne survivra pas forcément à un redémarrage. `/resume` refuse un registre de signatures mal formé ou non vide. La limite de positions et d'exposition globale est vérifiée avant un nouvel achat et protégée contre les entrées concurrentes.
 - Le collecteur de wallets et le moniteur RPC sont en lecture seule; leurs erreurs génèrent des alertes Telegram avec cooldown.
 - Les parseurs numériques rejettent booléens, flottants et formats mal formés pour les montants/frais Jupiter et les deltas de comptabilité. Les outils réseau ne journalisent plus le corps brut ni les messages d'exception contenant potentiellement une URL avec clé.
 - Le filtre GoPlus utilise le schéma Solana (`mintable`, `freezable`, `closable`, contrôles Token-2022, DEX et détenteurs LP); il ne présente pas les champs EVM de taxe/honeypot comme s'ils avaient été évalués. Un état obligatoire absent, un échec fournisseur, une liquidité DEX absente, un verrouillage LP inconnu ou des parts LP incohérentes bloque l'achat lorsque le filtre est activé. Par défaut, le maximum de TVL DEX rapporté doit atteindre 10 000 USD (`GOPLUS_MIN_DEX_TVL_USD`); ce chiffre ne prouve pas que la route Jupiter utilise cette pool. Le score est heuristique : les lignes LP retournées ne couvrent pas forcément tout le pool; moins de 25 % verrouillé retranche 45 points, 25–<50 % 30 points, 50–<80 % 15 points, et 80 % ou plus aucune pénalité. Même une note élevée n'est ni un audit ni une garantie de vente.
@@ -34,6 +34,15 @@ Gardez `TRADING_MODE=PAPER` et `LIVE_EXECUTION_ENABLED=false`. Le code LIVE exig
 ## Validation de sécurité requise
 
 Avant toute décision LIVE, terminer la CI de la branche de suivi, tester les réponses Jupiter adversariales, exécuter un soak PAPER dans l'environnement cible, vérifier la restauration et la reprise, puis faire une revue indépendante des instructions on-chain et du PnL. N'utilisez pas un wallet qui contient des fonds à long terme.
+
+## Revue du 22 novembre 2026
+
+- Les appels Jupiter `/swap/v2/order` et `/swap/v2/execute` refusent maintenant les redirections HTTP (`allow_redirects=False`) afin de ne pas transmettre `x-api-key` ou une transaction signée à une destination redirigée.
+- `/reconcile` active l'arrêt d'urgence si des signatures sont pendantes, puis utilise uniquement `getSignatureStatuses` et `getTransaction`. Il ne resoumet pas les transactions, ne traite pas une signature absente comme un échec, ne reconstruit pas une position depuis une cotation et ne lève pas automatiquement l'arrêt.
+- Les échecs finalisés avec frais récupérés sont archivés et leur coût en lamports est signalé séparément du PnL USD. Le rapprochement PnL historique reste nécessaire.
+- Les métriques p50/p95/p99 excluent mints, wallets, signatures, soldes, clés et corps de réponse. Les noms d'étape et voies RPC sont en liste blanche. L'écriture disque passe par une file bornée best-effort, et Telegram la lit hors de la boucle asyncio avec délai maximal.
+
+Le détail des contrôles, du risque de redirection corrigé et des limites CPI/DEX est dans [docs/JUPITER_SECURITY_REVIEW.md](docs/JUPITER_SECURITY_REVIEW.md). Les tests de redirection sont simulés et ne remplacent pas une simulation Jupiter sur RPC ni une revue indépendante des programmes on-chain.
 
 ## Secrets et incident
 

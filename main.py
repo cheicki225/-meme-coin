@@ -39,6 +39,7 @@ from wallet_collector_service import WalletCollectorService
 from execution_recovery import classify_pending_transactions
 from rpc_health_monitor import RpcHealthMonitor
 from runtime_capabilities import assess_provider_startup
+from execution_metrics import measure_async
 
 # CORRIGÉ suite à un vrai crash en boucle signalé : logging.FileHandler()
 # ne crée JAMAIS le dossier parent de LOG_FILE tout seul — si config.LOG_FILE
@@ -96,29 +97,40 @@ class SniperBot:
 
     async def _recover_pending_transactions(self):
         pending = self.data_store.state.get("pending_transactions", [])
-        if not pending:
+        if isinstance(pending, list) and not pending:
             return
         reconciled, unresolved = classify_pending_transactions(self.data_store.state)
-        for signature in reconciled:
-            self.data_store.resolve_pending_transaction(
-                signature, {"recovered_after_restart": True, "position_signature_found": True}
+        try:
+            for signature in reconciled:
+                self.data_store.resolve_pending_transaction(
+                    signature, {"recovered_after_restart": True, "position_signature_found": True}
+                )
+        except Exception as exc:
+            self.data_store.activate_emergency_stop("transaction recovery persistence failed")
+            log.critical("🛑 Transaction recovery failed (%s); execution remains halted", type(exc).__name__)
+            await self.notifier.notify(
+                "risk_alert",
+                "🛑 *Arrêt d'urgence au redémarrage*\n"
+                "La récupération des signatures n'a pas pu être sauvegardée. "
+                "Les opérations restent suspendues jusqu'à vérification manuelle.",
             )
+            return
         if unresolved:
-            signatures = [
-                item.get("signature", "unknown") for item in unresolved[:5]
-                if isinstance(item, dict)
-            ]
+            signatures = []
+            for item in unresolved[:5]:
+                signature = item.get("signature") if isinstance(item, dict) else None
+                signatures.append(signature if isinstance(signature, str) and signature else "unknown")
             self.data_store.activate_emergency_stop(
                 "pending transaction signatures require manual reconciliation"
             )
             log.critical(
-                "🛑 %s unresolved LIVE transaction signature(s); execution halted: %s",
+                "🛑 %s unresolved transaction signature(s); execution halted: %s",
                 len(unresolved), ", ".join(signatures),
             )
             await self.notifier.notify(
                 "risk_alert",
                 "🛑 *Arrêt d'urgence au redémarrage*\n"
-                f"{len(unresolved)} signature(s) LIVE restent à réconcilier. "
+                f"{len(unresolved)} signature(s) restent à réconcilier. "
                 "Aucun nouveau swap ne sera envoyé. Vérifiez l'état on-chain avant /resume.\n"
                 + "\n".join(f"• `{signature}`" for signature in signatures),
             )
@@ -174,6 +186,7 @@ class SniperBot:
         # au lieu d'évaluer réactivement après coup (voir execution/protection_scanner.py).
         await asyncio.gather(*tasks)
 
+    @measure_async("decision.new_token_dispatch", "internal")
     async def on_new_token(self, info: dict):
         """Callback appelé pour chaque nouveau token Pump.fun détecté."""
         token_mint = info["token_mint"]
@@ -255,6 +268,7 @@ class SniperBot:
         except Exception as e:
             log.error(f"❌ Erreur pendant l'évaluation en arrière-plan de {dev_address[:8]}...: {type(e).__name__}")
 
+    @measure_async("decision.copytrade_buy", "internal")
     async def on_copytrade_buy(self, wallet_address: str, token_mint: str, signature: str,
                                 source_sol_spent_lamports: int = 0, source_tokens_received: float = 0):
         """
@@ -578,6 +592,7 @@ class SniperBot:
             reply_markup=reply_markup,
         )
 
+    @measure_async("decision.copytrade_sell", "internal")
     async def on_copytrade_sell(self, wallet_address: str, token_mint: str, signature: str):
         """
         Callback du copytrade_listener : un wallet suivi vient de vendre.
@@ -636,6 +651,7 @@ class SniperBot:
                 reason=f"Buy on Dev Sell — achat juste après la vente du dev ({label})"
             )
 
+    @measure_async("decision.evaluate_dev", "internal")
     async def _evaluate_new_dev(self, dev_address: str, current_token_mint: str):
         """Trace les fonds, backteste l'historique, et décide d'ajouter au monitoring."""
         log.info(f"🔍 Évaluation du nouveau dev {dev_address[:8]}...")

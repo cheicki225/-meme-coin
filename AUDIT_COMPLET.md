@@ -30,7 +30,7 @@ Le score actualisé et son barème sont maintenus dans [PROGRESS.md](PROGRESS.md
 ## États distincts
 
 - **Développement :** 72,5 % selon le barème publié.
-- **Tests locaux :** `compileall` réussi et 318 tests passés le 22 novembre 2026; voir [TESTING.md](TESTING.md). Aucun ordre réel n'a été diffusé.
+- **Tests locaux :** `compileall` réussi et 348 tests passés sur `codex/mission-performance-2026-11-22`; le head PR #4 de départ en passait 318. Voir [TESTING.md](TESTING.md). Aucun ordre réel n'a été diffusé.
 - **Sécurité :** IN PROGRESS. CI #202 verte sur `0e4f100`, incluant lint, audit des dépendances et scan de secrets; l'audit indépendant CPI/DEX reste à faire.
 - **PAPER :** mode par défaut. Les frais simulés d'entrée, DCA, sorties partielles/totales et Sell Initials sont désormais intégrés aux coûts/cashflows et testés; soak, restauration déployée et endpoint RPC cible restent à vérifier.
 - **LIVE : BLOCKED / NOT READY.** Aucune transaction réelle exécutée. Aucun test mainnet, portefeuille financé, soak ni audit indépendant complet.

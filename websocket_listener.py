@@ -26,6 +26,7 @@ import websockets
 
 import config
 import rpc_client
+from execution_metrics import measure_async
 import wallet
 
 log = logging.getLogger("detection")
@@ -190,6 +191,7 @@ class NewTokenListener:
         if new_wallets:
             log.info(f"🔔 {len(new_wallets)} wallet(s) de plus souscrit(s) en détection (mode économique).")
 
+    @measure_async("websocket.new_token_creation", "solana_ws")
     async def _handle_creation(self, signature: str):
         """Récupère les détails parsés de la transaction et notifie le callback."""
         parsed = await self._fetch_parsed_transaction(signature)

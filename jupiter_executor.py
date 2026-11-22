@@ -16,6 +16,7 @@ from solders.keypair import Keypair
 
 import config
 import rpc_client
+from execution_metrics import measure_async, measure_execution
 from transaction_accounting import AccountingError, account_confirmed_swap
 import wallet
 
@@ -435,6 +436,7 @@ async def _assert_fee_within_limit(tx: VersionedTransaction) -> None:
         raise SwapError(f"Frais réseau ({fee} lamports) supérieurs à la limite configurée.")
 
 
+@measure_async("jupiter.order", "jupiter")
 async def get_quote(input_mint: str, output_mint: str, amount_lamports: int,
                     slippage_bps: int, user_pubkey: str = None) -> dict:
     """Get a Swap API V2 order; the returned transaction remains unsigned."""
@@ -465,6 +467,8 @@ async def get_quote(input_mint: str, output_mint: str, amount_lamports: int,
             params=params,
             headers=headers,
             timeout=aiohttp.ClientTimeout(total=15),
+            # The x-api-key must never be forwarded to an untrusted redirect.
+            allow_redirects=False,
         ) as resp:
             if resp.status != 200:
                 raise SwapError(f"Jupiter order a échoué (HTTP {resp.status}).")
@@ -503,6 +507,7 @@ def _validate_order(order: dict, user_pubkey: str) -> None:
             raise SwapError(f"Payeur tiers non autorisé dans l'ordre Jupiter ({field}).")
 
 
+@measure_async("jupiter.build", "jupiter")
 async def _build_swap_transaction(order: dict, user_pubkey: str) -> str:
     """Return the v0 transaction from an already validated V2 order."""
     _validate_order(order, user_pubkey)
@@ -512,6 +517,7 @@ async def _build_swap_transaction(order: dict, user_pubkey: str) -> str:
     return transaction
 
 
+@measure_async("jupiter.submit", "jupiter")
 async def _execute_order(order: dict, signed_bytes: bytes, signature: str) -> dict:
     """Submit one signed order through Jupiter's managed Swap API V2 landing."""
     api_key = getattr(config, "JUPITER_API_KEY", "")
@@ -529,6 +535,8 @@ async def _execute_order(order: dict, signed_bytes: bytes, signature: str) -> di
             json=payload,
             headers=headers,
             timeout=aiohttp.ClientTimeout(total=30),
+            # A redirect could disclose the signed transaction and API key.
+            allow_redirects=False,
         ) as resp:
             if resp.status != 200:
                 raise SwapError(f"Jupiter execute a échoué (HTTP {resp.status}).")
@@ -542,6 +550,7 @@ async def _execute_order(order: dict, signed_bytes: bytes, signature: str) -> di
     return data
 
 
+@measure_async("jupiter.accounting_fetch", "solana_rpc")
 async def _get_confirmed_transaction(signature: str, attempts: int = 5) -> dict:
     """Fetch confirmed accounting metadata; never substitute the quote for fills."""
     payload = {
@@ -563,6 +572,7 @@ async def _get_confirmed_transaction(signature: str, attempts: int = 5) -> dict:
     )
 
 
+@measure_async("jupiter.confirm", "solana_rpc")
 async def _confirm_transaction(signature: str, timeout_s: int = None) -> bool:
     """Poll jusqu'à confirmation de la transaction ou timeout."""
     timeout_s = timeout_s or config.TX_CONFIRMATION_TIMEOUT_S
@@ -588,6 +598,7 @@ async def _confirm_transaction(signature: str, timeout_s: int = None) -> bool:
     raise SwapError(f"Transaction {signature} non confirmée après {timeout_s}s (timeout).")
 
 
+@measure_async("jupiter.execute_swap", "jupiter")
 async def execute_swap(input_mint: str, output_mint: str, amount_lamports: int, slippage_bps: int,
                         keypair=None, use_jito: bool = False, on_signed=None, on_accounted=None) -> dict:
     """
@@ -637,7 +648,8 @@ async def execute_swap(input_mint: str, output_mint: str, amount_lamports: int, 
     )
     await _assert_blockhash_valid(blockhash)
     await _assert_fee_within_limit(tx)
-    signed_tx = VersionedTransaction(tx.message, [keypair])
+    with measure_execution("jupiter.sign", "local"):
+        signed_tx = VersionedTransaction(tx.message, [keypair])
     signed_bytes = bytes(signed_tx)
     signature = str(signed_tx.signatures[0])
 

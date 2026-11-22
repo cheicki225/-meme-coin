@@ -271,6 +271,7 @@ class DataStore:
             "emergency_stop_at": None,
             "pending_transactions": [],
             "resolved_transactions": [],
+            "unapplied_failed_transaction_fees_lamports": 0,
             "referral": dict(config.DEFAULT_REFERRAL_STATE),
             "linked_wallet_groups": {},
             "pending_dev_sell_watch": {},
@@ -378,7 +379,8 @@ class DataStore:
         self.save()
 
     def clear_emergency_stop(self) -> bool:
-        if self.state.get("pending_transactions"):
+        pending = self.state.get("pending_transactions", [])
+        if not isinstance(pending, list) or pending:
             return False
         missing = object()
         previous = {
@@ -405,33 +407,94 @@ class DataStore:
         signature = record.get("signature")
         if not signature:
             raise ValueError("pending transaction signature is required")
+        created_collection = "pending_transactions" not in self.state
         pending = self.state.setdefault("pending_transactions", [])
-        if not any(item.get("signature") == signature for item in pending):
+        added = not any(item.get("signature") == signature for item in pending)
+        if added:
             pending.append(dict(record))
-        self.save()
+        try:
+            self.save()
+        except Exception:
+            # The signed transaction is not broadcast when this callback
+            # fails. Keep memory aligned with durable state so a later retry
+            # cannot mistake an unpersisted signature for a submitted swap.
+            if added:
+                pending.pop()
+            if created_collection:
+                self.state.pop("pending_transactions", None)
+            raise
 
     def mark_pending_transaction_accounted(self, signature: str, accounting: dict) -> bool:
         for item in self.state.setdefault("pending_transactions", []):
             if item.get("signature") == signature:
+                previous_status = item.get("status")
+                had_accounting = "accounting" in item
+                previous_accounting = item.get("accounting")
                 item["status"] = "accounted"
                 item["accounting"] = dict(accounting)
-                self.save()
+                try:
+                    self.save()
+                except Exception:
+                    if previous_status is None:
+                        item.pop("status", None)
+                    else:
+                        item["status"] = previous_status
+                    if had_accounting:
+                        item["accounting"] = previous_accounting
+                    else:
+                        item.pop("accounting", None)
+                    raise
                 return True
         return False
 
     def resolve_pending_transaction(self, signature: str, outcome: dict | None = None) -> bool:
-        pending = self.state.setdefault("pending_transactions", [])
-        match = next((item for item in pending if item.get("signature") == signature), None)
-        if match is None:
+        pending = self.state.get("pending_transactions", [])
+        if not isinstance(pending, list) or any(not isinstance(item, dict) for item in pending):
+            raise ValueError("pending_transactions must be a list of objects")
+        index = next((i for i, item in enumerate(pending) if item.get("signature") == signature), None)
+        if index is None:
             return False
-        pending.remove(match)
+        resolved_outcome = dict(outcome or {})
+        is_finalized_failure = resolved_outcome.get("chain_status") == "finalized_failed"
+        if is_finalized_failure:
+            fee = resolved_outcome.get("fee_lamports")
+            total_fees = self.state.get("unapplied_failed_transaction_fees_lamports", 0)
+            if (not isinstance(fee, int) or isinstance(fee, bool) or fee < 0
+                    or not isinstance(total_fees, int) or isinstance(total_fees, bool) or total_fees < 0):
+                raise ValueError("Finalized failed transaction requires valid fee accounting")
+
+        history_exists = "resolved_transactions" in self.state
+        history = self.state.get("resolved_transactions", [])
+        if not isinstance(history, list):
+            raise ValueError("resolved_transactions must be a list")
+        match = pending[index]
         resolved = dict(match)
-        resolved["outcome"] = outcome or {}
+        resolved["outcome"] = resolved_outcome
         resolved["resolved_at"] = int(time.time())
-        history = self.state.setdefault("resolved_transactions", [])
-        history.append(resolved)
-        del history[:-500]
-        self.save()
+        previous_history = list(history)
+        fees_existed = "unapplied_failed_transaction_fees_lamports" in self.state
+        previous_fees = self.state.get("unapplied_failed_transaction_fees_lamports", 0)
+        if is_finalized_failure:
+            self.state["unapplied_failed_transaction_fees_lamports"] = previous_fees + fee
+        try:
+            pending.pop(index)
+            history.append(resolved)
+            del history[:-500]
+            if not history_exists:
+                self.state["resolved_transactions"] = history
+            self.save()
+        except Exception:
+            pending.insert(index, match)
+            if history_exists:
+                history[:] = previous_history
+            else:
+                self.state.pop("resolved_transactions", None)
+            if is_finalized_failure:
+                if fees_existed:
+                    self.state["unapplied_failed_transaction_fees_lamports"] = previous_fees
+                else:
+                    self.state.pop("unapplied_failed_transaction_fees_lamports", None)
+            raise
         return True
 
     # ── Gestion des wallets dev surveillés ──────────────────────
