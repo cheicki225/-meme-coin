@@ -23,7 +23,9 @@ Le workflow `.github/workflows/ci.yml` installe `requirements-ci.txt`, compile l
 
 - Jupiter : ordres adversariaux, metadata, transactions, ALT/ATA, exécution simulée et comptabilité avec fixtures; aucune transaction signée n'est diffusée.
 - Jupiter HTTP : les appels Order et Execute refusent les redirections; tests 302 avec sessions simulées, sans clé réelle ni transaction.
-- RPC : retry 429/5xx, `Retry-After`, jitter et redaction des messages; aucun test de charge ou de disponibilité du fournisseur déployé.
+- RPC : retry 429/5xx, `Retry-After`, jitter et redaction des messages pour les lectures; `sendTransaction` utilise une seule tentative au fournisseur primaire, sans retry ni fallback, conserve sa signature en état `unknown` et s'appuie sur la réconciliation read-only. Les tests sont mockés; aucun appel RPC externe n'est exécuté.
+- Telegram : les callbacks privés et autorisés sont acceptés; utilisateurs non allowlistés, allowlist absente/mal formée et callbacks invalides sont refusés avant effet de bord.
+- Notifications : les chemins photo déconnecté et échec d'envoi ne journalisent pas la légende, les octets photo ou le texte d'exception.
 - Performance : mesures de durée et outcome pour la détection, la décision, la stratégie, Jupiter et RPC; liste blanche des labels, voies primaire/repli RPC, erreurs de listener et percentiles testés sur données synthétiques, sans mesure d'exploitation.
 - Réconciliation : inspection RPC injectable, échec finalisé avec frais, succès sans position durable, registre mal formé au redémarrage et erreurs de persistance simulés; aucun RPC externe n'est appelé par ces tests.
 - Telegram : `/performance` est testé pour l'échappement des libellés et une lecture hors boucle asyncio; `/reconcile` et l'échec de persistance de `/halt` sont testés avec des adaptateurs simulés; aucun bot déployé n'a été contacté.
