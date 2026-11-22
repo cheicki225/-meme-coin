@@ -1,6 +1,6 @@
 # Catalogue des Skills Codex
 
-La référence officielle de Codex documente .agents/skills/ comme chemin des Skills de projet et ~/.agents/skills/ comme chemin utilisateur. Les versions observées ici sont Codex CLI 0.171.0-alpha.13 et application desktop 26.1117.4957.0. La découverte et la sélection effectives de cette bibliothèque dans une session Codex ouverte sur ce dépôt n'ont pas été testées. Référence : [Skills dans Codex](https://developers.openai.com/api/reference/cli). Les Skills n'accordent pas d'accès ou d'autorisation opérationnelle.
+La référence officielle de Codex documente .agents/skills/ comme chemin des Skills de projet et ~/.agents/skills/ comme chemin utilisateur. Les versions observées ici sont Codex CLI 0.171.0-alpha.13 et application desktop 26.1117.4957.0. Une nouvelle session CLI ouverte sur cette branche a exécuté un sous-ensemble de routage; le chargement complet et le déclenchement des 15 Skills restent à valider. Les observations et limites sont consignées dans [la matrice comportementale](docs/SKILLS_BEHAVIORAL_RESULTS.md). Référence : [Skills dans Codex](https://developers.openai.com/api/reference/cli). Les Skills n'accordent pas d'accès ou d'autorisation opérationnelle.
 
 ## Les 15 Skills du dépôt
 
