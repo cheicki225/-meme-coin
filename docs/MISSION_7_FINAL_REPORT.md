@@ -12,11 +12,11 @@ Aucune transaction n’a été signée ou soumise. PAPER reste le mode par défa
 
 | Domaine | Résultat | Limite |
 |---|---|---|
-| Tests offline | 424 tests réussis; 63 tests ciblés Mission 7 et validation Jupiter ont réussi séparément. | Utilisation de PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 requise à cause du plugin Web3 global dans l’interpréteur hôte. |
-| Couverture combinée lignes+branches des modules critiques | execution_recovery.py 85,98 %; sqlite_state.py 86,52 %; transaction_accounting.py 80,11 %. | Seuil 80–90 % atteint sur ces trois modules selon le rapport coverage.py, qui mesure lignes et branches ensemble. |
-| Jupiter | jupiter_executor.py 75,71 % en couverture combinée; cas de refus, CPI et validation transaction renforcés. | Le parcours execute_swap vers signature/exécution reste hors des tests car il requiert LIVE; aucun opt-in LIVE n’a été activé. |
+| Tests offline | 468 tests réussis; 104 tests ciblés Jupiter/chemins critiques ont réussi séparément. | Utilisation de PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 requise à cause du plugin Web3 global dans l’interpréteur hôte. |
+| Couverture combinée lignes+branches des modules critiques | execution_recovery.py 85,98 %; sqlite_state.py 86,52 %; transaction_accounting.py 80,11 %; jupiter_executor.py 83,06 %. | Seuil 80–90 % atteint sur ces quatre modules selon coverage.py. |
+| Jupiter | jupiter_executor.py 83,06 % en couverture combinée après tests de parsing, price impact, CPI et ALT. | Le parcours execute_swap vers signature/exécution reste hors des tests car il requiert LIVE; aucun opt-in LIVE n’a été activé. |
 | Autres modules | rpc_client.py 58,91 %; live_trader.py 24,39 %; paper_trader.py 35,70 %; wallet_manager.py 36,26 % (couverture combinée). | Couverture restant partielle; ne pas interpréter les taux comme preuve d’aptitude à l’exploitation. |
-| Couverture globale locale (options CI) | 32,45 % lignes, 25,70 % branches, 30,63 % combinée; 424 tests. | Rapport local coverage.py avec --branch et les exclusions de la CI; la couverture distante sera confirmée par la CI PR. |
+| Couverture globale locale (options CI) | 32,81 % lignes, 26,39 % branches, 31,08 % combinée; 468 tests. | Rapport local coverage.py avec --branch et les exclusions de la CI; la couverture distante sera confirmée par la CI PR. |
 | Compilation | python -m compileall -q -x '\.venv' . — réussie. | Vérification syntaxique seulement. |
 | Ruff | ruff check --select E9,F63,F7,F82 . — réussie. | Même sélection que le workflow GitHub Actions. |
 | Mypy | Analyse limitée des fichiers de test avec imports suivis : 125 erreurs de typage dans 12 modules importés préexistants; aucune erreur de typing signalée directement dans les trois fichiers de test modifiés. | Mypy n’est pas une étape du workflow CI du dépôt; aucune source de production n’a été modifiée par Mission 7. |
@@ -67,17 +67,18 @@ Le job validate a exécuté avec succès l’installation CI, la compilation, la
 
 - Run #213 : 424 tests réussis en 1,75 s.
 - Run #214 : 424 tests réussis en 1,60 s.
+- Run #215 sur le head précédent b82f42c : 424 tests, couverture combinée 30,63 %, toutes les étapes vertes.
 - pip-audit : No known vulnerabilities found.
 - Couverture combinée affichée par la CI : 30,63 %; l’artefact du run #214, ID 14773313991, contient coverage.json et coverage.xml.
 - Aucun échec de validation; aucun ordre ni signature n’a été utilisé.
 
-Le statut courant du head est visible dans les checks de la [PR #8](https://github.com/cheicki225/-meme-coin/pull/8). Les mises à jour documentaires ne modifient pas le code ou les tests de cette validation.
+Après le run #215, les tests Jupiter/chemins critiques ont été étendus de 424 à 468 tests; la suite locale actuelle a réussi avec les métriques ci-dessus. Le verdict CI du head courant est visible dans les checks de la [PR #8](https://github.com/cheicki225/-meme-coin/pull/8).
 
 ## Validation et publication
 
 Commandes locales exécutées dans le clone dédié :
-- .venv\Scripts\python.exe -m pytest -q (suite lancée avec plugins globaux désactivés via PYTEST_DISABLE_PLUGIN_AUTOLOAD=1) — 424 passed.
-- .venv\Scripts\coverage.exe run --branch --source=. --omit='tests/*,test_*.py,.venv/*,venv/*' -m pytest -q — 424 passed.
+- .venv\Scripts\python.exe -m pytest -q (suite lancée avec plugins globaux désactivés via PYTEST_DISABLE_PLUGIN_AUTOLOAD=1) — 468 passed.
+- .venv\Scripts\coverage.exe run --branch --source=. --omit='tests/*,test_*.py,.venv/*,venv/*' -m pytest -q — 468 passed.
 - .venv\Scripts\python.exe -m coverage report — taux par module ci-dessus.
 - .venv\Scripts\python.exe -m compileall -q -x '\.venv' . — réussi.
 - .venv\Scripts\ruff.exe check --select E9,F63,F7,F82 . — réussi.
@@ -86,4 +87,4 @@ Commandes locales exécutées dans le clone dédié :
 - .venv\Scripts\pip-audit.exe --local --strict — bloqué par l’erreur TLS au flux PyPI.
 - git diff --cached --check — réussi sans sortie après staging explicite.
 
-Dépendances installées uniquement dans .venv locale non suivie par Git. Aucun secret n’a été ajouté. Les runs #213 et #214 ont réussi sur les commits 5116510 et 6f082a2; le code et les tests sont identiques au présent rapport. Les checks du head courant sont liés dans la PR #8. Le statut reste **PARTIALLY_READY / MANUAL_VERIFICATION_REQUIRED** tant que le soak de 24 h et la vérification indépendante des programmes DEX sont incomplets.
+Dépendances installées uniquement dans .venv locale non suivie par Git. Aucun secret n’a été ajouté. Les runs #213 à #215 ont réussi sur les révisions antérieures, avec 424 tests. Les tests ciblés ajoutés ensuite portent la suite locale à 468 tests et quatre modules critiques dépassent 80 % de couverture combinée. Les checks du head courant sont liés dans la PR #8. Le statut reste **PARTIALLY_READY / MANUAL_VERIFICATION_REQUIRED** tant que le soak de 24 h et la vérification indépendante des programmes DEX sont incomplets.

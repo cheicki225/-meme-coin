@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from copy import deepcopy
 
 import pytest
+from solders.address_lookup_table_account import ADDRESS_LOOKUP_TABLE_ID, AddressLookupTable
 from solders.pubkey import Pubkey
 
 import config
@@ -310,3 +312,103 @@ def test_sol_transfer_accounting_rejects_token_side_effects():
     }
     with pytest.raises(AccountingError, match="also changed wallet token balances"):
         account_confirmed_sol_transfer(WALLET, DESTINATION, 1_000_000, transaction)
+def _lookup_message_with_indexes(writable=(1,), readonly=(0,)):
+    lookup = type(
+        "Lookup",
+        (),
+        {
+            "account_key": Pubkey.new_unique(),
+            "writable_indexes": list(writable),
+            "readonly_indexes": list(readonly),
+        },
+    )()
+    return type("Message", (), {"address_table_lookups": [lookup]})()
+
+
+def test_lookup_resolution_collects_writable_and_readonly_addresses(monkeypatch):
+    readonly_address, writable_address = Pubkey.new_unique(), Pubkey.new_unique()
+    decoded_table = type(
+        "DecodedTable", (), {"addresses": [readonly_address, writable_address]}
+    )()
+    monkeypatch.setattr(
+        AddressLookupTable, "deserialize", staticmethod(lambda _data: decoded_table)
+    )
+    encoded_table = base64.b64encode(b"isolated-address-table").decode("ascii")
+
+    async def read_address_table(payload, timeout):
+        assert payload["method"] == "getAccountInfo"
+        assert timeout == 10
+        return {
+            "value": {
+                "owner": str(ADDRESS_LOOKUP_TABLE_ID),
+                "data": [encoded_table, "base64"],
+            }
+        }
+
+    monkeypatch.setattr(jupiter_executor.rpc_client, "rpc_post", read_address_table)
+    writable, readonly = asyncio.run(
+        jupiter_executor._resolve_lookup_addresses(_lookup_message_with_indexes())
+    )
+    assert writable == [writable_address]
+    assert readonly == [readonly_address]
+
+
+@pytest.mark.parametrize(
+    "data_value,error",
+    [
+        ([], "encoding is invalid"),
+        (["AA==", "base58"], "encoding is invalid"),
+        (None, "data is unavailable"),
+        ("!!!", "could not be decoded safely"),
+    ],
+)
+def test_lookup_resolution_rejects_bad_encoding_or_data(monkeypatch, data_value, error):
+    monkeypatch.setattr(
+        AddressLookupTable,
+        "deserialize",
+        staticmethod(lambda _data: type("DecodedTable", (), {"addresses": []})()),
+    )
+
+    async def read_address_table(_payload, **_kwargs):
+        return {
+            "value": {
+                "owner": str(ADDRESS_LOOKUP_TABLE_ID),
+                "data": data_value,
+            }
+        }
+
+    monkeypatch.setattr(jupiter_executor.rpc_client, "rpc_post", read_address_table)
+    with pytest.raises(jupiter_executor.SwapError, match=error):
+        asyncio.run(
+            jupiter_executor._resolve_lookup_addresses(
+                _lookup_message_with_indexes(writable=(), readonly=())
+            )
+        )
+
+
+def test_lookup_resolution_rejects_out_of_range_address_indexes(monkeypatch):
+    decoded_table = type("DecodedTable", (), {"addresses": [Pubkey.new_unique()]})()
+    monkeypatch.setattr(
+        AddressLookupTable, "deserialize", staticmethod(lambda _data: decoded_table)
+    )
+
+    async def read_address_table(_payload, **_kwargs):
+        return {
+            "value": {
+                "owner": str(ADDRESS_LOOKUP_TABLE_ID),
+                "data": base64.b64encode(b"valid-fixture").decode("ascii"),
+            }
+        }
+
+    monkeypatch.setattr(jupiter_executor.rpc_client, "rpc_post", read_address_table)
+    with pytest.raises(jupiter_executor.SwapError, match="writable index is out of range"):
+        asyncio.run(
+            jupiter_executor._resolve_lookup_addresses(
+                _lookup_message_with_indexes(writable=(1,), readonly=())
+            )
+        )
+
+
+def test_jupiter_quote_requires_mapping_before_field_access():
+    with pytest.raises(jupiter_executor.SwapError, match="objet attendu"):
+        jupiter_executor._validate_quote(None, SOL, OUTPUT_MINT, 1_000, 100)
