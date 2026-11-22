@@ -58,21 +58,26 @@ La disponibilité de web-research-problem-solver a été vérifiée puis le skil
 
 ## CI GitHub observée
 
-Deux runs CI successifs ont réussi :
+Les premiers runs CI ont validé les changements initiaux et documentaires :
 
 - [Run 45072851307 (#213)](https://github.com/cheicki225/-meme-coin/actions/runs/45072851307) sur le commit de code/tests 51165105a88ed907da055727243eeb7a3abe4463.
 - [Run 45073157671 (#214)](https://github.com/cheicki225/-meme-coin/actions/runs/45073157671) sur le commit documentaire 6f082a2c60ed5a017ff5420fc663f1b919205ecc; le code et les tests sont identiques.
 
-Le job validate a exécuté avec succès l’installation CI, la compilation, la vérification du mode PAPER par défaut, la suite de tests, Ruff, pip-audit, Gitleaks et le téléversement de la couverture.
+Les runs #213, #214 et #215 ont exécuté avec succès l’installation CI, la compilation, la vérification du mode PAPER par défaut, la suite de tests, Ruff, pip-audit, Gitleaks et le téléversement de la couverture. Les références des deux premiers runs figurent ci-dessus; le run #215 visait le head précédent `b82f42c`.
 
 - Run #213 : 424 tests réussis en 1,75 s.
 - Run #214 : 424 tests réussis en 1,60 s.
-- Run #215 sur le head précédent b82f42c : 424 tests, couverture combinée 30,63 %, toutes les étapes vertes.
-- pip-audit : No known vulnerabilities found.
-- Couverture combinée affichée par la CI : 30,63 %; l’artefact du run #214, ID 14773313991, contient coverage.json et coverage.xml.
-- Aucun échec de validation; aucun ordre ni signature n’a été utilisé.
+- Run #215, sur le head précédent b82f42c : 424 tests, couverture combinée 30,63 %, toutes les étapes vertes.
 
-Après le run #215, les tests Jupiter/chemins critiques ont été étendus de 424 à 468 tests; la suite locale actuelle a réussi avec les métriques ci-dessus. Le verdict CI du head courant est visible dans les checks de la [PR #8](https://github.com/cheicki225/-meme-coin/pull/8).
+Le run final [45074565679 (#217)](https://github.com/cheicki225/-meme-coin/actions/runs/45074565679), sur le head `0e2c068399dc14d94f6492cf3aa5a12508b5d089`, a ensuite réussi :
+
+- 468 tests réussis en 1,67 s; compilation, contrôle du mode PAPER par défaut et Ruff réussis.
+- Couverture CI : 32,81 % lignes, 26,39 % branches et 31,08 % combinée; les quatre modules critiques conservent les taux indiqués plus haut.
+- pip-audit : « No known vulnerabilities found »; Gitleaks : « no leaks found ».
+- Artefact de couverture : `14774433196`; artefact SARIF Gitleaks : `14774767251`.
+- Avertissement non bloquant : le runner force Node.js 24 pour `actions/upload-artifact@v4`, qui cible Node.js 20.
+
+Aucun échec de validation, ordre ni signature n’a été observé. La PR #8 est ouverte et non fusionnée; ses checks finaux sont visibles sur [GitHub](https://github.com/cheicki225/-meme-coin/pull/8).
 
 ## Validation et publication
 
