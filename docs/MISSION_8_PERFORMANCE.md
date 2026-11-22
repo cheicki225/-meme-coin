@@ -4,14 +4,14 @@ Date de l'audit : 22 novembre 2026. Statut : `MANUAL_VERIFICATION_REQUIRED`.
 
 ## État effectif de Mission 7
 
-- PR #8, `codex/mission-7-reliability-2026-11-22`, est ouverte, non fusionnée et empilée sur PR #6. Head vérifié : `6f082a2c60ed5a017ff5420fc663f1b919205ecc`.
-- La CI GitHub du head M7, run [45073157671](https://github.com/cheicki225/-meme-coin/actions/runs/45073157671), est terminée avec succès. La description de la PR rapporte 424 tests hors ligne; cette validation ne représente pas un soak d'exploitation.
+- PR #8, `codex/mission-7-reliability-2026-11-22`, est ouverte, non fusionnée et empilée sur PR #6. Head vérifié : `b8438734b00c18a265f0907e83cb5e7bff25a43f`.
+- La CI GitHub du head M7, run [45074903163](https://github.com/cheicki225/-meme-coin/actions/runs/45074903163), est terminée avec succès : 468 tests, couverture combinée 31,08 %, pip-audit sans vulnérabilité connue et Gitleaks sans fuite détectée. Cette validation ne représente pas un soak d'exploitation.
 - Restent non vérifiés : soak PAPER de 24 h dans l'environnement cible, exercice de restauration dans cet environnement, endpoint/quota du fournisseur réel, et revue de la sémantique ainsi que du code déployé des DEX. Le statut M7 est donc `INCOMPLETE / MANUAL_VERIFICATION_REQUIRED`; LIVE reste `BLOCKED`.
 - PR #7 (skills) est une branche distincte, non fusionnée. Son catalogue indique que `web-research-problem-solver` est une aide externe conditionnelle non livrée; le skill n'est pas installé dans ce dépôt/session (`SKILL_UNAVAILABLE`). Aucun blocage technique résiduel n'a nécessité ce handoff pour le périmètre M8.
 
 ## Portée et pile Git
 
-La branche dédiée `codex/mission-8-performance-2026-11-22` est empilée sur le head de PR #8. Les optimisations proposées portent sur le trafic de lecture, la gestion de quota/429, la déduplication de lectures simultanées, les métriques et la reconnexion WebSocket. Les tests ne soumettent aucune transaction. Aucun changement de limites de risque, de paramètres de trading, de signature ou d'opt-in LIVE n'est inclus. PAPER reste le défaut.
+La branche dédiée `codex/mission-8-performance-2026-11-22` est empilée sur le head courant de PR #8. Les optimisations proposées portent sur le trafic de lecture, la gestion de quota/429, la déduplication de lectures simultanées, les métriques et la reconnexion WebSocket. Les tests ne soumettent aucune transaction. Aucun changement de limites de risque, de paramètres de trading, de signature ou d'opt-in LIVE n'est inclus. PAPER reste le défaut.
 
 Le point de départ M7 n'ajoute que des rapports et des tests ciblés aux fichiers modifiés par M8; les gates opérationnelles M7 restent ouvertes. Les nouvelles lectures/sockets observées ici sont distinctes du fournisseur configuré au déploiement, qui reste inconnu.
 
@@ -52,7 +52,7 @@ Le [Playbook F Project](https://f-project-1.gitbook.io/f-project-playbook) prés
 Validation locale M8 effectuée hors ligne, avec `TRADING_MODE=PAPER`, `LIVE_EXECUTION_ENABLED=false`, autochargement dotenv désactivé et sans clés/provider privé :
 
 - `python -m compileall -q .` — réussi.
-- `python -m coverage run --branch --source=. --omit='tests/*,test_*.py,.venv/*,venv/*' -m pytest -q` — **440 tests réussis**, 0 échec. Rapport de couverture combinée affiché : **31,44 %**.
+- `python -m coverage run --branch --source=. --omit='tests/*,test_*.py,.venv/*,venv/*' -m pytest -q` — **484 tests réussis**, 0 échec. Rapport de couverture combinée affiché : **31,88 %**.
 - `python -m ruff check --select E9,F63,F7,F82 .` — réussi.
 - `python -m pip_audit -r requirements-ci.txt` — **non validé localement** : l'outil a échoué lors de la mise à niveau de pip dans son environnement temporaire; aucun résultat propre d'audit n'est revendiqué. Gitleaks n'est pas installé localement. Les résultats CI M7 ci-dessus ne valent pas CI M8.
 
