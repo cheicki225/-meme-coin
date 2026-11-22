@@ -6,6 +6,7 @@ Toutes les valeurs sensibles viennent des variables d'environnement.
 Ne JAMAIS mettre de clé API ou de clé privée en dur ici.
 """
 
+import math
 import os
 
 # ── Chargement automatique du fichier .env s'il existe (dev local) ─
@@ -29,6 +30,17 @@ def _normalize_trading_mode(value: str) -> str:
     if mode not in {"PAPER", "LIVE"}:
         raise ValueError("TRADING_MODE must be PAPER or LIVE.")
     return mode
+
+
+def _positive_finite_float_env(name: str, default: str) -> float:
+    """Parse a required positive finite safety threshold from the environment."""
+    try:
+        value = float(os.getenv(name, default))
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"{name} must be a finite positive number") from exc
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"{name} must be a finite positive number")
+    return value
 
 
 TRADING_MODE = _normalize_trading_mode(os.getenv("TRADING_MODE", "PAPER"))
@@ -111,6 +123,9 @@ SOLANA_PRIVATE_KEY = os.getenv("SOLANA_PRIVATE_KEY", "")
 WALLET_ENCRYPTION_KEY = os.getenv("WALLET_ENCRYPTION_KEY", "")
 SOL_MINT = "So11111111111111111111111111111111111111112"
 JUPITER_API_KEY = os.getenv("JUPITER_API_KEY", "")
+# Empty by default: LIVE swaps are blocked until CPI/DEX program IDs have
+# been reviewed and explicitly allowlisted for the pre-sign simulation gate.
+JUPITER_CPI_PROGRAM_ALLOWLIST = os.getenv("JUPITER_CPI_PROGRAM_ALLOWLIST", "")
 # Fixed official endpoints prevent API keys from being sent to an arbitrary host.
 JUPITER_ORDER_URL = "https://api.jup.ag/swap/v2/order"
 JUPITER_EXECUTE_URL = "https://api.jup.ag/swap/v2/execute"
@@ -174,7 +189,7 @@ TP_PCT = float(os.getenv("TP_PCT", "100"))        # take profit à +100%
 SL_PCT = float(os.getenv("SL_PCT", "0"))          # 0 = SL désactivé par défaut
 POSITION_SIZE_USD = float(os.getenv("POSITION_SIZE_USD", "50"))
 BUDGET_USD = float(os.getenv("BUDGET_USD", "500"))
-CIRCUIT_BREAKER_USD = float(os.getenv("CIRCUIT_BREAKER_USD", "150"))
+CIRCUIT_BREAKER_USD = _positive_finite_float_env("CIRCUIT_BREAKER_USD", "150")
 MAX_OPEN_EXPOSURE_USD = float(os.getenv("MAX_OPEN_EXPOSURE_USD", "250"))
 MAX_OPEN_POSITIONS = int(os.getenv("MAX_OPEN_POSITIONS", "10"))
 MAX_MANUAL_TRANSFER_SOL = float(os.getenv("MAX_MANUAL_TRANSFER_SOL", "0.1"))

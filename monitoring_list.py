@@ -100,6 +100,13 @@ class DataStore:
                         except (StateStoreError, OSError) as backup_error:
                             log.error("SQLite backup %s is not recoverable: %s", candidate, backup_error)
                 if loaded is None:
+                    # A stale legacy JSON snapshot must never replace a
+                    # previously committed SQLite state. It may predate a
+                    # signed, still-pending transaction or emergency stop.
+                    if self._sqlite_store.has_committed_state():
+                        raise StateStoreCorruptError(
+                            "Committed SQLite state could not be recovered; refusing legacy JSON downgrade"
+                        ) from exc
                     for candidate in self._backup_candidates("sniper_data_*.json"):
                         try:
                             with open(candidate, "r", encoding="utf-8") as source:

@@ -130,12 +130,16 @@ async def rpc_post(payload: dict, timeout: int = 12) -> dict:
     with measure_execution("rpc.request", "solana_rpc") as metric:
         method = str(payload.get("method", "unknown"))
         started = time.monotonic()
-        result = await _try_endpoint(config.HELIUS_RPC_URL, payload, timeout)
+        result = await _try_endpoint(
+            config.HELIUS_RPC_URL, payload, timeout, provider="rpc_primary"
+        )
         used_fallback = False
         if result is None and config.ALCHEMY_RPC_URL:
             used_fallback = True
             log.debug("Primary RPC failed for %s; trying configured fallback", method)
-            result = await _try_endpoint(config.ALCHEMY_RPC_URL, payload, timeout)
+            result = await _try_endpoint(
+                config.ALCHEMY_RPC_URL, payload, timeout, provider="rpc_fallback"
+            )
 
         metric["provider"] = "rpc_fallback" if used_fallback else "rpc_primary"
 
@@ -217,7 +221,14 @@ def _retryable_json_rpc_error(error) -> bool:
     )
 
 
-async def _try_endpoint(url: str, payload: dict, timeout: int, max_retries: int = 3):
+async def _try_endpoint(
+    url: str,
+    payload: dict,
+    timeout: int,
+    max_retries: int = 3,
+    *,
+    provider: str = "unknown",
+):
     """Call one RPC endpoint with bounded retries for transient failures.
 
     Provider response bodies and exception messages are never logged: either
@@ -228,53 +239,60 @@ async def _try_endpoint(url: str, payload: dict, timeout: int, max_retries: int 
 
     method = str(payload.get("method", "?"))
     for attempt in range(max_retries):
-        await _rate_limiter.wait_if_needed()
         retry_after = None
-        try:
-            async with aiohttp.ClientSession(
-                connector=get_http_connector(), connector_owner=False
-            ) as session:
-                async with session.post(
-                    url,
-                    json=payload,
-                    timeout=aiohttp.ClientTimeout(total=timeout),
-                ) as resp:
-                    if resp.status == 429 or resp.status >= 500:
-                        log.warning(
-                            "RPC %s returned HTTP %s (attempt %s/%s)",
-                            method, resp.status, attempt + 1, max_retries,
-                        )
-                        if resp.status == 429:
-                            retry_after = resp.headers.get("Retry-After")
-                    elif resp.status != 200:
-                        log.warning("RPC %s returned non-retryable HTTP %s", method, resp.status)
-                        return None
-                    else:
-                        try:
-                            data = await resp.json()
-                        except (aiohttp.ContentTypeError, ValueError):
-                            log.warning("RPC %s returned invalid JSON", method)
+        with measure_execution("rpc.endpoint_attempt", provider) as attempt_metric:
+            await _rate_limiter.wait_if_needed()
+            try:
+                async with aiohttp.ClientSession(
+                    connector=get_http_connector(), connector_owner=False
+                ) as session:
+                    async with session.post(
+                        url,
+                        json=payload,
+                        timeout=aiohttp.ClientTimeout(total=timeout),
+                    ) as resp:
+                        if resp.status == 429 or resp.status >= 500:
+                            log.warning(
+                                "RPC %s returned HTTP %s (attempt %s/%s)",
+                                method, resp.status, attempt + 1, max_retries,
+                            )
+                            if resp.status == 429:
+                                retry_after = resp.headers.get("Retry-After")
+                        elif resp.status != 200:
+                            log.warning("RPC %s returned non-retryable HTTP %s", method, resp.status)
+                            attempt_metric["outcome"] = "failure"
+                            return None
                         else:
-                            if not isinstance(data, dict):
-                                log.warning("RPC %s returned an invalid JSON-RPC envelope", method)
-                                return None
-                            if "error" not in data:
-                                return data.get("result")
-                            error = data["error"]
-                            code = error.get("code") if isinstance(error, dict) else None
-                            log.warning("RPC %s returned JSON-RPC error code %s", method, code)
-                            if not _retryable_json_rpc_error(error):
-                                return None
-        except asyncio.TimeoutError:
-            log.warning("RPC %s timed out (attempt %s/%s)", method, attempt + 1, max_retries)
-        except aiohttp.ClientError as exc:
-            log.warning(
-                "RPC %s transport error %s (attempt %s/%s)",
-                method, type(exc).__name__, attempt + 1, max_retries,
-            )
-        except Exception as exc:
-            log.warning("RPC %s failed with %s", method, type(exc).__name__)
-            return None
+                            try:
+                                data = await resp.json()
+                            except (aiohttp.ContentTypeError, ValueError):
+                                log.warning("RPC %s returned invalid JSON", method)
+                            else:
+                                if not isinstance(data, dict):
+                                    log.warning("RPC %s returned an invalid JSON-RPC envelope", method)
+                                    attempt_metric["outcome"] = "failure"
+                                    return None
+                                if "error" not in data:
+                                    attempt_metric["outcome"] = "success"
+                                    return data.get("result")
+                                error = data["error"]
+                                code = error.get("code") if isinstance(error, dict) else None
+                                log.warning("RPC %s returned JSON-RPC error code %s", method, code)
+                                if not _retryable_json_rpc_error(error):
+                                    attempt_metric["outcome"] = "failure"
+                                    return None
+            except asyncio.TimeoutError:
+                log.warning("RPC %s timed out (attempt %s/%s)", method, attempt + 1, max_retries)
+            except aiohttp.ClientError as exc:
+                log.warning(
+                    "RPC %s transport error %s (attempt %s/%s)",
+                    method, type(exc).__name__, attempt + 1, max_retries,
+                )
+            except Exception as exc:
+                log.warning("RPC %s failed with %s", method, type(exc).__name__)
+                attempt_metric["outcome"] = "failure"
+                return None
+            attempt_metric["outcome"] = "failure"
 
         if attempt + 1 < max_retries:
             await asyncio.sleep(_retry_delay(attempt, retry_after))

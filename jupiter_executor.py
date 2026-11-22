@@ -22,6 +22,13 @@ import wallet
 
 log = logging.getLogger("jupiter_executor")
 JUPITER_PROGRAM_ID = "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
+_CPI_CORE_PROGRAM_IDS = frozenset({
+    JUPITER_PROGRAM_ID,
+    "11111111111111111111111111111111",
+    "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",
+    "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+    "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+})
 _JUPITER_ROUTE = bytes.fromhex("e517cb977ae3ad2a")
 _JUPITER_SHARED_ACCOUNTS_ROUTE = bytes.fromhex("c1209b3341d69c81")
 HARD_MAX_SLIPPAGE_BPS = 1_000  # 10%; environment configuration can only lower this ceiling.
@@ -278,6 +285,155 @@ async def _resolve_lookup_addresses(message) -> tuple[list, list]:
             raise SwapError("Address lookup table could not be decoded safely.") from exc
 
     return writable_addresses, readonly_addresses
+
+
+def _parse_jupiter_cpi_allowlist() -> set[str]:
+    """Parse public program IDs explicitly approved for simulated CPI routes."""
+    from solders.pubkey import Pubkey
+
+    raw = getattr(config, "JUPITER_CPI_PROGRAM_ALLOWLIST", "")
+    if not isinstance(raw, str) or len(raw) > 4096:
+        raise SwapError("Jupiter CPI program allowlist is invalid; swap refused before signing.")
+    programs = set()
+    for item in raw.split(","):
+        program = item.strip()
+        if not program:
+            continue
+        try:
+            canonical = str(Pubkey.from_string(program))
+        except Exception as exc:
+            raise SwapError("Jupiter CPI program allowlist contains an invalid program ID.") from exc
+        if canonical != program:
+            raise SwapError("Jupiter CPI program allowlist contains a non-canonical program ID.")
+        programs.add(canonical)
+    if not programs:
+        raise SwapError(
+            "No reviewed Jupiter CPI/DEX program IDs are allowlisted; swap refused before signing."
+        )
+    return programs
+
+
+def _validate_simulated_cpi_trace(
+    simulation_value: dict,
+    *,
+    account_keys: list,
+    jupiter_instruction_indexes: list[int],
+    top_level_instruction_count: int,
+    allowed_program_ids: set[str],
+) -> list[str]:
+    """Fail closed unless every returned CPI resolves to a core or reviewed program."""
+    from solders.pubkey import Pubkey
+
+    if not isinstance(simulation_value, dict) or "err" not in simulation_value:
+        raise SwapError("Jupiter CPI simulation result is incomplete; swap refused before signing.")
+    if simulation_value["err"] is not None:
+        raise SwapError("Jupiter transaction simulation failed; swap refused before signing.")
+    if (len(jupiter_instruction_indexes) != 1
+            or type(top_level_instruction_count) is not int
+            or top_level_instruction_count <= 0):
+        raise SwapError("Jupiter CPI simulation cannot identify the swap instruction.")
+
+    groups = simulation_value.get("innerInstructions")
+    if not isinstance(groups, list):
+        raise SwapError("Jupiter CPI trace is unavailable; swap refused before signing.")
+
+    swap_index = jupiter_instruction_indexes[0]
+    swap_group_seen = False
+    observed_route_programs = set()
+    for group in groups:
+        if not isinstance(group, dict):
+            raise SwapError("Jupiter CPI trace contains a malformed instruction group.")
+        outer_index = group.get("index")
+        instructions = group.get("instructions")
+        if (type(outer_index) is not int or not 0 <= outer_index < top_level_instruction_count
+                or not isinstance(instructions, list)):
+            raise SwapError("Jupiter CPI trace contains an invalid outer instruction index.")
+        if outer_index == swap_index:
+            swap_group_seen = True
+            if not instructions:
+                raise SwapError("Jupiter swap produced no inspectable CPI instructions.")
+
+        for instruction in instructions:
+            if not isinstance(instruction, dict):
+                raise SwapError("Jupiter CPI trace contains a malformed instruction.")
+            accounts = instruction.get("accounts", [])
+            if not isinstance(accounts, list):
+                raise SwapError("Jupiter CPI account map is malformed.")
+            for account in accounts:
+                if type(account) is not int:
+                    raise SwapError("Jupiter CPI account map is unresolved.")
+                if not 0 <= account < len(account_keys):
+                    raise SwapError("Jupiter CPI account index is out of range.")
+
+            program_id = instruction.get("programId")
+            if not isinstance(program_id, str):
+                program_index = instruction.get("programIdIndex")
+                if type(program_index) is not int or not 0 <= program_index < len(account_keys):
+                    raise SwapError("Jupiter CPI program ID cannot be resolved.")
+                program_id = str(account_keys[program_index])
+            try:
+                program_id = str(Pubkey.from_string(program_id))
+            except Exception as exc:
+                raise SwapError("Jupiter CPI program ID is malformed.") from exc
+
+            if program_id in _CPI_CORE_PROGRAM_IDS:
+                continue
+            if program_id not in allowed_program_ids:
+                raise SwapError(
+                    "Jupiter route invoked a CPI/DEX program outside the reviewed allowlist; "
+                    "swap refused before signing."
+                )
+            if outer_index == swap_index:
+                observed_route_programs.add(program_id)
+
+    if not swap_group_seen or not observed_route_programs:
+        raise SwapError("Jupiter route CPI/DEX trace is missing; swap refused before signing.")
+    return sorted(observed_route_programs)
+
+
+@measure_async("jupiter.cpi_simulate", "solana_rpc")
+async def _simulate_and_validate_jupiter_cpis(
+    tx: VersionedTransaction,
+    resolved_lookup_addresses: tuple[list, list],
+) -> list[str]:
+    """Simulate unsigned bytes and allow only reviewed CPI/DEX program IDs.
+
+    The empty default allowlist is an intentional LIVE gate. A successful
+    simulation proves only what this RPC node observed at its simulation
+    slot; it is not a code audit or a guarantee that the route remains static.
+    """
+    allowed_program_ids = _parse_jupiter_cpi_allowlist()
+    loaded_writable, loaded_readonly = resolved_lookup_addresses
+    keys = list(tx.message.account_keys) + list(loaded_writable) + list(loaded_readonly)
+    jupiter_instruction_indexes = []
+    for index, instruction in enumerate(tx.message.instructions):
+        program_index = instruction.program_id_index
+        if type(program_index) is not int or not 0 <= program_index < len(keys):
+            raise SwapError("Jupiter program index is invalid before CPI simulation.")
+        if str(keys[program_index]) == JUPITER_PROGRAM_ID:
+            jupiter_instruction_indexes.append(index)
+
+    encoded = base64.b64encode(bytes(tx)).decode("ascii")
+    result = await rpc_client.rpc_post_strict({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "simulateTransaction",
+        "params": [encoded, {
+            "encoding": "base64",
+            "commitment": "processed",
+            "sigVerify": False,
+            "replaceRecentBlockhash": True,
+            "innerInstructions": True,
+        }],
+    }, timeout=20)
+    value = result.get("value") if isinstance(result, dict) else None
+    return _validate_simulated_cpi_trace(
+        value,
+        account_keys=keys,
+        jupiter_instruction_indexes=jupiter_instruction_indexes,
+        top_level_instruction_count=len(tx.message.instructions),
+        allowed_program_ids=allowed_program_ids,
+    )
 
 
 def _validate_unsigned_transaction(
@@ -664,6 +820,9 @@ async def execute_swap(input_mint: str, output_mint: str, amount_lamports: int, 
     )
     await _assert_blockhash_valid(blockhash)
     await _assert_fee_within_limit(tx)
+    # Inspect the actual CPI trace before signing. Empty/default allowlists
+    # deliberately fail closed until each routed program has been reviewed.
+    await _simulate_and_validate_jupiter_cpis(tx, resolved_lookup_addresses)
     with measure_execution("jupiter.sign", "local"):
         signed_tx = VersionedTransaction(tx.message, [keypair])
     signed_bytes = bytes(signed_tx)

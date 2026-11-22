@@ -36,3 +36,9 @@ Un défaut HTTP important a été corrigé : `aiohttp` suivait les redirections 
 ## Préparation d'exécution
 
 `TRADING_MODE=PAPER` reste le défaut. `LIVE_EXECUTION_ENABLED` reste une seconde barrière explicite. Les nouveaux tests sont entièrement simulés; la préparation LIVE demeure non vérifiée.
+
+## Addendum Mission 6 — simulation des CPI (22 novembre 2026)
+
+Une garde complémentaire a été ajoutée dans `jupiter_executor.py` : avant signature, le bot demande au RPC une simulation sans diffusion avec `innerInstructions=true`, puis refuse si le résultat échoue, si la trace interne est absente/incomplète ou si un programme CPI externe n'est pas dans `JUPITER_CPI_PROGRAM_ALLOWLIST`. Cette liste est vide par défaut. Des tests synthétiques sont dans `tests/test_jupiter_cpi_audit.py`; aucun RPC réel ni swap n'a été appelé.
+
+Ce changement réduit le risque identifié, mais ne transforme pas le filtre en audit complet des instructions DEX. Le code de l'instruction interne, les effets économiques, les comptes selon la sémantique DEX et la provenance/version de programme ne sont pas audités par cette garde. `simulateTransaction` reflète l'état observé par un noeud et n'envoie pas de transaction; une transaction ultérieure peut rencontrer un état ou un route différent. Les tokens à frais de transfert ne sont pas validés avant swap; le contrôle de débit exact demeure après confirmation. LIVE reste non prêt. Rapport complet : [Mission 6, revue de sécurité](MISSION_6_SECURITY_REPORT.md).

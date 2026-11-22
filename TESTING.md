@@ -7,6 +7,7 @@ Depuis la racine du dépôt :
 ```powershell
 python -m compileall -q .
 $env:PYTEST_DISABLE_PLUGIN_AUTOLOAD = '1'
+$env:PYTHON_DOTENV_DISABLED = 'true'
 python -m pytest -q
 ```
 
@@ -16,7 +17,7 @@ Dernière vérification locale sur `codex/mission-performance-2026-11-22` : `pyt
 
 ## CI configurée
 
-Le workflow `.github/workflows/ci.yml` installe les dépendances, compile les sources, vérifie le mode PAPER par défaut, exécute pytest, Ruff sur les erreurs critiques, `pip-audit` et Gitleaks. La CI [45059131294](https://github.com/cheicki225/-meme-coin/actions/runs/45059131294) est verte sur le commit `a30f11a`; les 357 tests, Ruff, l'audit des dépendances et le scan de secrets ont réussi. Ruff, pip-audit et Gitleaks ne sont pas installés localement; l'installation locale de Ruff/pip-audit avait échoué sur la vérification TLS de PyPI.
+Le workflow `.github/workflows/ci.yml` installe `requirements-ci.txt`, compile les sources, vérifie PAPER par défaut, exécute pytest avec Coverage.py lignes/branches, Ruff sur les erreurs critiques, `pip-audit` sur les exigences CI et Gitleaks. `coverage.json` et `coverage.xml` sont téléversés comme artefacts. La CI [45059131294](https://github.com/cheicki225/-meme-coin/actions/runs/45059131294) est verte sur le commit `a30f11a`; les 357 tests, Ruff, l'audit des dépendances et le scan de secrets y ont réussi. La mesure de couverture de Mission 6 doit être lue sur son propre run.
 
 ## Portée des tests
 
@@ -35,3 +36,16 @@ Le workflow `.github/workflows/ci.yml` installe les dépendances, compile les so
 ## États
 
 `NOT STARTED`, `IN PROGRESS`, `IMPLEMENTED`, `TESTED`, `VERIFIED` et `BLOCKED` distinguent le code écrit des preuves disponibles. Le taux de couverture lignes/branches n'est pas mesuré dans cette révision.
+# Mission 6 — mesure de couverture
+
+La CI installe les outils de test depuis `requirements-ci.txt` et exécute pytest sous Coverage.py avec mesure des branches. Elle affiche `coverage report` et conserve `coverage.json`/`coverage.xml` comme artefacts. Le taux mesuré dépend du commit et doit être lu sur le run associé; le résultat local Mission 6 est **378 tests réussis**, mais la couverture n'a pas été installée dans l'interpréteur local et aucun pourcentage n'est donné sans preuve CI.
+
+Pour reproduire le nombre de tests sur un poste qui possède des plugins pytest globaux incompatibles avec les dépendances locales :
+
+```powershell
+$env:PYTEST_DISABLE_PLUGIN_AUTOLOAD='1'
+$env:PYTHON_DOTENV_DISABLED='true'
+python -m pytest -q
+```
+
+Le soak synthétique est documenté dans [docs/MISSION_6_BENCHMARK.md](docs/MISSION_6_BENCHMARK.md). Il ne remplace pas un soak réel du déploiement.

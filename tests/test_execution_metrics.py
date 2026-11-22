@@ -85,3 +85,13 @@ def test_copytrade_message_errors_are_counted_as_failures(monkeypatch, tmp_path)
     summary = summarize_metrics(path)
     stage = summary["stages"]["websocket.copytrade_message:helius"]
     assert stage["failure_rate"] == 1
+
+
+def test_solana_websocket_detection_provider_is_allowed_and_measured(tmp_path):
+    path = tmp_path / "metrics.jsonl"
+    assert record_execution_metric(
+        "websocket.new_token_creation", 12, provider="solana_ws", path=path
+    )
+
+    summary = summarize_metrics(path)
+    assert summary["stages"]["websocket.new_token_creation:solana_ws"]["count"] == 1
