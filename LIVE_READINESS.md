@@ -12,7 +12,7 @@
 | Contrôles d'exposition et arrêt d'urgence | TESTED | En LIVE, l'arrêt bloque tous les swaps, ventes comprises, sans liquidation; pas de soak PAPER ni de preuve sur l'environnement cible |
 | RPC et WebSocket | BLOCKED | Fournisseur/quotas déployés inconnus; capacité dégradée sans Helius |
 | Revue de la transaction | IN PROGRESS | Instructions CPI/DEX et composants externes à auditer indépendamment |
-| Tests de sécurité des dépendances et secrets | IN PROGRESS | CI de la nouvelle révision à terminer et archiver |
+| Tests de sécurité des dépendances et secrets | TESTED | CI #198 sur `8e6df9f` : pip-audit et scan de secrets réussis; revue indépendante CPI/DEX reste ouverte |
 | Procédure d'exploitation/restauration | NOT STARTED | Exercice documenté sur la base réelle de PAPER et alertes de déploiement |
 
 ## Conditions minimales avant toute décision LIVE

@@ -16,7 +16,7 @@ Dernière vérification locale : `python -m compileall -q .` réussi, `PYTEST_DI
 
 ## CI configurée
 
-Le workflow `.github/workflows/ci.yml` installe les dépendances, compile les sources, vérifie le mode PAPER par défaut, exécute pytest, Ruff sur les erreurs critiques, `pip-audit` et Gitleaks. Le résultat de ces étapes doit être vérifié sur le nouveau commit; le dernier commit `cb92d1a` avait une CI verte, mais cette révision modifiée attend son run. Ruff, pip-audit et Gitleaks ne sont pas installés dans l'environnement local actuel; ils doivent s'exécuter dans GitHub Actions. L'installation locale des outils a échoué à la vérification TLS du dépôt Python, sans contournement de TLS.
+Le workflow `.github/workflows/ci.yml` installe les dépendances, compile les sources, vérifie le mode PAPER par défaut, exécute pytest, Ruff sur les erreurs critiques, `pip-audit` et Gitleaks. Le run GitHub Actions **#198** sur le commit de code `8e6df9f` est vert, avec toutes ces étapes réussies. Ruff, pip-audit et Gitleaks ne sont pas installés dans l'environnement local actuel; ils ont été exécutés par la CI. L'installation locale des outils a échoué à la vérification TLS du dépôt Python, sans contournement de TLS.
 
 ## Portée des tests
 

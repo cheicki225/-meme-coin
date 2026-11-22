@@ -14,7 +14,7 @@ Mise à jour : 22 novembre 2026. Cette feuille décrit l'état du code audité d
 | P1 | Améliorer la tolérance aux pannes RPC et les alertes | TESTED | Retry-after/backoff/jitter et reprise d'alerte après échec de livraison testés; ajouter fraîcheur de slot, mesure de charge et test de longue durée |
 | P1 | Relier le replay historique à des données et à la stratégie réellement utilisée | IN PROGRESS | Primitive OHLC déterministe avec validation optionnelle d'intervalles/gaps; dataset versionné/provenance et signal de production restent absents |
 | P2 | Valider restauration, redémarrage et alertes dans l'environnement cible | NOT STARTED | Exercice PAPER documenté avec sauvegarde et preuves d'alertes |
-| P2 | Terminer CI et audit des outils sur le commit de cette mise à jour | IN PROGRESS | La CI de `cb92d1a` est verte; le commit courant attend sa propre CI (compilation, tests, Ruff, pip-audit et Gitleaks) |
+| P2 | Terminer CI et audit des outils sur le commit de cette mise à jour | TESTED | CI #198 verte sur `8e6df9f` : compilation, tests, Ruff, pip-audit et Gitleaks réussis |
 
 ## Dépendances
 

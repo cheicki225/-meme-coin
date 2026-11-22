@@ -30,7 +30,7 @@ Le score actualisé et son barème sont maintenus dans [PROGRESS.md](PROGRESS.md
 
 - **Développement :** 72,5 % selon le barème publié.
 - **Tests locaux :** `compileall` réussi et 196 tests passés le 22 novembre 2026; voir [TESTING.md](TESTING.md). Aucun ordre réel n'a été diffusé.
-- **Sécurité :** IN PROGRESS. Jupiter/comptabilité sont couverts par tests mockés; l'audit indépendant CPI/DEX et la CI de la nouvelle révision restent à confirmer.
+- **Sécurité :** IN PROGRESS. La CI #198 du commit `8e6df9f` est verte, y compris lint, audit des dépendances et scan de secrets; l'audit indépendant CPI/DEX reste à faire.
 - **PAPER :** mode par défaut. Les frais simulés d'entrée, DCA, sorties partielles/totales et Sell Initials sont désormais intégrés aux coûts/cashflows et testés; soak, restauration déployée et endpoint RPC cible restent à vérifier.
 - **LIVE : BLOCKED / NOT READY.** Aucune transaction réelle exécutée. Aucun test mainnet, portefeuille financé, soak ni audit indépendant complet.
 
