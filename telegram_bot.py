@@ -31,6 +31,7 @@ Utilise python-telegram-bot >= 21.
 import asyncio
 import logging
 import copy
+import math
 import os
 import time
 
@@ -42,6 +43,7 @@ from telegram.ext import (
 
 import re
 import config
+import paper_trader
 from translations import t
 
 log = logging.getLogger("telegram_bot")
@@ -75,6 +77,18 @@ def _looks_like_token_mint(text: str) -> bool:
     return text.strip().endswith("pump")
 
 
+def _pnl_fee_history_warning(data_store, lang: str) -> str:
+    """Persist and render the legacy-fee warning without changing PnL values."""
+    state = data_store.state
+    if paper_trader.mark_pnl_fee_history_incomplete_if_needed(state):
+        data_store.save()
+    if state.get("pnl_fee_history_incomplete") is not True:
+        return ""
+    if lang == "fr":
+        return "⚠️ PnL historique potentiellement incomplet : certains frais anciens ne sont pas reconstructibles."
+    return "⚠️ Historical PnL may be incomplete: some older fees cannot be reconstructed."
+
+
 def _format_sol_amount(amount: float) -> str:
     """
     AJOUTÉ suite à un vrai cas ambigu observé : un montant de financement
@@ -87,6 +101,62 @@ def _format_sol_amount(amount: float) -> str:
     if amount != 0 and round(amount, 4) == 0:
         return f"{amount:.8f}"
     return f"{amount:.4f}"
+
+
+def _format_risk_status(state: dict, loss_limit_usd: float) -> str:
+    """Report loss breaker, emergency stop, and pending transactions separately."""
+    if not isinstance(state, dict):
+        state = {}
+
+    losses = state.get("session_losses_usd")
+    if (
+        isinstance(losses, (int, float)) and not isinstance(losses, bool)
+        and math.isfinite(losses) and losses >= 0
+        and isinstance(loss_limit_usd, (int, float)) and not isinstance(loss_limit_usd, bool)
+        and math.isfinite(loss_limit_usd) and loss_limit_usd > 0
+    ):
+        breaker = "🛑 ACTIF — limite atteinte" if losses >= loss_limit_usd else "🟢 inactif"
+        loss_line = (
+            f"🛑 *Circuit breaker pertes* : {breaker}\n"
+            f"Pertes de session : `${losses:.2f}` / `${loss_limit_usd:.0f}`"
+        )
+    else:
+        loss_line = "🛑 *Circuit breaker pertes* : ⚪ état inconnu"
+
+    emergency_stop = state.get("emergency_stop")
+    if emergency_stop is True:
+        reason = state.get("emergency_stop_reason")
+        if reason == "session loss limit reached":
+            cause = "limite de pertes de session"
+        elif isinstance(reason, str) and reason.startswith("manual Telegram halt"):
+            cause = "commande Telegram /halt"
+        elif isinstance(reason, str) and reason.strip():
+            safe_reason = "".join(
+                character for character in reason.strip()
+                if character.isalnum() or character in " .,:;-"
+            )[:100].strip()
+            cause = safe_reason or "motif enregistré"
+        else:
+            cause = "motif non précisé"
+        emergency_line = f"Arrêt d'urgence : 🛑 ACTIF — {cause}"
+    elif emergency_stop is False:
+        emergency_line = "Arrêt d'urgence : 🟢 inactif"
+    else:
+        emergency_line = "Arrêt d'urgence : ⚪ état inconnu"
+
+    pending = state.get("pending_transactions")
+    if isinstance(pending, list):
+        if pending:
+            pending_line = (
+                f"Transactions en attente : ⚠️ {len(pending)} à réconcilier "
+                "avant toute reprise"
+            )
+        else:
+            pending_line = "Transactions en attente : aucune"
+    else:
+        pending_line = "Transactions en attente : ⚪ état inconnu"
+
+    return "\n".join((loss_line, emergency_line, pending_line))
 
 
 def _compute_star_rating(results: list) -> dict:
@@ -422,6 +492,10 @@ class SniperTelegramBot:
             f"Copy Trading: {n_copytrade}\n"
             f"Total: {self.data_store.count_wallets()}/{config.MAX_MONITORED_WALLETS}"
         )
+        pnl_warning = _pnl_fee_history_warning(self.data_store, state.get("language", "fr"))
+        if pnl_warning:
+            text += f"\n\n{pnl_warning}"
+        text += "\n\n" + _format_risk_status(state, config.CIRCUIT_BREAKER_USD)
         await update.message.reply_text(text, parse_mode="Markdown")
 
     # ── Nouvelles commandes slash — raccourcis directs vers les menus,
@@ -1758,30 +1832,14 @@ class SniperTelegramBot:
         msg = await update.message.reply_text(f"🛡️ Vérification sécurité de `{token_mint[:12]}...`...", parse_mode="Markdown")
 
         result = await security.check_token_security(token_mint)
-        if not result:
-            await msg.edit_text("❌ Impossible de récupérer les données de sécurité (pas de clé GoPlus configurée, ou erreur réseau).")
-            return
-
-        risk_icon = "🔴" if result.get("is_risky") else "🟢"
-        text = (
-            f"🛡️ *Analyse de sécurité*\n`{token_mint}`\n\n"
-            f"{risk_icon} Risque global : {'Élevé' if result.get('is_risky') else 'Faible'}\n\n"
-        )
-        for flag_name, flag_value in result.get("flags", {}).items():
-            icon = "⚠️" if flag_value else "✅"
-            text += f"{icon} {flag_name}\n"
+        text = security.format_security_report(token_mint, result)
 
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("← Back", callback_data="menu_main")]])
-        # CORRIGÉ — même filet de sécurité qu'ailleurs : flag_name vient de
-        # l'API GoPlus et contient souvent des underscores (ex:
-        # "is_honeypot") non échappés, qui cassent le Markdown Telegram
-        # sans prévenir si jamais rencontrés.
         try:
-            await msg.edit_text(text, parse_mode="Markdown", reply_markup=keyboard, disable_web_page_preview=True)
+            await msg.edit_text(text, reply_markup=keyboard, disable_web_page_preview=True)
         except Exception as e:
-            log.warning(f"Erreur d'affichage Markdown pour la sécurité de {token_mint}: {type(e).__name__}")
-            plain_text = text.replace("*", "").replace("`", "").replace("_", "")
-            await msg.edit_text(plain_text, reply_markup=keyboard, disable_web_page_preview=True)
+            log.warning("Security report display failed (%s)", type(e).__name__)
+            await msg.edit_text(text, reply_markup=keyboard, disable_web_page_preview=True)
 
     async def analyze_wallet_inline(self, update: Update, wallet_address: str):
         """
@@ -2367,13 +2425,11 @@ class SniperTelegramBot:
             open_count=len(state.get("open_positions", [])), closed_count=len(closed),
             win_rate=(len(wins) / len(closed) * 100) if closed else 0,
         )
-        # AJOUTÉ (demande explicite, 19 août) : affiche le compteur du
-        # circuit breaker — avant, invisible nulle part dans Telegram, ce
-        # qui rendait un blocage silencieux impossible à diagnostiquer sans
-        # accès direct aux logs Railway.
-        session_losses = state.get("session_losses_usd", 0)
-        breaker_status = "🛑 ACTIF — achats bloqués" if session_losses >= config.CIRCUIT_BREAKER_USD else "🟢 inactif"
-        text += f"\n\n🛑 *Circuit breaker* : {breaker_status}\nPertes comptabilisées : `${session_losses:.2f}` / `${config.CIRCUIT_BREAKER_USD:.0f}`\n_Remise à zéro automatique toutes les 24h._"
+        pnl_warning = _pnl_fee_history_warning(self.data_store, lang)
+        if pnl_warning:
+            text += f"\n\n{pnl_warning}"
+        text += "\n\n" + _format_risk_status(state, config.CIRCUIT_BREAKER_USD)
+        text += "\n_Remise à zéro des pertes toutes les 24h._"
 
         keyboard = [
             [InlineKeyboardButton("🔄 Réinitialiser le circuit breaker maintenant", callback_data="askresetbreaker")],

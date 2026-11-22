@@ -1,4 +1,5 @@
 import asyncio
+import struct
 
 import pytest
 
@@ -49,6 +50,31 @@ def test_lookup_table_resolution_rejects_untrusted_account_owner(monkeypatch):
 
 
 def _swap_with_ata(payer, owner, mint, ata):
+    input_mint = Pubkey.from_string(config.SOL_MINT)
+    source_ata, _ = Pubkey.find_program_address(
+        [bytes(payer.pubkey()), bytes(TOKEN), bytes(input_mint)], ASSOCIATED
+    )
+    destination_ata, _ = Pubkey.find_program_address(
+        [bytes(payer.pubkey()), bytes(TOKEN), bytes(mint)], ASSOCIATED
+    )
+    route_data = (
+        bytes.fromhex("e517cb977ae3ad2a")
+        + struct.pack("<I", 1)
+        + b"\x00\x00\x00\x00"
+        + struct.pack("<QQHB", 1000, 900, 100, 0)
+    )
+    swap = Instruction(
+        JUPITER,
+        route_data,
+        [
+            AccountMeta(TOKEN, False, False),
+            AccountMeta(payer.pubkey(), True, False),
+            AccountMeta(source_ata, False, True),
+            AccountMeta(destination_ata, False, True),
+            AccountMeta(Pubkey.default(), False, False),
+            AccountMeta(mint, False, False),
+        ],
+    )
     create_ata = Instruction(
         ASSOCIATED,
         bytes([1]),
@@ -63,7 +89,7 @@ def _swap_with_ata(payer, owner, mint, ata):
     )
     message = MessageV0.try_compile(
         payer.pubkey(),
-        [Instruction(JUPITER, b"", []), create_ata],
+        [swap, create_ata],
         [],
         Hash.default(),
     )
@@ -78,7 +104,14 @@ def test_ata_instruction_is_limited_to_the_taker_and_swap_mint():
     )
     raw = _swap_with_ata(payer, payer.pubkey(), mint, ata)
     jupiter_executor._validate_unsigned_transaction(
-        raw, payer, config.SOL_MINT, 1000, str(mint), resolved_lookup_addresses=([], [])
+        raw,
+        payer,
+        config.SOL_MINT,
+        1000,
+        str(mint),
+        expected_out_amount=900,
+        slippage_bps=100,
+        resolved_lookup_addresses=([], []),
     )
 
 
@@ -90,5 +123,6 @@ def test_ata_instruction_for_third_party_is_rejected():
     raw = _swap_with_ata(payer, other, mint, ata)
     with pytest.raises(jupiter_executor.SwapError, match="autre wallet"):
         jupiter_executor._validate_unsigned_transaction(
-            raw, payer, config.SOL_MINT, 1000, str(mint), resolved_lookup_addresses=([], [])
+            raw, payer, config.SOL_MINT, 1000, str(mint), expected_out_amount=900,
+            slippage_bps=100, resolved_lookup_addresses=([], [])
         )

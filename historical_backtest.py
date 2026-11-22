@@ -156,6 +156,17 @@ def run_backtest(
             exit_index = len(rows) - 1
             exit_price = float(rows[exit_index]["close"])
 
+        entry_time = int(entry_candle["timestamp"])
+        exit_time = int(rows[exit_index]["timestamp"])
+        # A trade crosses a data gap only when it was already open at the
+        # preceding candle and remains open through the next observed candle.
+        # Keep the gap metadata attached to the trade; do not infer missing
+        # prices or alter the existing conservative fill rules.
+        affected_gaps = [
+            gap for gap in gaps
+            if gap["from_timestamp"] >= entry_time and gap["to_timestamp"] <= exit_time
+        ]
+
         effective_exit = exit_price * (1 - slip_rate)
         gross_proceeds = units * effective_exit
         net_proceeds = gross_proceeds * (1 - fee_rate)
@@ -166,8 +177,8 @@ def run_backtest(
             "entry_signal_index": cursor,
             "entry_index": entry_index,
             "exit_index": exit_index,
-            "entry_time": int(entry_candle["timestamp"]),
-            "exit_time": int(rows[exit_index]["timestamp"]),
+            "entry_time": entry_time,
+            "exit_time": exit_time,
             "entry_price": entry_price,
             "exit_price": effective_exit,
             "position_usd": position_usd,
@@ -178,6 +189,8 @@ def run_backtest(
             "net_pnl_usd": pnl,
             "return_pct": pnl / position_usd * 100,
             "exit_reason": exit_reason,
+            "gap_affected": bool(affected_gaps),
+            "gaps": affected_gaps,
         })
         # The exit candle's close is a valid signal observation. Permit a
         # signal there to enter on the following candle, while the preceding

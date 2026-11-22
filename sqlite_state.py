@@ -109,7 +109,8 @@ class SQLiteStateStore:
                     "SELECT schema_version, payload FROM bot_state WHERE singleton = 1"
                 ).fetchone()
         except sqlite3.DatabaseError as exc:
-            raise StateStoreCorruptError(f"Cannot read SQLite state database {self.path}") from exc
+            error_type = StateStoreCorruptError if self._is_corruption_error(exc) else StateStoreError
+            raise error_type(f"Cannot read SQLite state database {self.path}") from exc
 
         if row:
             version, payload = row
@@ -120,7 +121,11 @@ class SQLiteStateStore:
             if version < SCHEMA_VERSION:
                 raise StateStoreError(f"State schema {version} has no supported migration to {SCHEMA_VERSION}")
             try:
-                state = json.loads(payload, parse_constant=self._reject_json_constant)
+                state = json.loads(
+                    payload,
+                    parse_constant=self._reject_json_constant,
+                    object_pairs_hook=self._reject_duplicate_json_keys,
+                )
             except (json.JSONDecodeError, TypeError, ValueError) as exc:
                 raise StateStoreCorruptError("Stored state payload is invalid JSON") from exc
             if not isinstance(state, dict):
@@ -131,10 +136,15 @@ class SQLiteStateStore:
         if legacy_json_path is not None and Path(legacy_json_path).is_file():
             try:
                 with Path(legacy_json_path).open("r", encoding="utf-8") as source:
-                    candidate = json.load(source)
-                if isinstance(candidate, dict):
-                    state = candidate
-            except (OSError, json.JSONDecodeError) as exc:
+                    candidate = json.load(
+                        source,
+                        parse_constant=self._reject_json_constant,
+                        object_pairs_hook=self._reject_duplicate_json_keys,
+                    )
+                if not isinstance(candidate, dict):
+                    raise ValueError("Legacy JSON state root must be an object")
+                state = candidate
+            except (OSError, json.JSONDecodeError, ValueError) as exc:
                 raise StateStoreError(f"Legacy JSON state could not be imported: {legacy_json_path}") from exc
         if state is None:
             state = default_factory()
@@ -145,6 +155,15 @@ class SQLiteStateStore:
     def _reject_json_constant(value: str):
         raise ValueError(f"Non-standard JSON constant {value} is not allowed")
 
+    @staticmethod
+    def _reject_duplicate_json_keys(pairs):
+        state = {}
+        for key, value in pairs:
+            if key in state:
+                raise ValueError("Duplicate JSON object key is not allowed")
+            state[key] = value
+        return state
+
     def has_committed_state(self) -> bool:
         """Check whether a database contains a state row without creating one."""
         try:
@@ -153,7 +172,8 @@ class SQLiteStateStore:
                     "SELECT 1 FROM bot_state WHERE singleton = 1"
                 ).fetchone() is not None
         except sqlite3.DatabaseError as exc:
-            raise StateStoreCorruptError(f"Cannot inspect SQLite state database {self.path}") from exc
+            error_type = StateStoreCorruptError if self._is_corruption_error(exc) else StateStoreError
+            raise error_type(f"Cannot inspect SQLite state database {self.path}") from exc
 
     def save(self, state: dict) -> None:
         if not isinstance(state, dict):

@@ -20,6 +20,11 @@ from transaction_accounting import AccountingError, account_confirmed_swap
 import wallet
 
 log = logging.getLogger("jupiter_executor")
+JUPITER_PROGRAM_ID = "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
+_JUPITER_ROUTE = bytes.fromhex("e517cb977ae3ad2a")
+_JUPITER_SHARED_ACCOUNTS_ROUTE = bytes.fromhex("c1209b3341d69c81")
+HARD_MAX_SLIPPAGE_BPS = 1_000  # 10%; environment configuration can only lower this ceiling.
+HARD_MAX_PRICE_IMPACT_PCT = 5.0
 
 
 class SwapError(Exception):
@@ -39,6 +44,160 @@ def _strict_uint(value, field: str) -> int:
     return parsed
 
 
+def _strict_rpc_fee_lamports(result: dict) -> int:
+    """Accept only the integer shape returned by Solana getFeeForMessage."""
+    if not isinstance(result, dict) or type(result.get("value")) is not int:
+        raise SwapError("Frais RPC absents ou mal formés.")
+    fee = result["value"]
+    if fee < 0:
+        raise SwapError("Frais RPC négatifs refusés.")
+    return fee
+
+
+def _maximum_allowed_slippage_bps() -> int:
+    configured = getattr(config, "MAX_SLIPPAGE_BPS", None)
+    if type(configured) is not int or configured <= 0:
+        raise SwapError("MAX_SLIPPAGE_BPS must be a positive integer.")
+    return min(configured, HARD_MAX_SLIPPAGE_BPS)
+
+
+def _maximum_allowed_price_impact_pct() -> float:
+    configured = getattr(config, "MAX_PRICE_IMPACT_PCT", None)
+    if isinstance(configured, bool) or not isinstance(configured, (int, float)):
+        raise SwapError("MAX_PRICE_IMPACT_PCT must be a finite non-negative number.")
+    try:
+        configured = float(configured)
+    except (OverflowError, TypeError, ValueError) as exc:
+        raise SwapError("MAX_PRICE_IMPACT_PCT must be a finite non-negative number.") from exc
+    if not math.isfinite(configured) or configured < 0:
+        raise SwapError("MAX_PRICE_IMPACT_PCT must be a finite non-negative number.")
+    return min(configured, HARD_MAX_PRICE_IMPACT_PCT)
+
+
+def _quote_price_impact_percent(quote: dict) -> float:
+    """Read the documented decimal `priceImpactPct` or percent `priceImpact`."""
+    impacts = []
+    for field, multiplier in (("priceImpact", 1), ("priceImpactPct", 100)):
+        raw_impact = quote.get(field)
+        if raw_impact is None:
+            continue
+        if isinstance(raw_impact, bool):
+            raise SwapError("L'impact de prix Jupiter est mal formé.")
+        try:
+            impact = abs(float(raw_impact) * multiplier)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise SwapError("L'impact de prix Jupiter est mal formé.") from exc
+        if not math.isfinite(impact):
+            raise SwapError("L'impact de prix Jupiter n'est pas fini.")
+        impacts.append(impact)
+    if not impacts:
+        raise SwapError("Le devis Jupiter ne contient pas d'impact de prix.")
+    if len(impacts) == 2 and not math.isclose(impacts[0], impacts[1], rel_tol=1e-6, abs_tol=1e-6):
+        raise SwapError("Les champs d'impact de prix Jupiter sont incohérents.")
+    return max(impacts)
+
+
+def _associated_token_address(owner, mint, token_program, associated_program):
+    from solders.pubkey import Pubkey
+
+    return Pubkey.find_program_address(
+        [bytes(owner), bytes(token_program), bytes(mint)], associated_program
+    )[0]
+
+
+def _validate_jupiter_swap_instruction(
+    data: bytes,
+    accounts: list,
+    *,
+    owner,
+    input_mint,
+    output_mint,
+    expected_in_amount: int,
+    expected_out_amount: int,
+    slippage_bps: int,
+) -> None:
+    """Bind supported exact-in Jupiter v6 route arguments to the checked order.
+
+    The supported layouts come from Jupiter's published v6 IDL. Route-plan
+    variants are still executed by CPI and are not independently audited here.
+    """
+    from solders.pubkey import Pubkey
+
+    if len(data) < 8 + 4 + 4 + 19:
+        raise SwapError("Instruction Jupiter de swap vide ou tronquée.")
+    discriminator = data[:8]
+    if discriminator == _JUPITER_ROUTE:
+        route_count_offset = 8
+        source_account_index, destination_account_index = 2, 3
+        authority_index, output_mint_index = 1, 5
+        input_mint_index = None
+        token_program_index = 0
+        minimum_route_prefix = 8 + 4
+    elif discriminator == _JUPITER_SHARED_ACCOUNTS_ROUTE:
+        route_count_offset = 9
+        source_account_index, destination_account_index = 3, 6
+        authority_index, output_mint_index = 2, 8
+        input_mint_index = 7
+        token_program_index = 0
+        minimum_route_prefix = 9 + 4
+    else:
+        raise SwapError("Instruction Jupiter non prise en charge (route exact-in attendue).")
+
+    if len(accounts) <= max(source_account_index, destination_account_index, authority_index,
+                            output_mint_index, token_program_index):
+        raise SwapError("Comptes requis de l'instruction Jupiter manquants.")
+    if accounts[authority_index] != owner:
+        raise SwapError("L'autorité de transfert Jupiter n'est pas le wallet actif.")
+    if accounts[output_mint_index] != output_mint:
+        raise SwapError("Le mint de sortie de l'instruction Jupiter ne correspond pas au devis.")
+    if input_mint_index is not None and accounts[input_mint_index] != input_mint:
+        raise SwapError("Le mint d'entrée de l'instruction Jupiter ne correspond pas au devis.")
+
+    token_programs = {
+        Pubkey.from_string("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"),
+        Pubkey.from_string("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"),
+    }
+    token_program = accounts[token_program_index]
+    if token_program not in token_programs:
+        raise SwapError("Programme SPL d'entrée Jupiter non autorisé.")
+    associated_program = Pubkey.from_string("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")
+    expected_source = _associated_token_address(owner, input_mint, token_program, associated_program)
+    if accounts[source_account_index] != expected_source:
+        raise SwapError("Le compte source Jupiter n'est pas l'ATA du wallet et du mint demandés.")
+
+    output_token_program = token_program
+    if discriminator == _JUPITER_SHARED_ACCOUNTS_ROUTE and len(accounts) > 10:
+        optional_token_program = accounts[10]
+        if optional_token_program in token_programs:
+            output_token_program = optional_token_program
+    expected_destination = _associated_token_address(
+        owner, output_mint, output_token_program, associated_program
+    )
+    if accounts[destination_account_index] != expected_destination:
+        raise SwapError("Le compte destination Jupiter n'est pas l'ATA du wallet et du mint demandés.")
+
+    if len(data) < minimum_route_prefix + 4 + 19:
+        raise SwapError("Route plan Jupiter incomplet.")
+    route_count = int.from_bytes(data[route_count_offset:route_count_offset + 4], "little")
+    route_plan_start = route_count_offset + 4
+    route_plan_end = len(data) - 19
+    if route_count < 1 or route_count > 64 or route_plan_end < route_plan_start + route_count * 4:
+        raise SwapError("Route plan Jupiter invalide.")
+
+    # Both published exact-in layouts end in inAmount, quotedOutAmount,
+    # slippageBps, platformFeeBps, independent of the variable route plan.
+    input_amount = int.from_bytes(data[-19:-11], "little")
+    quoted_output = int.from_bytes(data[-11:-3], "little")
+    instruction_slippage = int.from_bytes(data[-3:-1], "little")
+    platform_fee_bps = data[-1]
+    if input_amount != expected_in_amount or quoted_output != expected_out_amount:
+        raise SwapError("Les montants de l'instruction Jupiter ne correspondent pas au devis vérifié.")
+    if instruction_slippage != slippage_bps:
+        raise SwapError("Le slippage de l'instruction Jupiter ne correspond pas au devis vérifié.")
+    if platform_fee_bps != 0:
+        raise SwapError("Les frais de plateforme Jupiter ne sont pas autorisés.")
+
+
 def _validate_quote(quote: dict, input_mint: str, output_mint: str,
                     amount_lamports: int, slippage_bps: int) -> None:
     """Refuse les devis incohérents ou au-delà des limites de risque locales."""
@@ -50,23 +209,15 @@ def _validate_quote(quote: dict, input_mint: str, output_mint: str,
         quoted_in = _strict_uint(quote["inAmount"], "inAmount")
         quoted_out = _strict_uint(quote["outAmount"], "outAmount")
         threshold = _strict_uint(quote["otherAmountThreshold"], "otherAmountThreshold")
-        raw_impact = quote.get("priceImpact")
-        if raw_impact is None:
-            raw_impact = quote.get("priceImpactPct", 0)
-            if isinstance(raw_impact, bool):
-                raise ValueError("boolean price impact")
-            impact = abs(float(raw_impact) * 100)
-        else:
-            if isinstance(raw_impact, bool):
-                raise ValueError("boolean price impact")
-            impact = abs(float(raw_impact))
+        impact = _quote_price_impact_percent(quote)
     except (KeyError, TypeError, ValueError, OverflowError, SwapError) as exc:
         raise SwapError("Devis Jupiter incomplet ou mal formé.") from exc
     if (type(amount_lamports) is not int or amount_lamports <= 0
             or quoted_in != amount_lamports or quoted_out <= 0):
         raise SwapError("Montants du devis Jupiter invalides ou inattendus.")
-    if type(slippage_bps) is not int or not 0 < slippage_bps <= config.MAX_SLIPPAGE_BPS:
-        raise SwapError(f"Slippage demandé hors limite (maximum {config.MAX_SLIPPAGE_BPS} bps).")
+    maximum_slippage = _maximum_allowed_slippage_bps()
+    if type(slippage_bps) is not int or not 0 < slippage_bps <= maximum_slippage:
+        raise SwapError(f"Slippage demandé hors limite (maximum {maximum_slippage} bps).")
     try:
         if _strict_uint(quote["slippageBps"], "slippageBps") != slippage_bps:
             raise SwapError("Le slippage du devis ne correspond pas à la demande.")
@@ -74,8 +225,12 @@ def _validate_quote(quote: dict, input_mint: str, output_mint: str,
         raise SwapError("Le devis Jupiter ne précise pas son slippage.") from exc
     if not 0 < threshold <= quoted_out:
         raise SwapError("Minimum reçu du devis Jupiter invalide.")
-    if not math.isfinite(impact) or impact < 0 or impact > config.MAX_PRICE_IMPACT_PCT:
-        raise SwapError(f"Impact de prix hors limite ({impact:g}% ; maximum {config.MAX_PRICE_IMPACT_PCT:g}%).")
+    expected_minimum = (quoted_out * (10_000 - slippage_bps)) // 10_000
+    if threshold != expected_minimum:
+        raise SwapError("Le minimum reçu du devis n'est pas imposé par l'instruction Jupiter validée.")
+    maximum_impact = _maximum_allowed_price_impact_pct()
+    if not math.isfinite(impact) or impact < 0 or impact > maximum_impact:
+        raise SwapError(f"Impact de prix hors limite ({impact:g}% ; maximum {maximum_impact:g}%).")
 
 
 async def _resolve_lookup_addresses(message) -> tuple[list, list]:
@@ -130,6 +285,8 @@ def _validate_unsigned_transaction(
     input_mint: str,
     amount_lamports: int,
     output_mint: str = None,
+    expected_out_amount: int = None,
+    slippage_bps: int = None,
     resolved_lookup_addresses: tuple[list, list] = None,
 ) -> tuple[VersionedTransaction, str]:
     """Validate the payer, signers, lookup tables, and every top-level program."""
@@ -152,7 +309,7 @@ def _validate_unsigned_transaction(
             raise SwapError("La transaction demande des signataires supplémentaires non autorisés.")
 
         allowed_programs = {
-            "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4",
+            JUPITER_PROGRAM_ID,
             "ComputeBudget111111111111111111111111111111",
             "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",
             "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
@@ -178,7 +335,7 @@ def _validate_unsigned_transaction(
             [bytes(owner), bytes(token_program), bytes(wsol_mint)], associated_program
         )[0]
 
-        has_jupiter_swap = False
+        jupiter_swap_count = 0
         for instruction in message.instructions:
             try:
                 program_id = str(keys[instruction.program_id_index])
@@ -186,16 +343,35 @@ def _validate_unsigned_transaction(
                 raise SwapError("Instruction de transaction mal formée.") from exc
             if program_id not in allowed_programs:
                 raise SwapError(f"Programme de transaction non autorisé: {program_id}.")
-            has_jupiter_swap |= program_id == "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
+            is_jupiter = program_id == JUPITER_PROGRAM_ID
             data = bytes(instruction.data)
             accounts = []
             if (program_id == "11111111111111111111111111111111"
                     or program_id in token_programs
-                    or program_id == str(associated_program)):
+                    or program_id == str(associated_program)
+                    or is_jupiter):
                 try:
                     accounts = [keys[index] for index in instruction.accounts]
                 except IndexError as exc:
                     raise SwapError("Compte d'instruction non résolu; transaction refusée.") from exc
+
+            if is_jupiter:
+                jupiter_swap_count += 1
+                if jupiter_swap_count > 1:
+                    raise SwapError("Plus d'une instruction de swap Jupiter dans une même transaction est refusée.")
+                if (output_mint is None or type(expected_out_amount) is not int
+                        or type(slippage_bps) is not int):
+                    raise SwapError("Les attentes du devis manquent pour valider l'instruction Jupiter.")
+                _validate_jupiter_swap_instruction(
+                    data,
+                    accounts,
+                    owner=owner,
+                    input_mint=Pubkey.from_string(input_mint),
+                    output_mint=Pubkey.from_string(output_mint),
+                    expected_in_amount=amount_lamports,
+                    expected_out_amount=expected_out_amount,
+                    slippage_bps=slippage_bps,
+                )
 
             if program_id == "11111111111111111111111111111111":
                 tag = int.from_bytes(data[:4], "little") if len(data) >= 4 else -1
@@ -227,7 +403,7 @@ def _validate_unsigned_transaction(
                 if not (close_ok or sync_ok):
                     raise SwapError("Instruction SPL top-level non autorisée dans la transaction Jupiter.")
 
-        if not has_jupiter_swap:
+        if jupiter_swap_count != 1:
             raise SwapError("La transaction ne contient pas d'instruction de swap Jupiter v6.")
         return tx, str(message.recent_blockhash)
     except SwapError:
@@ -252,10 +428,10 @@ async def _assert_fee_within_limit(tx: VersionedTransaction) -> None:
         "params": [message_b64, {"encoding": "base64", "commitment": "confirmed"}],
     }, timeout=10)
     try:
-        fee = int(result["value"])
-    except (KeyError, TypeError, ValueError) as exc:
+        fee = _strict_rpc_fee_lamports(result)
+    except SwapError as exc:
         raise SwapError("Frais de transaction impossibles à vérifier; transaction non signée.") from exc
-    if fee < 0 or fee > config.MAX_TRANSACTION_FEE_LAMPORTS:
+    if fee > config.MAX_TRANSACTION_FEE_LAMPORTS:
         raise SwapError(f"Frais réseau ({fee} lamports) supérieurs à la limite configurée.")
 
 
@@ -455,6 +631,8 @@ async def execute_swap(input_mint: str, output_mint: str, amount_lamports: int, 
     resolved_lookup_addresses = await _resolve_lookup_addresses(unsigned_tx.message)
     tx, blockhash = _validate_unsigned_transaction(
         raw_tx, keypair, input_mint, amount_lamports, output_mint,
+        expected_out_amount=_strict_uint(order["outAmount"], "outAmount"),
+        slippage_bps=slippage_bps,
         resolved_lookup_addresses=resolved_lookup_addresses,
     )
     await _assert_blockhash_valid(blockhash)
@@ -518,6 +696,6 @@ async def execute_swap(input_mint: str, output_mint: str, amount_lamports: int, 
         "signature": signature,
         "input_amount": input_amount,
         "output_amount": output_amount,
-        "price_impact_pct": abs(float(order.get("priceImpact", float(order.get("priceImpactPct", 0)) * 100))),
+        "price_impact_pct": _quote_price_impact_percent(order),
         "accounting": accounting,
     }

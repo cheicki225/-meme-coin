@@ -7,14 +7,14 @@ Mise à jour : 22 novembre 2026. Cette feuille décrit l'état du code audité d
 | Priorité | Travail | État | Critère de sortie |
 |---|---|---|---|
 | P0 | Garder PAPER par défaut; verrouiller les changements d'état LIVE non confirmés | TESTED | Tests sans émission réseau réelle; aucun état de position modifié par une simulation héritée en LIVE |
-| P0 | Sécuriser Jupiter, transactions signées, frais, erreurs et reprises | TESTED | Tests unitaires adversariaux; revue CPI/DEX indépendante et validation de réponses réelles en simulation encore nécessaires |
+| P0 | Sécuriser Jupiter, transactions signées, frais, erreurs et reprises | TESTED | Minimum Jupiter exactement lié à la route; caps 10 % slippage/5 % impact; revue CPI/DEX indépendante et simulation du fournisseur réel encore nécessaires |
 | P0 | Réconcilier les signatures ambiguës au redémarrage et maintenir le kill switch | TESTED | Continuer à refuser les nouvelles exécutions tant que l'issue d'une signature est inconnue |
-| P1 | Faire fonctionner l'intelligence de wallets sur RPC HTTP public avec états explicites | TESTED | Collecte idempotente testée; mesurer les limites du fournisseur réellement déployé |
-| P1 | Rendre le PnL transparent sur les flux confirmés, frais et cours de conversion | IN PROGRESS | PnL LIVE comptabilisé depuis deltas on-chain; frais simulés PAPER sont intégrés sur les achats, DCA et ventes; snapshots USD historiques à finir |
+| P1 | Faire fonctionner l'intelligence de wallets sur RPC HTTP public avec états explicites | TESTED | Collecte optionnelle lecture seule, idempotente et réessayable testée; événements pas reliés aux ordres; mesurer le fournisseur déployé |
+| P1 | Rendre le PnL transparent sur les flux confirmés, frais et cours de conversion | IN PROGRESS | PnL LIVE depuis deltas on-chain; frais PAPER intégrés; frais historiques non reconstructibles signalés; snapshots USD historiques restent à finir |
 | P1 | Améliorer la tolérance aux pannes RPC et les alertes | TESTED | Retry-after/backoff/jitter et reprise d'alerte après échec de livraison testés; ajouter fraîcheur de slot, mesure de charge et test de longue durée |
-| P1 | Relier le replay historique à des données et à la stratégie réellement utilisée | IN PROGRESS | Primitive OHLC déterministe avec validation optionnelle d'intervalles/gaps; dataset versionné/provenance et signal de production restent absents |
+| P1 | Relier le replay historique à des données et à la stratégie réellement utilisée | IN PROGRESS | Primitive OHLC déterministe, format dataset versionné/hashé et gaps annotés; source authentifiée, intégration stratégie et lookahead bout en bout restent absents |
 | P2 | Valider restauration, redémarrage et alertes dans l'environnement cible | NOT STARTED | Exercice PAPER documenté avec sauvegarde et preuves d'alertes |
-| P2 | Terminer CI et audit des outils sur le commit de cette mise à jour | TESTED | CI #198 verte sur `8e6df9f` : compilation, tests, Ruff, pip-audit et Gitleaks réussis |
+| P2 | Terminer CI et audit des outils sur le commit de cette mise à jour | IN PROGRESS | Run #199 vert sur le commit précédent `aa5a001`; attendre compilation, tests, Ruff, pip-audit et Gitleaks sur le nouveau commit |
 
 ## Dépendances
 

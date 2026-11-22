@@ -53,6 +53,7 @@ ALCHEMY_RPC_URL = f"https://solana-mainnet.g.alchemy.com/v2/{ALCHEMY_API_KEY}" i
 # Activation par wallet via settings["security_check_enabled"] (voir DEFAULT_WALLET_SETTINGS).
 GOPLUS_API_KEY = os.getenv("GOPLUS_API_KEY", "")
 GOPLUS_API_SECRET = os.getenv("GOPLUS_API_SECRET", "")
+GOPLUS_MIN_DEX_TVL_USD = float(os.getenv("GOPLUS_MIN_DEX_TVL_USD", "10000"))
 
 # ── Mobula — identification d'adresses (exchanges, labels comportementaux) ─
 # Clé API gratuite en libre-service immédiat : https://admin.mobula.io

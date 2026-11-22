@@ -6,13 +6,14 @@
 |---|---|---|
 | Mode PAPER par défaut | VERIFIED | `TRADING_MODE` normalisé et limité à PAPER/LIVE |
 | Double opt-in LIVE | TESTED | Aucun usage réel ne doit être déclenché pendant cette phase |
-| Jupiter V2 et validation locale | TESTED | Pas de test transactionnel mainnet signé ni de simulation adversariale du service réel |
+| Jupiter V2 et validation locale | TESTED | Minimum de sortie exactement lié à l'instruction; caps stricts slippage/impact; pas de test transactionnel mainnet ni de simulation signée |
+| Filtre GoPlus Solana | TESTED | Schéma Solana, réponse complète et TVL minimum contrôlés; TVL n'est pas nécessairement celle de la route Jupiter |
 | Montants/frais/PnL confirmés | TESTED | Cours USD au moment de la transaction; pas de valorisation historique stable |
 | Reprise des signatures ambiguës | TESTED | Réconciliation encore manuelle si le statut on-chain reste indéterminé |
 | Contrôles d'exposition et arrêt d'urgence | TESTED | En LIVE, l'arrêt bloque tous les swaps, ventes comprises, sans liquidation; pas de soak PAPER ni de preuve sur l'environnement cible |
 | RPC et WebSocket | BLOCKED | Fournisseur/quotas déployés inconnus; capacité dégradée sans Helius |
 | Revue de la transaction | IN PROGRESS | Instructions CPI/DEX et composants externes à auditer indépendamment |
-| Tests de sécurité des dépendances et secrets | TESTED | CI #198 sur `8e6df9f` : pip-audit et scan de secrets réussis; revue indépendante CPI/DEX reste ouverte |
+| Tests de sécurité des dépendances et secrets | IN PROGRESS | CI #199 sur le commit précédent `aa5a001` réussie; il faut la relancer sur le nouveau commit; revue indépendante CPI/DEX reste ouverte |
 | Procédure d'exploitation/restauration | NOT STARTED | Exercice documenté sur la base réelle de PAPER et alertes de déploiement |
 
 ## Conditions minimales avant toute décision LIVE

@@ -42,9 +42,16 @@ log = logging.getLogger("paper_trader")
 HARDCORE_FAIL_RATE = 0.25          # ~20-30% de fails documentés en Hardcore
 HARDCORE_MAX_FEE_SOL = 0.027       # cap documenté (priority+tip)
 SIMPLE_TYPICAL_FEE_SOL = 0.003     # ordre de grandeur pour un mode "tranquille"
+FEE_ACCOUNTING_VERSION = 1
+PNL_FEE_HISTORY_WARNING_VERSION = 1
 
 
-async def _sold_sol_cashflow(sell_result: dict, proceeds_usd: float) -> float:
+async def _sold_sol_cashflow(
+    sell_result: dict,
+    proceeds_usd: float,
+    *,
+    sol_usd_rate: float | None = None,
+) -> float:
     """Use confirmed SOL proceeds when supplied; estimate only in PAPER mode."""
     if "sol_cashflow" in sell_result:
         cashflow = sell_result["sol_cashflow"]
@@ -52,7 +59,9 @@ async def _sold_sol_cashflow(sell_result: dict, proceeds_usd: float) -> float:
                 or not math.isfinite(cashflow) or cashflow < 0):
             raise ValueError("Confirmed SOL cashflow is malformed")
         return float(cashflow)
-    sol_usd = await get_sol_usd_rate()
+    sol_usd = sell_result.get("sol_usd_rate", sol_usd_rate)
+    if sol_usd is None:
+        sol_usd = await get_sol_usd_rate()
     if not isinstance(sol_usd, (int, float)) or isinstance(sol_usd, bool) or not math.isfinite(sol_usd) or sol_usd <= 0:
         raise ValueError("SOL/USD rate must be a finite positive number")
     return proceeds_usd / sol_usd
@@ -83,9 +92,91 @@ async def _paper_fee_usd(fee_sol: float) -> float:
     return _paper_fee_usd_at_rate(fee_sol, await get_sol_usd_rate())
 
 
-async def _paper_entry_accounting(cost_basis_usd: float, sol_invested: float, fee_sol: float) -> dict:
+def _fee_accounting_is_complete(position: dict) -> bool:
+    """Legacy positions lack a recoverable USD fee history and stay marked incomplete."""
+    return (
+        type(position.get("fee_accounting_version")) is int
+        and position["fee_accounting_version"] == FEE_ACCOUNTING_VERSION
+        and position.get("fee_accounting_complete") is True
+    )
+
+
+def _record_fee_accounting_status(position: dict) -> dict:
+    """Return truthful history metadata without rewriting legacy cost basis."""
+    complete = _fee_accounting_is_complete(position)
+    position["fee_accounting_complete"] = complete
+    if not complete:
+        position["fee_accounting_note"] = "legacy_fee_history_unavailable"
+    return {
+        "fee_accounting_version": (
+            FEE_ACCOUNTING_VERSION if complete else position.get("fee_accounting_version")
+        ),
+        "fee_accounting_complete": complete,
+        **({} if complete else {"fee_accounting_note": "legacy_fee_history_unavailable"}),
+    }
+
+
+def mark_pnl_fee_history_incomplete_if_needed(state: dict) -> bool:
+    """Persist a conservative warning when stored PnL may omit historical fees.
+
+    This only adds state-level metadata. It deliberately leaves old positions,
+    trades, and PnL totals untouched because their original fee inputs cannot
+    be reconstructed reliably.
+    """
+    if state.get("pnl_fee_history_incomplete") is True:
+        if state.get("pnl_fee_history_warning_version") != PNL_FEE_HISTORY_WARNING_VERSION:
+            state["pnl_fee_history_warning_version"] = PNL_FEE_HISTORY_WARNING_VERSION
+            return True
+        return False
+
+    positions = [
+        *(state.get("open_positions") or []),
+        *(state.get("closed_positions") or []),
+    ]
+    if any(not _fee_accounting_is_complete(position) for position in positions):
+        incomplete = True
+    else:
+        incomplete = any(
+            ("pnl_usd" in trade or "fees_usd" in trade)
+            and not _fee_accounting_is_complete(trade)
+            for trade in (state.get("trades") or [])
+        )
+
+    if not incomplete:
+        total_pnl = state.get("total_pnl_usd", 0)
+        aggregate_is_versioned = (
+            type(state.get("pnl_fee_accounting_version")) is int
+            and state.get("pnl_fee_accounting_version") == FEE_ACCOUNTING_VERSION
+        )
+        if not aggregate_is_versioned and total_pnl not in (None, 0, 0.0):
+            try:
+                total_pnl_number = float(total_pnl)
+            except (TypeError, ValueError, OverflowError):
+                incomplete = True
+            else:
+                incomplete = not math.isfinite(total_pnl_number) or total_pnl_number != 0
+
+    if not incomplete:
+        return False
+
+    state["pnl_fee_history_incomplete"] = True
+    state["pnl_fee_history_warning_version"] = PNL_FEE_HISTORY_WARNING_VERSION
+    return True
+
+
+async def _paper_entry_accounting(
+    cost_basis_usd: float,
+    sol_invested: float,
+    fee_sol: float,
+    *,
+    sol_usd_rate: float | None = None,
+) -> dict:
     """Include the entry transaction fee in PAPER cost basis and cash outlay."""
-    fee_usd = await _paper_fee_usd(fee_sol)
+    fee_usd = (
+        _paper_fee_usd_at_rate(fee_sol, sol_usd_rate)
+        if sol_usd_rate is not None
+        else await _paper_fee_usd(fee_sol)
+    )
     return {
         "cost_basis_usd": cost_basis_usd + fee_usd,
         "total_sol_invested": sol_invested + fee_sol,
@@ -181,24 +272,34 @@ class PaperTrader:
         Retourne None seulement si l'achat doit être annulé (jamais en PAPER).
         """
         buy_amount_sol = settings.get("buy_amount_sol", 0.1)
-        cost_basis_usd = buy_amount_sol * await get_sol_usd_rate()
+        sol_usd_rate = await get_sol_usd_rate()
+        cost_basis_usd = buy_amount_sol * sol_usd_rate
         units = cost_basis_usd / entry_price
-        return {"units": units, "cost_basis_usd": cost_basis_usd, "actual_price": entry_price, "signature": None}
+        return {
+            "units": units,
+            "cost_basis_usd": cost_basis_usd,
+            "actual_price": entry_price,
+            "signature": None,
+            "sol_usd_rate": sol_usd_rate,
+        }
 
     async def _execute_sell(self, token_mint: str, units: float, current_price: float, settings: dict,
                             *, simulated_fee_sol: float | None = None,
-                            simulated_fee_usd: float | None = None) -> dict:
+                            simulated_fee_usd: float | None = None,
+                            sol_usd_rate: float | None = None) -> dict:
         """Version PAPER : conversion directe au prix coté, aucun slippage simulé.
         Retourne None seulement si la vente doit être annulée (jamais en PAPER)."""
         proceeds_usd = units * current_price
         if config.TRADING_MODE == "PAPER":
+            if sol_usd_rate is None:
+                sol_usd_rate = await get_sol_usd_rate()
             fee_sol = (
                 simulated_fee_sol if simulated_fee_sol is not None
                 else _simulated_paper_fee_sol(settings.get("buy_mode", "simple"))
             )
             fee_usd = (
                 simulated_fee_usd if simulated_fee_usd is not None
-                else await _paper_fee_usd(fee_sol)
+                else _paper_fee_usd_at_rate(fee_sol, sol_usd_rate)
             )
         else:
             fee_sol = fee_usd = 0.0
@@ -207,6 +308,7 @@ class PaperTrader:
             "signature": None,
             "simulated_fee_sol": fee_sol,
             "simulated_fee_usd": fee_usd,
+            **({"sol_usd_rate": sol_usd_rate} if config.TRADING_MODE == "PAPER" else {}),
         }
 
     # ══════════════════════════════════════════════════════════
@@ -474,6 +576,68 @@ class PaperTrader:
         # ── Vérification sécurité GoPlus (si activée pour ce wallet) ──
         if settings.get("security_check_enabled"):
             security = await security_check.check_token_security(token_mint)
+            if not security_check.is_valid_solana_security_result(security):
+                # Le seuil configurable peut être réglé à 0; une réponse
+                # indisponible/incomplète doit donc être rejetée séparément.
+                log.warning(
+                    "Vérification GoPlus indisponible ou invalide pour %s; achat annulé.",
+                    token_mint[:8],
+                )
+                if self.notifier:
+                    await self.notifier.notify(
+                        "buy_skipped",
+                        f"⏭️ *Buy Skipped* — Vérification sécurité indisponible ou incomplète\n"
+                        f"Token: `{token_mint[:8]}...`\nAchat refusé par sécurité.",
+                    )
+                return None
+            security_score = security.get("security_score")
+            if type(security_score) is not int or not 0 < security_score <= 100:
+                # Un score nul représente un risque dur; il ne doit pas être
+                # rendu acceptable par le seuil utilisateur réglé à zéro.
+                log.warning(
+                    "Score GoPlus absent, invalide ou bloquant pour %s; achat annulé.",
+                    token_mint[:8],
+                )
+                if self.notifier:
+                    await self.notifier.notify(
+                        "buy_skipped",
+                        f"⏭️ *Buy Skipped* — Score sécurité nul ou invalide\n"
+                        f"Token: `{token_mint[:8]}...`\nAchat refusé par sécurité.",
+                    )
+                return None
+            min_dex_tvl = getattr(config, "GOPLUS_MIN_DEX_TVL_USD", 10_000.0)
+            try:
+                min_dex_tvl_number = float(min_dex_tvl)
+            except (TypeError, ValueError, OverflowError):
+                min_dex_tvl_number = float("nan")
+            if (
+                isinstance(min_dex_tvl, bool)
+                or not isinstance(min_dex_tvl, (int, float))
+                or not math.isfinite(min_dex_tvl_number)
+                or min_dex_tvl_number < 0
+            ):
+                log.warning("Seuil de TVL GoPlus invalide; achat annulé pour %s.", token_mint[:8])
+                if self.notifier:
+                    await self.notifier.notify(
+                        "buy_skipped",
+                        f"⏭️ *Buy Skipped* — Seuil de liquidité invalide\n"
+                        f"Token: `{token_mint[:8]}...`\nAchat refusé par sécurité.",
+                    )
+                return None
+            if security["max_dex_tvl_usd"] < min_dex_tvl_number:
+                log.info(
+                    "TVL GoPlus rapportée trop faible pour %s (%.2f < %.2f USD).",
+                    token_mint[:8], security["max_dex_tvl_usd"], min_dex_tvl_number,
+                )
+                if self.notifier:
+                    await self.notifier.notify(
+                        "buy_skipped",
+                        f"⏭️ *Buy Skipped* — TVL DEX rapportée insuffisante\n"
+                        f"Token: `{token_mint[:8]}...`\n"
+                        f"Maximum rapporté: ${security['max_dex_tvl_usd']:,.0f}; "
+                        f"minimum requis: ${min_dex_tvl_number:,.0f}.",
+                    )
+                return None
             if security.get("is_honeypot"):
                 log.warning(f"🚨 Honeypot détecté sur {token_mint[:8]}... — achat annulé.")
                 if self.notifier:
@@ -483,16 +647,34 @@ class PaperTrader:
                     )
                 return None
             min_score = settings.get("min_security_score", 60)
-            if security.get("security_score", 50) < min_score:
+            try:
+                min_score_number = float(min_score)
+            except (TypeError, ValueError, OverflowError):
+                min_score_number = float("nan")
+            if (
+                isinstance(min_score, bool)
+                or not isinstance(min_score, (int, float))
+                or not math.isfinite(min_score_number)
+                or not 0 <= min_score_number <= 100
+            ):
+                log.warning("Seuil GoPlus invalide pour %s; achat annulé.", token_mint[:8])
+                if self.notifier:
+                    await self.notifier.notify(
+                        "buy_skipped",
+                        f"⏭️ *Buy Skipped* — Seuil de sécurité invalide\n"
+                        f"Token: `{token_mint[:8]}...`\nAchat refusé par sécurité.",
+                    )
+                return None
+            if security_score < min_score_number:
                 log.info(
-                    f"⏭️  Score sécurité {security.get('security_score')} < {min_score} "
+                    f"⏭️  Score sécurité {security_score} < {min_score_number:g} "
                     f"pour {token_mint[:8]}..., achat refusé."
                 )
                 if self.notifier:
                     await self.notifier.notify(
                         "buy_skipped",
                         f"⏭️ *Buy Skipped* — Score sécurité insuffisant\n"
-                        f"Token: `{token_mint[:8]}...`\nScore: {security.get('security_score')}/100",
+                        f"Token: `{token_mint[:8]}...`\nScore: {security_score}/100",
                     )
                 return None
 
@@ -520,6 +702,7 @@ class PaperTrader:
             buy_result["cost_basis_usd"],
             buy_result.get("sol_cashflow", settings.get("buy_amount_sol", 0.1)),
             simulated_fee_sol,
+            sol_usd_rate=buy_result.get("sol_usd_rate"),
         )
         cost_basis_usd = entry_accounting["cost_basis_usd"]
         units = buy_result["units"]
@@ -546,6 +729,8 @@ class PaperTrader:
             "status": "open",
             "reason": reason,
             "buy_mode": buy_mode,
+            "fee_accounting_version": FEE_ACCOUNTING_VERSION,
+            "fee_accounting_complete": True,
             "simulated_fees_sol": entry_accounting["simulated_fees_sol"],
             "simulated_fees_usd": entry_accounting["simulated_fees_usd"],
             "tx_signatures": [buy_signature] if buy_signature else [],
@@ -556,7 +741,11 @@ class PaperTrader:
             "profit_trail_floor": None,
         }
 
-        self.data_store.state.setdefault("open_positions", []).append(position)
+        state = self.data_store.state
+        mark_pnl_fee_history_incomplete_if_needed(state)
+        if state.get("pnl_fee_history_incomplete") is not True:
+            state["pnl_fee_accounting_version"] = FEE_ACCOUNTING_VERSION
+        state.setdefault("open_positions", []).append(position)
         if buy_signature:
             self.data_store.resolve_pending_transaction(
                 buy_signature, {"position_opened": token_mint, "units": units, "cost_basis_usd": cost_basis_usd}
@@ -911,6 +1100,7 @@ class PaperTrader:
                 )
                 position["simulated_fees_sol"] = position.get("simulated_fees_sol", 0) + fee_sol
                 position["simulated_fees_usd"] = position.get("simulated_fees_usd", 0) + fee_usd
+                _record_fee_accounting_status(position)
                 position["dip_levels_hit"].append(i)
                 self.data_store.save()
 
@@ -1037,7 +1227,10 @@ class PaperTrader:
 
         cost_basis = position["cost_basis_usd"]
         fee_sol = _simulated_paper_fee_sol(position.get("buy_mode", "simple"))
-        fee_usd = await _paper_fee_usd(fee_sol)
+        # Use one market-rate snapshot for both the USD fee and net SOL
+        # recovery of this simulated sale.
+        sol_usd_rate = await get_sol_usd_rate()
+        fee_usd = _paper_fee_usd_at_rate(fee_sol, sol_usd_rate)
         current_value = position["units"] * price
         if current_value <= cost_basis + fee_usd:
             return False  # pas encore en profit, rien à récupérer
@@ -1045,14 +1238,14 @@ class PaperTrader:
         units_to_sell = (cost_basis + fee_usd) / price
         sell_result = await self._execute_sell(
             position["token_mint"], units_to_sell, price, position.get("settings", {}),
-            simulated_fee_sol=fee_sol, simulated_fee_usd=fee_usd,
+            simulated_fee_sol=fee_sol, simulated_fee_usd=fee_usd, sol_usd_rate=sol_usd_rate,
         )
         if sell_result is None:
             return False
         proceeds = sell_result["proceeds_usd"]
         fee_sol = sell_result.get("simulated_fee_sol", 0.0)
         fee_usd = sell_result.get("simulated_fee_usd", 0.0)
-        sol_received = await _sold_sol_cashflow(sell_result, proceeds)
+        sol_received = await _sold_sol_cashflow(sell_result, proceeds, sol_usd_rate=sol_usd_rate)
         recovered = proceeds - fee_usd
         cost_removed = cost_basis
         pnl_usd = recovered - cost_removed
@@ -1063,14 +1256,16 @@ class PaperTrader:
         position["total_sol_received"] = position.get("total_sol_received", 0) + sol_received - fee_sol
         position["simulated_fees_sol"] = position.get("simulated_fees_sol", 0) + fee_sol
         position["simulated_fees_usd"] = position.get("simulated_fees_usd", 0) + fee_usd
+        fee_accounting = _record_fee_accounting_status(position)
 
         state = self.data_store.state
         state.setdefault("trades", []).append({
             "token_mint": position["token_mint"], "type": "sell_initials",
             "recovered_usd": recovered, "pnl_usd": pnl_usd,
-            "fees_usd": fee_usd, "time": time.time(),
+            "fees_usd": fee_usd, "time": time.time(), **fee_accounting,
         })
         state["total_pnl_usd"] = state.get("total_pnl_usd", 0) + pnl_usd
+        mark_pnl_fee_history_incomplete_if_needed(state)
         if pnl_usd < 0:
             state["session_losses_usd"] = state.get("session_losses_usd", 0) + abs(pnl_usd)
         self.data_store.save()
@@ -1309,7 +1504,9 @@ class PaperTrader:
         state.setdefault("trades", []).append({
             "token_mint": position["token_mint"], "type": "partial_close",
             "sell_ratio": sell_ratio, "result_pct": change_pct, "pnl_usd": pnl_usd, "time": time.time(),
+            "fees_usd": simulated_fee_usd, **_record_fee_accounting_status(position),
         })
+        mark_pnl_fee_history_incomplete_if_needed(state)
         self.data_store.save()
         if sell_signature:
             self.data_store.resolve_pending_transaction(
@@ -1363,6 +1560,7 @@ class PaperTrader:
         position["total_sol_received"] = position.get("total_sol_received", 0) + sol_received - simulated_fee_sol
         position["simulated_fees_sol"] = position.get("simulated_fees_sol", 0) + simulated_fee_sol
         position["simulated_fees_usd"] = position.get("simulated_fees_usd", 0) + simulated_fee_usd
+        _record_fee_accounting_status(position)
         position["units"] = 0
         position["cost_basis_usd"] = 0
         if sell_signature:
@@ -1373,6 +1571,7 @@ class PaperTrader:
         state["open_positions"] = [p for p in state.get("open_positions", []) if p is not position]
         state.setdefault("closed_positions", []).append(position)
         state["total_pnl_usd"] = state.get("total_pnl_usd", 0) + pnl_usd
+        mark_pnl_fee_history_incomplete_if_needed(state)
 
         if pnl_usd < 0:
             state["session_losses_usd"] = state.get("session_losses_usd", 0) + abs(pnl_usd)

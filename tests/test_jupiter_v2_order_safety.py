@@ -16,7 +16,7 @@ def _order(**updates):
         "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
         "inAmount": "1000000",
         "outAmount": "900000",
-        "otherAmountThreshold": "850000",
+        "otherAmountThreshold": "891000",
         "slippageBps": 100,
         "priceImpact": -1.5,
         "router": "metis",
@@ -73,6 +73,54 @@ def test_quote_rejects_malformed_numeric_values(field, value):
     quote = _order()
     quote[field] = value
     with pytest.raises(SwapError):
+        _validate_quote(quote, config.SOL_MINT, quote["outputMint"], 1_000_000, 100)
+
+
+@pytest.mark.parametrize("threshold", ["850000", "890999"])
+def test_quote_rejects_minimum_output_looser_than_requested_slippage(threshold):
+    quote = _order(otherAmountThreshold=threshold)
+    with pytest.raises(SwapError, match="minimum reçu"):
+        _validate_quote(quote, config.SOL_MINT, quote["outputMint"], 1_000_000, 100)
+
+
+def test_quote_rejects_a_stricter_minimum_not_enforced_by_the_swap_instruction():
+    quote = _order(otherAmountThreshold="895000")
+    with pytest.raises(SwapError, match="minimum reçu"):
+        _validate_quote(quote, config.SOL_MINT, quote["outputMint"], 1_000_000, 100)
+
+
+def test_quote_caps_configured_slippage_at_ten_percent(monkeypatch):
+    monkeypatch.setattr(config, "MAX_SLIPPAGE_BPS", 20_000, raising=False)
+    quote = _order(slippageBps=1_001)
+    with pytest.raises(SwapError, match="maximum 1000 bps"):
+        _validate_quote(quote, config.SOL_MINT, quote["outputMint"], 1_000_000, 1_001)
+
+
+def test_quote_caps_configured_price_impact_at_five_percent(monkeypatch):
+    monkeypatch.setattr(config, "MAX_PRICE_IMPACT_PCT", 100.0, raising=False)
+    quote = _order(priceImpact=5.01)
+    with pytest.raises(SwapError, match="maximum 5%"):
+        _validate_quote(quote, config.SOL_MINT, quote["outputMint"], 1_000_000, 100)
+
+
+def test_quote_requires_price_impact_metadata():
+    quote = _order()
+    quote.pop("priceImpact")
+    quote.pop("priceImpactPct", None)
+    with pytest.raises(SwapError, match="incomplet"):
+        _validate_quote(quote, config.SOL_MINT, quote["outputMint"], 1_000_000, 100)
+
+
+def test_quote_accepts_price_impact_pct_decimal_without_defaulting_missing_to_zero():
+    quote = _order()
+    quote.pop("priceImpact")
+    quote["priceImpactPct"] = "0.01"
+    _validate_quote(quote, config.SOL_MINT, quote["outputMint"], 1_000_000, 100)
+
+
+def test_quote_rejects_conflicting_price_impact_fields():
+    quote = _order(priceImpact=-1.5, priceImpactPct="0.20")
+    with pytest.raises(SwapError, match="incomplet"):
         _validate_quote(quote, config.SOL_MINT, quote["outputMint"], 1_000_000, 100)
 
 

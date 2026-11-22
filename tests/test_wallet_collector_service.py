@@ -1,4 +1,5 @@
 import asyncio
+from types import SimpleNamespace
 
 import config
 import wallet_collector_service as service
@@ -14,11 +15,16 @@ class Store:
 
 
 class Notifier:
-    def __init__(self):
+    def __init__(self, results=None):
         self.messages = []
+        self.results = iter(results or [])
 
     async def notify(self, category, message):
         self.messages.append((category, message))
+        result = next(self.results, None)
+        if isinstance(result, Exception):
+            raise result
+        return result
 
 
 def test_collector_rotates_wallets_and_persists_cursor(monkeypatch):
@@ -66,3 +72,48 @@ def test_collector_alerts_failures_without_exposing_provider_errors(monkeypatch)
     assert notifier.messages[0][0] == "collector_alert"
     assert "signature_fetch_failed" in notifier.messages[0][1]
     assert len(notifier.messages) == 1
+
+
+def test_collector_retries_alert_after_telegram_returns_false(monkeypatch):
+    store = Store()
+    notifier = Notifier([False, True])
+
+    async def collect(wallet, limit, db_path):
+        return {"status": "error", "reason": "signature_fetch_failed", "events_detected": 0}
+
+    monkeypatch.setattr(service, "_collect_wallet", collect)
+    monkeypatch.setattr(config, "WALLET_COLLECTOR_MAX_WALLETS_PER_CYCLE", 1, raising=False)
+    monkeypatch.setattr(config, "WALLET_COLLECTOR_SIGNATURES_PER_WALLET", 10, raising=False)
+    monkeypatch.setattr(config, "WALLET_ACTIVITY_DB_FILE", "wallets.sqlite3", raising=False)
+    clock = iter([0.0, 1.0])
+    monkeypatch.setattr(service, "time", SimpleNamespace(monotonic=lambda: next(clock)))
+    collector = service.WalletCollectorService(store, notifier)
+
+    asyncio.run(collector.run_once())
+    asyncio.run(collector.run_once())
+
+    assert len(notifier.messages) == 2
+    assert collector._last_alert_at == 1.0
+
+
+def test_collector_retries_alert_after_notifier_exception_without_logging_details(monkeypatch, caplog):
+    store = Store()
+    notifier = Notifier([RuntimeError("provider URL secret must not be logged"), True])
+
+    async def collect(wallet, limit, db_path):
+        return {"status": "error", "reason": "signature_fetch_failed", "events_detected": 0}
+
+    monkeypatch.setattr(service, "_collect_wallet", collect)
+    monkeypatch.setattr(config, "WALLET_COLLECTOR_MAX_WALLETS_PER_CYCLE", 1, raising=False)
+    monkeypatch.setattr(config, "WALLET_COLLECTOR_SIGNATURES_PER_WALLET", 10, raising=False)
+    monkeypatch.setattr(config, "WALLET_ACTIVITY_DB_FILE", "wallets.sqlite3", raising=False)
+    clock = iter([0.0, 1.0])
+    monkeypatch.setattr(service, "time", SimpleNamespace(monotonic=lambda: next(clock)))
+    collector = service.WalletCollectorService(store, notifier)
+
+    asyncio.run(collector.run_once())
+    asyncio.run(collector.run_once())
+
+    assert len(notifier.messages) == 2
+    assert collector._last_alert_at == 1.0
+    assert "provider URL secret" not in caplog.text

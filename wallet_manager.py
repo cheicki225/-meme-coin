@@ -206,10 +206,10 @@ class WalletManager:
             "params": [message_b64, {"encoding": "base64", "commitment": "confirmed"}],
         }, timeout=10)
         try:
-            estimated_fee = int(fee_result["value"])
-        except (KeyError, TypeError, ValueError) as exc:
+            estimated_fee = jupiter_executor._strict_rpc_fee_lamports(fee_result)
+        except (KeyError, TypeError, ValueError, jupiter_executor.SwapError) as exc:
             raise ValueError("Network fee could not be verified; transfer cancelled.") from exc
-        if estimated_fee < 0 or estimated_fee > config.MAX_TRANSACTION_FEE_LAMPORTS:
+        if estimated_fee > config.MAX_TRANSACTION_FEE_LAMPORTS:
             raise ValueError("Estimated network fee exceeds the configured transaction limit.")
 
         tx = VersionedTransaction(msg, [keypair])

@@ -77,6 +77,51 @@ def test_expected_interval_rejects_gaps_unless_explicitly_allowed():
     }]
 
 
+def test_trade_spanning_an_allowed_gap_is_marked_without_inventing_prices():
+    candles = [
+        _candle(60, 100, 100, 100, 100),
+        _candle(120, 100, 101, 99, 100),
+        _candle(240, 100, 111, 99, 110),
+        _candle(300, 110, 111, 109, 110),
+    ]
+
+    result = run_backtest(
+        candles, [0], take_profit_pct=10, stop_loss_pct=20,
+        fee_bps=0, slippage_bps=0,
+        expected_interval_s=60, allowed_missing_candles=1,
+    )
+
+    trade = result["trades"][0]
+    assert trade["exit_reason"] == "take_profit"
+    assert trade["gap_affected"] is True
+    assert trade["gaps"] == [{
+        "from_timestamp": 120,
+        "to_timestamp": 240,
+        "missing_candles": 1,
+    }]
+    assert "price" not in trade["gaps"][0]
+
+
+def test_trade_not_spanning_an_allowed_gap_is_not_marked():
+    candles = [
+        _candle(60, 100, 100, 100, 100),
+        _candle(120, 100, 111, 99, 110),
+        _candle(240, 110, 111, 109, 110),
+        _candle(300, 110, 111, 109, 110),
+    ]
+
+    result = run_backtest(
+        candles, [0], take_profit_pct=10, stop_loss_pct=20,
+        fee_bps=0, slippage_bps=0,
+        expected_interval_s=60, allowed_missing_candles=1,
+    )
+
+    trade = result["trades"][0]
+    assert trade["exit_index"] == 1
+    assert trade["gap_affected"] is False
+    assert trade["gaps"] == []
+
+
 @pytest.mark.parametrize("expected_interval_s", [True, 0, -60, 1.5, "60"])
 def test_expected_interval_requires_a_positive_integer(expected_interval_s):
     candles = [_candle(60, 100, 101, 99, 100)]

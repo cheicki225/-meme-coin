@@ -7,6 +7,11 @@
 - Autorise un signal au close de la bougie de sortie à entrer à l'ouverture suivante; ajoute une validation explicite de l'intervalle des chandelles et un rapport de gaps lorsque l'intervalle est connu.
 - Durcit la reprise SQLite contre les erreurs transitoires et états JSON/signatures mal formés; renvoie le résultat de livraison Telegram et retente les alertes RPC non livrées.
 - Renforce les contrôles d'exposition sur les états de risque non valides et teste que l'arrêt d'urgence bloque les swaps LIVE d'achat et de vente sans liquidation automatique. Aucun swap réel exécuté.
+- Lie le minimum de sortie Jupiter à la limite réellement encodée dans la route et plafonne les configurations de slippage à 10 % et d'impact à 5 %.
+- Parse les contrôles GoPlus Solana et refuse les résultats incomplets, parts LP incohérentes et TVL DEX rapportées sous le seuil configurable (10 000 USD par défaut lorsque le filtre est actif).
+- Signale les PnL hérités dont les frais ne peuvent être reconstruits; le marquage persistant n'altère pas les totaux ni les anciennes positions.
+- Ajoute un format OHLC JSON versionné/hashé, la correspondance de signaux par timestamps exacts et les gaps traversés par les trades.
+- Augmente la suite locale à 318 tests réussis; la CI du nouveau commit reste à vérifier.
 
 ## Non publié — correction de fiabilité et audit (15 novembre 2026)
 

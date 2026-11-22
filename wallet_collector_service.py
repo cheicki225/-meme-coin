@@ -67,12 +67,21 @@ class WalletCollectorService:
             self._last_alert_at is not None and now - self._last_alert_at < 900
         ):
             return
-        self._last_alert_at = now
-        await self.notifier.notify(
-            "collector_alert",
-            "⚠️ Collecteur wallets indisponible. Aucune transaction n'a été envoyée. "
-            f"Code de diagnostic: {str(reason)[:80]}",
-        )
+        try:
+            delivery_result = await self.notifier.notify(
+                "collector_alert",
+                "⚠️ Collecteur wallets indisponible. Aucune transaction n'a été envoyée. "
+                f"Code de diagnostic: {str(reason)[:80]}",
+            )
+        except Exception as exc:
+            # Keep collection running and avoid logging exception text that
+            # might contain provider URLs or credentials.
+            log.warning("Wallet collector alert delivery failed (%s)", type(exc).__name__)
+            return
+        # The real Notifier returns False if Telegram is unavailable. None is
+        # treated as delivered for compatibility with existing adapters.
+        if delivery_result is not False:
+            self._last_alert_at = now
 
     async def start(self) -> None:
         if not config.WALLET_COLLECTOR_ENABLED:

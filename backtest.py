@@ -1189,3 +1189,74 @@ def replay_historical_ohlc(candles, entry_signal_indices, **parameters) -> dict:
     from historical_backtest import run_backtest
 
     return run_backtest(candles, entry_signal_indices, **parameters)
+
+
+def replay_historical_dataset(
+    dataset,
+    entry_signal_indices=None,
+    *,
+    entry_signal_timestamps=None,
+    **parameters,
+) -> dict:
+    """Replay a hash-validated, versioned dataset and return its provenance.
+
+    The interval and missing-candle policy are bound to the dataset metadata;
+    callers cannot silently replay it under different time-series assumptions.
+    Callers may provide signal candle-close Unix timestamps instead of indices;
+    each timestamp must match a candle in the validated dataset exactly.
+    """
+    from backtest_dataset import BacktestDatasetError, validate_dataset
+    from historical_backtest import run_backtest
+
+    verified = validate_dataset(dataset)
+    if entry_signal_timestamps is not None:
+        if entry_signal_indices is not None:
+            raise BacktestDatasetError(
+                "provide entry_signal_timestamps or entry_signal_indices, not both"
+            )
+        try:
+            raw_timestamps = list(entry_signal_timestamps)
+        except TypeError as exc:
+            raise BacktestDatasetError("entry_signal_timestamps must be iterable") from exc
+        if any(type(timestamp) is not int or timestamp < 0 for timestamp in raw_timestamps):
+            raise BacktestDatasetError("signal timestamps must be non-negative Unix integers")
+        timestamp_to_index = {
+            candle["timestamp"]: index
+            for index, candle in enumerate(verified["candles"])
+        }
+        missing = [timestamp for timestamp in raw_timestamps if timestamp not in timestamp_to_index]
+        if missing:
+            raise BacktestDatasetError("signal timestamp does not match a dataset candle")
+        signal_indices = [timestamp_to_index[timestamp] for timestamp in raw_timestamps]
+        signal_mapping = [
+            {"signal_timestamp": timestamp, "candle_index": timestamp_to_index[timestamp]}
+            for timestamp in sorted(set(raw_timestamps))
+        ]
+    else:
+        signal_indices = [] if entry_signal_indices is None else entry_signal_indices
+        signal_mapping = None
+
+    for field in ("expected_interval_s", "allowed_missing_candles"):
+        expected = verified["interval_s"] if field == "expected_interval_s" else verified["allowed_missing_candles"]
+        supplied = parameters.pop(field, expected)
+        if type(supplied) is not type(expected) or supplied != expected:
+            raise BacktestDatasetError(f"{field} conflicts with the validated dataset metadata")
+
+    result = run_backtest(
+        verified["candles"],
+        signal_indices,
+        expected_interval_s=verified["interval_s"],
+        allowed_missing_candles=verified["allowed_missing_candles"],
+        **parameters,
+    )
+    result["dataset"] = {
+        "schema_version": verified["schema_version"],
+        "asset_id": verified["asset_id"],
+        "source": verified["source"],
+        "interval_s": verified["interval_s"],
+        "fetched_at": verified["fetched_at"],
+        "sha256": verified["sha256"],
+    }
+    if signal_mapping is not None:
+        result["signal_timestamp_mapping"] = signal_mapping
+    return result

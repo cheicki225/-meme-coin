@@ -380,10 +380,25 @@ class DataStore:
     def clear_emergency_stop(self) -> bool:
         if self.state.get("pending_transactions"):
             return False
+        missing = object()
+        previous = {
+            key: self.state.get(key, missing)
+            for key in ("emergency_stop", "emergency_stop_reason", "emergency_stop_at")
+        }
         self.state["emergency_stop"] = False
         self.state["emergency_stop_reason"] = None
         self.state["emergency_stop_at"] = None
-        self.save()
+        try:
+            self.save()
+        except Exception:
+            # A failed persistence must never leave the in-memory trader
+            # running with the emergency stop cleared.
+            for key, value in previous.items():
+                if value is missing:
+                    self.state.pop(key, None)
+                else:
+                    self.state[key] = value
+            raise
         return True
 
     def record_pending_transaction(self, record: dict) -> None:
