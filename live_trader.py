@@ -51,6 +51,18 @@ class LiveTrader(PaperTrader):
         async with self._swap_lock:
             state = self.data_store.state
             pending = state.get("pending_transactions", [])
+            if not isinstance(pending, list) or any(not isinstance(item, dict) for item in pending):
+                try:
+                    self.data_store.activate_emergency_stop("invalid pending transaction state")
+                except Exception as exc:
+                    log.critical("Emergency stop could not be persisted (%s)", type(exc).__name__)
+                if self.notifier:
+                    await self.notifier.notify(
+                        "risk_alert",
+                        "🛑 *LIVE suspendu* — état des transactions invalide. "
+                        "Aucun nouveau swap ne sera envoyé.",
+                    )
+                return None
             unresolved = [item for item in pending if item.get("status") != "accounted"]
             if state.get("emergency_stop") or pending:
                 if unresolved and not state.get("emergency_stop"):
@@ -79,17 +91,31 @@ class LiveTrader(PaperTrader):
                     on_signed=persist_signature, on_accounted=persist_accounting,
                 )
                 return result
-            except jupiter_executor.SwapError as exc:
-                if self.data_store.state.get("pending_transactions"):
-                    self.data_store.activate_emergency_stop(
-                        f"transaction outcome requires reconciliation: {str(exc)[:300]}"
-                    )
+            except Exception as exc:
+                pending_after_error = self.data_store.state.get("pending_transactions")
+                if isinstance(pending_after_error, list) and pending_after_error:
+                    try:
+                        self.data_store.activate_emergency_stop(
+                            f"transaction outcome requires reconciliation ({type(exc).__name__})"
+                        )
+                    except Exception as persistence_exc:
+                        # The in-memory stop is set before the save attempt;
+                        # retain it and avoid exposing provider error details.
+                        log.critical(
+                            "Emergency stop persistence failed (%s)", type(persistence_exc).__name__
+                        )
                     if self.notifier:
                         await self.notifier.notify(
                             "risk_alert",
                             f"🛑 *Signature à réconcilier*\nL'exécution est suspendue. "
-                            f"Vérifier la signature dans l'état persistant avant reprise.\nErreur: {exc}",
+                            "Vérifiez l'état on-chain et la persistance avant toute reprise. "
+                            f"Erreur de type : {type(exc).__name__}. Aucun renvoi automatique.",
                         )
+                    if not isinstance(exc, jupiter_executor.SwapError):
+                        raise jupiter_executor.SwapError(
+                            "Swap outcome is uncertain after a signature was persisted; "
+                            "automatic retry is blocked pending reconciliation."
+                        ) from exc
                 raise
     def _get_position_keypair(self, wallet_pubkey: str):
         if not wallet_pubkey:

@@ -28,6 +28,7 @@ import asyncio
 import math
 
 import config
+from execution_metrics import measure_async
 import risk_controls
 import rpc_client
 import wallet
@@ -315,6 +316,7 @@ class PaperTrader:
     # OUVERTURE DE POSITION
     # ══════════════════════════════════════════════════════════
 
+    @measure_async("strategy.open_position", "internal")
     async def open_position(self, token_mint: str, source_wallet: str, reason: str, creation_slot: int = None,
                              source_entry_market_cap: float = None):
         # CORRIGÉ suite à un vrai cas observé : SOL (et USDC par précaution)
@@ -1464,6 +1466,7 @@ class PaperTrader:
     # FERMETURE DE POSITION (partielle / totale)
     # ══════════════════════════════════════════════════════════
 
+    @measure_async("strategy.partial_close", "internal")
     async def _partial_close(self, position: dict, exit_price: float, change_pct: float,
                               sell_ratio: float, tp_index):
         units_sold = position["units"] * sell_ratio
@@ -1531,6 +1534,7 @@ class PaperTrader:
             state.setdefault("closed_positions", []).append(position)
             self.data_store.save()
 
+    @measure_async("strategy.close_position", "internal")
     async def _close_remaining(self, position: dict, exit_price: float, change_pct: float, close_reason: str):
         if position["units"] <= 0:
             return

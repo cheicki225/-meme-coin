@@ -10,6 +10,14 @@ du wallet dev, backtest automatique, et ajout au monitoring si rentable.
 
 La configuration peut utiliser un RPC HTTP public en PAPER, mais sans Helius les fonctions WebSocket et Enhanced sont désactivées. Le RPC public ne constitue pas une configuration de production. Consultez [PROGRESS.md](PROGRESS.md), [RPC_PUBLIC_LIMITATIONS.md](RPC_PUBLIC_LIMITATIONS.md), [TESTING.md](TESTING.md) et [LIVE_READINESS.md](LIVE_READINESS.md) pour les états et limites vérifiés.
 
+## Diagnostic et opérations
+
+- `/performance` affiche les latences p50/p95/p99 et le taux d'erreur par étape. Les métriques RPC distinguent la voie primaire de la voie de repli, sans publier l'URL ni le nom du fournisseur configuré. Les mesures sont locales, filtrées et best-effort; elles ne prouvent aucune supériorité face à un autre bot tant qu'un soak comparable n'a pas été réalisé.
+- `/reconcile` interroge uniquement des méthodes RPC de lecture. Lorsqu'il existe des signatures pendantes, la commande active l'arrêt d'urgence avant l'inspection. Elle peut rapprocher une signature déjà présente dans les positions ou une transaction échouée finalisée avec ses frais connus. Elle n'envoie jamais de swap et ne lève jamais l'arrêt d'urgence; `/resume` reste une action distincte. Une transaction réussie sans position durable reste bloquée pour comptabilité opérateur.
+- Les frais des transactions échouées sont affichés séparément tant qu'ils ne sont pas intégrés au PnL USD.
+
+Voir [la revue Jupiter](docs/JUPITER_SECURITY_REVIEW.md), [l'intégration des PR 1 à 4](docs/PR_STACK_INTEGRATION_REVIEW.md) et [le benchmark F Project](COMPETITIVE_BENCHMARK.md).
+
 ---
 
 ## ⚠️ À VÉRIFIER AVANT TOUTE UTILISATION — IMPORTANT

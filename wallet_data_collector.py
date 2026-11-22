@@ -227,15 +227,24 @@ def store_events(events: list[dict], db_path: str | Path = DEFAULT_DB_PATH) -> i
         db.close()
 
 
-def read_wallet_activity(wallet: str, db_path: str | Path = DEFAULT_DB_PATH) -> list[dict]:
+def read_wallet_activity(
+    wallet: str,
+    db_path: str | Path = DEFAULT_DB_PATH,
+    limit: int = 100,
+) -> list[dict]:
+    if not isinstance(wallet, str) or not wallet.strip():
+        raise ValueError("wallet address is required")
+    if type(limit) is not int or not 1 <= limit <= 1000:
+        raise ValueError("limit must be between 1 and 1000")
     if not Path(db_path).exists():
         return []
     db = _connect(db_path)
     try:
         db.row_factory = sqlite3.Row
         rows = db.execute(
-            "SELECT * FROM wallet_activity WHERE wallet_address=? ORDER BY block_time DESC",
-            (wallet,),
+            "SELECT * FROM wallet_activity WHERE wallet_address=? "
+            "ORDER BY block_time DESC, collected_at DESC LIMIT ?",
+            (wallet, limit),
         ).fetchall()
         return [dict(row) for row in rows]
     finally:
@@ -287,6 +296,7 @@ async def collect_wallet(wallet: str, limit: int = 100, db_path: str | Path = DE
         return {"status": "error", "reason": "storage_failed", "wallet": wallet}
     return {
         "status": "partial" if failed else "ok",
+        "reason": "transaction_fetch_partial" if failed else None,
         "wallet": wallet,
         "signatures_scanned": len(signatures),
         "transactions_unavailable": failed,

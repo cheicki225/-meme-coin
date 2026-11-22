@@ -34,6 +34,25 @@ def test_ambiguous_candle_uses_stop_loss_first():
     assert result["trades"][0]["net_pnl_usd"] == pytest.approx(-10)
 
 
+def test_max_drawdown_includes_unrealized_loss_before_take_profit():
+    candles = [
+        _candle(1, 100, 100, 100, 100),
+        _candle(2, 100, 105, 99, 100),
+        _candle(3, 100, 111, 90, 110),
+    ]
+    result = run_backtest(
+        candles, [0], take_profit_pct=10, stop_loss_pct=20,
+        position_usd=100, fee_bps=0, slippage_bps=0,
+    )
+
+    assert result["trades"][0]["exit_reason"] == "take_profit"
+    assert result["trades"][0]["net_pnl_usd"] == pytest.approx(10)
+    # The previous candle's high marks +$5, then the TP candle's low marks
+    # -$10 before the modeled take-profit fill: a $15 peak-to-trough drawdown.
+    assert result["max_drawdown_usd"] == pytest.approx(15)
+    assert result["assumptions"]["drawdown_path"] == "conservative_mark_to_market_from_OHLC"
+
+
 def test_signal_on_exit_candle_can_enter_on_the_following_candle():
     candles = [
         _candle(1, 100, 100, 100, 100),

@@ -1,6 +1,7 @@
 .env
 sniper_data.json
 sniper_bot.log
+data/execution_metrics.jsonl*
 __pycache__/
 *.pyc
 *.sqlite3*
