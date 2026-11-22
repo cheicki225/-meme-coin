@@ -26,6 +26,8 @@ main
 
 La nouvelle branche part du commit exact de la PR #5; aucune modification ni fusion n'a été faite aux PR antérieures. La publication d'une nouvelle PR est séparée de toute fusion.
 
+La PR [#6](https://github.com/cheicki225/-meme-coin/pull/6) est ouverte et cible la branche de la PR #5. Lors de sa création, GitHub n'avait encore associé aucun run CI à sa tête; les résultats de la CI ne sont donc pas supposés ici.
+
 ## Orchestration parallèle
 
 Six sous-agents spécialisés ont été lancés en parallèle. Leurs audits initiaux étaient en lecture seule; l'intégration et les corrections ont été faites après réception des constats.
