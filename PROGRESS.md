@@ -25,7 +25,7 @@ Chaque objectif compte de façon égale. Barème publié pour rendre l'estimatio
 
 - **Développement : 72,5 %**, score pondéré documenté ci-dessus.
 - **Tests locaux :** compilation réussie et **378 tests réussis** avec `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`; couverture CI vérifiée ci-dessous.
-- **Sécurité : IN PROGRESS.** CI Mission 6 [45064722874](https://github.com/cheicki225/-meme-coin/actions/runs/45064722874) verte; l'audit sémantique indépendant des programmes CPI/DEX reste ouvert.
+- **Sécurité : IN PROGRESS.** CI Mission 6 [45065197903](https://github.com/cheicki225/-meme-coin/actions/runs/45065197903) verte; l'audit sémantique indépendant des programmes CPI/DEX reste ouvert.
 - **PAPER : IN PROGRESS.** C'est le mode par défaut; frais simulés intégrés et testés. Il reste à faire un soak et une restauration dans l'environnement cible.
 - **LIVE : BLOCKED / NOT READY.** Aucune transaction réelle exécutée; pas d'intégration mainnet, soak, restauration en production ou revue indépendante complète. Ne pas activer les deux opt-ins LIVE.
 
