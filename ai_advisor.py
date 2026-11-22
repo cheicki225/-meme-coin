@@ -108,7 +108,7 @@ async def _call_anthropic(prompt: str) -> dict:
                 text = data["content"][0]["text"]
                 return _parse_verdict(text)
     except Exception as e:
-        log.debug(f"Erreur appel Anthropic: {e}")
+        log.debug(f"Erreur appel Anthropic: {type(e).__name__}")
         return None
 
 
@@ -137,7 +137,7 @@ async def _call_grok(prompt: str) -> dict:
                 text = data["choices"][0]["message"]["content"]
                 return _parse_verdict(text)
     except Exception as e:
-        log.debug(f"Erreur appel Grok: {e}")
+        log.debug(f"Erreur appel Grok: {type(e).__name__}")
         return None
 
 
@@ -154,5 +154,5 @@ def _parse_verdict(text: str) -> dict:
             verdict = "CAUTION"
         return {"verdict": verdict, "reasoning": parsed.get("reasoning", "")}
     except (json.JSONDecodeError, AttributeError):
-        log.debug(f"Réponse IA non-JSON, repli CAUTION : {text[:100]}")
+        log.debug("AI response was not valid JSON; defaulting to CAUTION")
         return {"verdict": "CAUTION", "reasoning": "Réponse IA non structurée (voir logs)."}

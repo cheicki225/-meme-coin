@@ -35,6 +35,10 @@ from notifier import Notifier
 from telegram_bot import SniperTelegramBot
 from position_price_stream import PositionPriceStream
 import wallet
+from wallet_collector_service import WalletCollectorService
+from execution_recovery import classify_pending_transactions
+from rpc_health_monitor import RpcHealthMonitor
+from runtime_capabilities import assess_provider_startup
 
 # CORRIGÉ suite à un vrai crash en boucle signalé : logging.FileHandler()
 # ne crée JAMAIS le dossier parent de LOG_FILE tout seul — si config.LOG_FILE
@@ -87,15 +91,48 @@ class SniperBot:
         self.rug_scanner = RugScanner(self.data_store, notifier=self.notifier)
         self.wallet_cleanup = WalletCleanup(self.data_store, notifier=self.notifier)
         self.telegram_bot = SniperTelegramBot(self.data_store, self.notifier, self.trader)
+        self.wallet_collector = WalletCollectorService(self.data_store, notifier=self.notifier)
+        self.rpc_health_monitor = RpcHealthMonitor(self.notifier)
+
+    async def _recover_pending_transactions(self):
+        pending = self.data_store.state.get("pending_transactions", [])
+        if not pending:
+            return
+        reconciled, unresolved = classify_pending_transactions(self.data_store.state)
+        for signature in reconciled:
+            self.data_store.resolve_pending_transaction(
+                signature, {"recovered_after_restart": True, "position_signature_found": True}
+            )
+        if unresolved:
+            signatures = [
+                item.get("signature", "unknown") for item in unresolved[:5]
+                if isinstance(item, dict)
+            ]
+            self.data_store.activate_emergency_stop(
+                "pending transaction signatures require manual reconciliation"
+            )
+            log.critical(
+                "🛑 %s unresolved LIVE transaction signature(s); execution halted: %s",
+                len(unresolved), ", ".join(signatures),
+            )
+            await self.notifier.notify(
+                "risk_alert",
+                "🛑 *Arrêt d'urgence au redémarrage*\n"
+                f"{len(unresolved)} signature(s) LIVE restent à réconcilier. "
+                "Aucun nouveau swap ne sera envoyé. Vérifiez l'état on-chain avant /resume.\n"
+                + "\n".join(f"• `{signature}`" for signature in signatures),
+            )
+
 
     async def run(self):
         log.info(f"🚀 Sniper Bot démarré — mode : {config.TRADING_MODE}")
-        if not config.HELIUS_API_KEY:
-            log.error(
-                "❌ Aucune clé HELIUS_API_KEY configurée. Le bot ne peut pas fonctionner "
-                "correctement sans accès WebSocket premium. Voir README.md."
-            )
+        await self._recover_pending_transactions()
+        provider_status = assess_provider_startup(config.TRADING_MODE, config.HELIUS_API_KEY)
+        if not provider_status["can_start"]:
+            log.error("Provider startup blocked: %s", provider_status["message"])
             return
+        if provider_status["status"] == "degraded_public_http":
+            log.warning("Provider capabilities degraded: %s", provider_status["message"])
 
         if config.TRADING_MODE == "LIVE":
             if not config.SOLANA_PRIVATE_KEY:
@@ -109,14 +146,17 @@ class SniperBot:
                     log.error("❌ Solde SOL nul ou introuvable — arrêt par sécurité, aucun ordre ne sera passé.")
                     return
             except Exception as e:
-                log.error(f"❌ Impossible de charger le wallet LIVE : {e}. Arrêt.")
+                log.error("❌ Impossible de charger le wallet LIVE (%s). Arrêt.", type(e).__name__)
                 return
 
         # Scan permanent Pump.fun (détection + évaluation) — désactivable
         # temporairement via config.DETECTION_ENABLED (voir config.py).
         # Le reste (Telegram, Protection, Copy Trading) continue de tourner.
         tasks = [self.protection_scanner.start(), self.copytrade_listener.start(), self.rug_scanner.start(),
-                 self.wallet_cleanup.start(), self.position_price_stream.start()]
+                 self.wallet_cleanup.start(), self.position_price_stream.start(),
+                 self.rpc_health_monitor.start()]
+        if config.WALLET_COLLECTOR_ENABLED:
+            tasks.append(self.wallet_collector.start())
         if config.DETECTION_ENABLED:
             tasks.append(self.listener.start())
         else:
@@ -213,7 +253,7 @@ class SniperBot:
         try:
             await self._evaluate_new_dev(dev_address, token_mint)
         except Exception as e:
-            log.error(f"❌ Erreur pendant l'évaluation en arrière-plan de {dev_address[:8]}...: {e}")
+            log.error(f"❌ Erreur pendant l'évaluation en arrière-plan de {dev_address[:8]}...: {type(e).__name__}")
 
     async def on_copytrade_buy(self, wallet_address: str, token_mint: str, signature: str,
                                 source_sol_spent_lamports: int = 0, source_tokens_received: float = 0):
@@ -375,7 +415,7 @@ class SniperBot:
                 balance_line = f"Solde USDC restant : `{summary['usdc_balance']:.2f}` USDC\n"
             balance_line += f"Valeur totale du wallet (SOL + USDC) : `${summary['total_value_usd']:,.2f}`\n"
         except Exception as e:
-            log.debug(f"Erreur lecture valeur totale pour {wallet_address}: {e}")
+            log.debug(f"Erreur lecture valeur totale pour {wallet_address}: {type(e).__name__}")
             balance_line = ""
 
         # CORRIGÉ suite à un vrai effet en cascade observé : une adresse

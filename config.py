@@ -24,11 +24,22 @@ except ImportError:
 # PAPER = simulation complète, aucun ordre réel envoyé (défaut, toujours garder ainsi
 #         tant que le bot n'a pas été validé sur plusieurs semaines)
 # LIVE  = exécution réelle via Jupiter (à activer uniquement plus tard)
-TRADING_MODE = os.getenv("TRADING_MODE", "PAPER")
+def _normalize_trading_mode(value: str) -> str:
+    mode = str(value).strip().upper()
+    if mode not in {"PAPER", "LIVE"}:
+        raise ValueError("TRADING_MODE must be PAPER or LIVE.")
+    return mode
+
+
+TRADING_MODE = _normalize_trading_mode(os.getenv("TRADING_MODE", "PAPER"))
+# LIVE swaps and manual transfers require a second explicit opt-in.
+LIVE_EXECUTION_ENABLED = os.getenv("LIVE_EXECUTION_ENABLED", "false").lower() == "true"
 
 # ── Accès RPC / WebSocket Solana ────────────────────────────────
+# The legacy HELIUS_RPC_URL name is also used for SOLANA_RPC_URL and may point
+# to a public or another provider's HTTP endpoint. Never log its value.
 HELIUS_API_KEY = os.getenv("HELIUS_API_KEY", "")
-HELIUS_RPC_URL = os.getenv("SOLANA_RPC_URL") or (f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}" if HELIUS_API_KEY else "https://api.mainnet-beta.solana.com")
+HELIUS_RPC_URL = os.getenv("SOLANA_RPC_URL") or (f"https://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}" if HELIUS_API_KEY else "https://api.mainnet.solana.com")
 HELIUS_WS_URL = f"wss://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}" if HELIUS_API_KEY else None
 # API "Enhanced Transactions" de Helius : parse déjà les instructions Pump.fun
 HELIUS_PARSE_TX_URL = f"https://api.helius.xyz/v0/transactions/?api-key={HELIUS_API_KEY}"
@@ -42,6 +53,7 @@ ALCHEMY_RPC_URL = f"https://solana-mainnet.g.alchemy.com/v2/{ALCHEMY_API_KEY}" i
 # Activation par wallet via settings["security_check_enabled"] (voir DEFAULT_WALLET_SETTINGS).
 GOPLUS_API_KEY = os.getenv("GOPLUS_API_KEY", "")
 GOPLUS_API_SECRET = os.getenv("GOPLUS_API_SECRET", "")
+GOPLUS_MIN_DEX_TVL_USD = float(os.getenv("GOPLUS_MIN_DEX_TVL_USD", "10000"))
 
 # ── Mobula — identification d'adresses (exchanges, labels comportementaux) ─
 # Clé API gratuite en libre-service immédiat : https://admin.mobula.io
@@ -98,12 +110,15 @@ SOLANA_PRIVATE_KEY = os.getenv("SOLANA_PRIVATE_KEY", "")
 # dans .env — sans elle, les wallets stockés deviennent illisibles.
 WALLET_ENCRYPTION_KEY = os.getenv("WALLET_ENCRYPTION_KEY", "")
 SOL_MINT = "So11111111111111111111111111111111111111112"
-JUPITER_QUOTE_URL = os.getenv("JUPITER_QUOTE_URL", "https://quote-api.jup.ag/v6/quote")
-JUPITER_SWAP_URL = os.getenv("JUPITER_SWAP_URL", "https://quote-api.jup.ag/v6/swap")
+JUPITER_API_KEY = os.getenv("JUPITER_API_KEY", "")
+# Fixed official endpoints prevent API keys from being sent to an arbitrary host.
+JUPITER_ORDER_URL = "https://api.jup.ag/swap/v2/order"
+JUPITER_EXECUTE_URL = "https://api.jup.ag/swap/v2/execute"
 JUPITER_PRIORITIZATION_FEE_LAMPORTS = int(os.getenv("JUPITER_PRIORITIZATION_FEE_LAMPORTS", "100000"))  # ~0.0001 SOL
 MAX_SLIPPAGE_BPS = int(os.getenv("MAX_SLIPPAGE_BPS", "1000"))
 MAX_PRICE_IMPACT_PCT = float(os.getenv("MAX_PRICE_IMPACT_PCT", "5"))
 MAX_TRANSACTION_FEE_LAMPORTS = int(os.getenv("MAX_TRANSACTION_FEE_LAMPORTS", "500000"))
+MAX_JUPITER_RENT_LAMPORTS = int(os.getenv("MAX_JUPITER_RENT_LAMPORTS", "5000000"))
 
 # ── Jito (bundles + tips) — vraie amélioration de vitesse d'inclusion ─────
 # Vérifié via recherche web (docs Jito, mi-2026) : 95%+ du stake actif Solana
@@ -135,6 +150,15 @@ except ValueError as exc:
 # Place l'image de bannière dans le dossier du bot et indique son nom ici.
 BANNER_IMAGE_PATH = os.getenv("BANNER_IMAGE_PATH", "banner.jpg")
 DATA_FILE = os.getenv("DATA_FILE", "sniper_data.json")
+DATA_BACKEND = os.getenv("DATA_BACKEND", "sqlite").strip().lower()
+_DEFAULT_SQLITE_PATH = os.path.splitext(DATA_FILE)[0] + ".sqlite3"
+SQLITE_DB_FILE = os.getenv("SQLITE_DB_FILE", _DEFAULT_SQLITE_PATH)
+_WALLET_DB_DEFAULT = os.path.join(os.path.dirname(DATA_FILE) or ".", "wallet_intelligence.sqlite3")
+WALLET_ACTIVITY_DB_FILE = os.getenv("WALLET_ACTIVITY_DB_FILE", _WALLET_DB_DEFAULT)
+WALLET_COLLECTOR_ENABLED = os.getenv("WALLET_COLLECTOR_ENABLED", "false").lower() == "true"
+WALLET_COLLECTOR_INTERVAL_S = int(os.getenv("WALLET_COLLECTOR_INTERVAL_S", "300"))
+WALLET_COLLECTOR_SIGNATURES_PER_WALLET = int(os.getenv("WALLET_COLLECTOR_SIGNATURES_PER_WALLET", "10"))
+WALLET_COLLECTOR_MAX_WALLETS_PER_CYCLE = int(os.getenv("WALLET_COLLECTOR_MAX_WALLETS_PER_CYCLE", "5"))
 
 # ── Filtres de découverte des tokens (étape 1 de la vidéo) ──────
 VOLUME_MIN_USD = float(os.getenv("VOLUME_MIN_USD", "30000"))
@@ -151,6 +175,9 @@ SL_PCT = float(os.getenv("SL_PCT", "0"))          # 0 = SL désactivé par défa
 POSITION_SIZE_USD = float(os.getenv("POSITION_SIZE_USD", "50"))
 BUDGET_USD = float(os.getenv("BUDGET_USD", "500"))
 CIRCUIT_BREAKER_USD = float(os.getenv("CIRCUIT_BREAKER_USD", "150"))
+MAX_OPEN_EXPOSURE_USD = float(os.getenv("MAX_OPEN_EXPOSURE_USD", "250"))
+MAX_OPEN_POSITIONS = int(os.getenv("MAX_OPEN_POSITIONS", "10"))
+MAX_MANUAL_TRANSFER_SOL = float(os.getenv("MAX_MANUAL_TRANSFER_SOL", "0.1"))
 
 # ── Backtest / validation avant ajout au monitoring ──────────────
 BACKTEST_MIN_TOKENS = int(os.getenv("BACKTEST_MIN_TOKENS", "10"))  # nb de tokens passés à analyser

@@ -1,0 +1,36 @@
+# Progression vérifiable
+
+Mise à jour : 22 novembre 2026. La progression mesure le périmètre de développement, pas la rentabilité, la disponibilité en production ni l'autorisation d'utiliser des fonds.
+
+## Avancement pondéré
+
+Chaque objectif compte de façon égale. Barème publié pour rendre l'estimation reproductible : `VERIFIED = 100`, `TESTED = 75`, `IMPLEMENTED = 50`, `IN PROGRESS = 25`, `NOT STARTED/BLOCKED = 0`. Un test local mocké ne vaut pas validation d'exploitation.
+
+| # | Objectif | État | Score | Preuve et limite actuelle |
+|---:|---|---|---:|---|
+| 1 | Revue des 16 fichiers de la PR #3 | VERIFIED | 100 | Liste et constats consignés dans [AUDIT_COMPLET.md](AUDIT_COMPLET.md) |
+| 2 | Sécurité Jupiter et transactions | TESTED | 75 | Quote liée aux arguments exact-in et au minimum reçu appliqué; hard caps 10 % slippage/5 % impact; frais, payeurs, ALT/ATA, confirmé testés. CPI/DEX non audités indépendamment |
+| 3 | Collecteur et bot | TESTED | 75 | Collecteur optionnel lecture seule, curseur/idempotence et retry de signature RPC testés; événements conservés en historique et non utilisés directement comme ordres; pas de soak fournisseur |
+| 4 | PnL réel et frais | TESTED | 75 | LIVE utilise deltas/frais confirmés; PAPER comptabilise frais d'entrée, DCA, sorties et Sell Initials. Les anciens PnL non versionnés sont signalés; cours USD non historisé |
+| 5 | SQLite et reprise | TESTED | 75 | WAL, sauvegardes, import strict, états pendants et erreurs transitoires/corruption testés sur bases temporaires; aucune restauration en déploiement |
+| 6 | RPC et erreurs | TESTED | 75 | Retry 429/5xx, `Retry-After`, jitter, métriques en deltas et journaux expurgés testés; charge, fraîcheur et endpoint déployé inconnus |
+| 7 | Monitoring et Telegram | TESTED | 75 | Retry d'alerte non livrée, état du coupe-circuit, arrêt d'urgence et opérations en attente affichés; adaptateurs mockés, aucun envoi de déploiement vérifié |
+| 8 | Backtesting | IN PROGRESS | 25 | Dataset OHLC versionné/hashé, timestamps signaux exacts, coûts et gaps annotés; authenticité des sources et intégration complète à la stratégie restent absentes |
+| 9 | Tests automatisés | TESTED | 75 | 318 tests locaux réussis; CI #202 verte sur `0e4f100`, incluant compilation, défaut PAPER, tests, Ruff, pip-audit et Gitleaks |
+| 10 | Pertes, exposition, arrêt d'urgence | TESTED | 75 | Garde d'exposition, réservations et rollback mémoire du kill switch testés; en LIVE l'arrêt bloque achats et ventes sans liquider; aucun soak PAPER |
+
+**Avancement pondéré : 72,5 %** (`725 / 10`). La valeur est une estimation de maturité d'implémentation selon le barème ci-dessus; ce n'est pas un taux de fonctionnalités prêtes pour des fonds.
+
+## État de préparation par contexte
+
+- **Développement : 72,5 %**, score pondéré documenté ci-dessus.
+- **Tests locaux :** compilation réussie et **318 tests réussis** avec `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`; le taux de couverture lignes/branches n'a pas été mesuré.
+- **Sécurité : IN PROGRESS.** CI #202 verte sur `0e4f100`, incluant audit des dépendances et secrets; l'audit indépendant des programmes CPI/DEX reste ouvert.
+- **PAPER : IN PROGRESS.** C'est le mode par défaut; frais simulés intégrés et testés. Il reste à faire un soak et une restauration dans l'environnement cible.
+- **LIVE : BLOCKED / NOT READY.** Aucune transaction réelle exécutée; pas d'intégration mainnet, soak, restauration en production ou revue indépendante complète. Ne pas activer les deux opt-ins LIVE.
+
+## Hypothèses non vérifiées
+
+Le code permet l'HTTP Solana public par défaut, mais le point d'accès réellement utilisé au déploiement est **UNKNOWN**. Aucun fichier `.env`, secret, tableau de bord fournisseur ni journal privé n'a été lu. Sans clé Helius, le mode PAPER démarre en capacité dégradée : les listeners WebSocket et les transactions Helius Enhanced ne sont pas disponibles.
+
+Voir [PROJECT_ROADMAP.md](PROJECT_ROADMAP.md), [TESTING.md](TESTING.md) et [LIVE_READINESS.md](LIVE_READINESS.md).

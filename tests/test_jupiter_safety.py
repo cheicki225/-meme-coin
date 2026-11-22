@@ -10,7 +10,7 @@ def _quote(**updates):
         "outputMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
         "inAmount": "1000000",
         "outAmount": "900000",
-        "otherAmountThreshold": "850000",
+        "otherAmountThreshold": "855000",
         "slippageBps": 500,
         "priceImpactPct": "0.01",
     }

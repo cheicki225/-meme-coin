@@ -31,6 +31,7 @@ Utilise python-telegram-bot >= 21.
 import asyncio
 import logging
 import copy
+import math
 import os
 import time
 
@@ -42,6 +43,7 @@ from telegram.ext import (
 
 import re
 import config
+import paper_trader
 from translations import t
 
 log = logging.getLogger("telegram_bot")
@@ -75,6 +77,18 @@ def _looks_like_token_mint(text: str) -> bool:
     return text.strip().endswith("pump")
 
 
+def _pnl_fee_history_warning(data_store, lang: str) -> str:
+    """Persist and render the legacy-fee warning without changing PnL values."""
+    state = data_store.state
+    if paper_trader.mark_pnl_fee_history_incomplete_if_needed(state):
+        data_store.save()
+    if state.get("pnl_fee_history_incomplete") is not True:
+        return ""
+    if lang == "fr":
+        return "⚠️ PnL historique potentiellement incomplet : certains frais anciens ne sont pas reconstructibles."
+    return "⚠️ Historical PnL may be incomplete: some older fees cannot be reconstructed."
+
+
 def _format_sol_amount(amount: float) -> str:
     """
     AJOUTÉ suite à un vrai cas ambigu observé : un montant de financement
@@ -87,6 +101,62 @@ def _format_sol_amount(amount: float) -> str:
     if amount != 0 and round(amount, 4) == 0:
         return f"{amount:.8f}"
     return f"{amount:.4f}"
+
+
+def _format_risk_status(state: dict, loss_limit_usd: float) -> str:
+    """Report loss breaker, emergency stop, and pending transactions separately."""
+    if not isinstance(state, dict):
+        state = {}
+
+    losses = state.get("session_losses_usd")
+    if (
+        isinstance(losses, (int, float)) and not isinstance(losses, bool)
+        and math.isfinite(losses) and losses >= 0
+        and isinstance(loss_limit_usd, (int, float)) and not isinstance(loss_limit_usd, bool)
+        and math.isfinite(loss_limit_usd) and loss_limit_usd > 0
+    ):
+        breaker = "🛑 ACTIF — limite atteinte" if losses >= loss_limit_usd else "🟢 inactif"
+        loss_line = (
+            f"🛑 *Circuit breaker pertes* : {breaker}\n"
+            f"Pertes de session : `${losses:.2f}` / `${loss_limit_usd:.0f}`"
+        )
+    else:
+        loss_line = "🛑 *Circuit breaker pertes* : ⚪ état inconnu"
+
+    emergency_stop = state.get("emergency_stop")
+    if emergency_stop is True:
+        reason = state.get("emergency_stop_reason")
+        if reason == "session loss limit reached":
+            cause = "limite de pertes de session"
+        elif isinstance(reason, str) and reason.startswith("manual Telegram halt"):
+            cause = "commande Telegram /halt"
+        elif isinstance(reason, str) and reason.strip():
+            safe_reason = "".join(
+                character for character in reason.strip()
+                if character.isalnum() or character in " .,:;-"
+            )[:100].strip()
+            cause = safe_reason or "motif enregistré"
+        else:
+            cause = "motif non précisé"
+        emergency_line = f"Arrêt d'urgence : 🛑 ACTIF — {cause}"
+    elif emergency_stop is False:
+        emergency_line = "Arrêt d'urgence : 🟢 inactif"
+    else:
+        emergency_line = "Arrêt d'urgence : ⚪ état inconnu"
+
+    pending = state.get("pending_transactions")
+    if isinstance(pending, list):
+        if pending:
+            pending_line = (
+                f"Transactions en attente : ⚠️ {len(pending)} à réconcilier "
+                "avant toute reprise"
+            )
+        else:
+            pending_line = "Transactions en attente : aucune"
+    else:
+        pending_line = "Transactions en attente : ⚪ état inconnu"
+
+    return "\n".join((loss_line, emergency_line, pending_line))
 
 
 def _compute_star_rating(results: list) -> dict:
@@ -282,6 +352,8 @@ class SniperTelegramBot:
         self.app.add_handler(CommandHandler("positions", self.cmd_positions))
         self.app.add_handler(CommandHandler("help", self.cmd_help))
         self.app.add_handler(CommandHandler("settings", self.cmd_settings))
+        self.app.add_handler(CommandHandler("halt", self.cmd_halt))
+        self.app.add_handler(CommandHandler("resume", self.cmd_resume))
         self.app.add_handler(CommandHandler("analyze", self.cmd_analyze))
         self.app.add_handler(CommandHandler("wallet", self.cmd_wallet_analyze))
         self.app.add_handler(CommandHandler("dev", self.cmd_dev_analyze))
@@ -333,6 +405,33 @@ class SniperTelegramBot:
     # COMMANDES
     # ══════════════════════════════════════════════════════════
 
+    async def cmd_halt(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user = update.effective_user
+        self.data_store.activate_emergency_stop(
+            f"manual Telegram halt by user {user.id if user else 'unknown'}"
+        )
+        await update.effective_message.reply_text(
+            "🛑 Arrêt d'urgence activé. Les nouvelles opérations sont suspendues."
+        )
+
+    async def cmd_resume(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        pending = self.data_store.state.get("pending_transactions", [])
+        if pending:
+            signatures = "\n".join(f"• {item.get('signature', 'unknown')}" for item in pending[:5])
+            await update.effective_message.reply_text(
+                "Reprise refusée : des signatures restent à réconcilier. "
+                "Vérifiez leur état sur Solana puis réconciliez-les avant la reprise.\n" + signatures
+            )
+            return
+        if self.data_store.clear_emergency_stop():
+            await update.effective_message.reply_text(
+                "✅ Arrêt d'urgence désactivé. Les limites de pertes et d'exposition restent actives."
+            )
+        else:
+            await update.effective_message.reply_text(
+                "Reprise refusée : l'arrêt d'urgence n'a pas pu être désactivé."
+            )
+
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         self.data_store.set_telegram_chat_id(update.effective_chat.id)
 
@@ -376,7 +475,7 @@ class SniperTelegramBot:
                     )
                 return
             except Exception as e:
-                log.warning(f"Impossible d'envoyer la bannière ({e}) — retombe sur le texte seul.")
+                log.warning(f"Impossible d'envoyer la bannière ({type(e).__name__}) — retombe sur le texte seul.")
 
         await update.message.reply_text(welcome_text, parse_mode="Markdown", reply_markup=keyboard)
 
@@ -393,6 +492,10 @@ class SniperTelegramBot:
             f"Copy Trading: {n_copytrade}\n"
             f"Total: {self.data_store.count_wallets()}/{config.MAX_MONITORED_WALLETS}"
         )
+        pnl_warning = _pnl_fee_history_warning(self.data_store, state.get("language", "fr"))
+        if pnl_warning:
+            text += f"\n\n{pnl_warning}"
+        text += "\n\n" + _format_risk_status(state, config.CIRCUIT_BREAKER_USD)
         await update.message.reply_text(text, parse_mode="Markdown")
 
     # ── Nouvelles commandes slash — raccourcis directs vers les menus,
@@ -1672,7 +1775,7 @@ class SniperTelegramBot:
         try:
             await msg.edit_text(text, parse_mode="Markdown", reply_markup=keyboard, disable_web_page_preview=True)
         except Exception as e:
-            log.warning(f"Erreur d'affichage Markdown pour l'analyse de {token_mint}: {e}")
+            log.warning(f"Erreur d'affichage Markdown pour l'analyse de {token_mint}: {type(e).__name__}")
             try:
                 # Repli : même contenu, sans aucun formatage Markdown — ne
                 # peut plus jamais échouer pour une histoire de caractère
@@ -1680,7 +1783,7 @@ class SniperTelegramBot:
                 plain_text = text.replace("*", "").replace("`", "").replace("_", "")
                 await msg.edit_text(plain_text, reply_markup=keyboard, disable_web_page_preview=True)
             except Exception as e2:
-                log.error(f"Échec du repli texte brut pour {token_mint}: {e2}")
+                log.error(f"Échec du repli texte brut pour {token_mint}: {type(e2).__name__}")
                 await msg.edit_text("❌ Erreur d'affichage — relance l'analyse.")
 
     async def show_pnl_journal(self, query, page: int = 0):
@@ -1729,30 +1832,14 @@ class SniperTelegramBot:
         msg = await update.message.reply_text(f"🛡️ Vérification sécurité de `{token_mint[:12]}...`...", parse_mode="Markdown")
 
         result = await security.check_token_security(token_mint)
-        if not result:
-            await msg.edit_text("❌ Impossible de récupérer les données de sécurité (pas de clé GoPlus configurée, ou erreur réseau).")
-            return
-
-        risk_icon = "🔴" if result.get("is_risky") else "🟢"
-        text = (
-            f"🛡️ *Analyse de sécurité*\n`{token_mint}`\n\n"
-            f"{risk_icon} Risque global : {'Élevé' if result.get('is_risky') else 'Faible'}\n\n"
-        )
-        for flag_name, flag_value in result.get("flags", {}).items():
-            icon = "⚠️" if flag_value else "✅"
-            text += f"{icon} {flag_name}\n"
+        text = security.format_security_report(token_mint, result)
 
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("← Back", callback_data="menu_main")]])
-        # CORRIGÉ — même filet de sécurité qu'ailleurs : flag_name vient de
-        # l'API GoPlus et contient souvent des underscores (ex:
-        # "is_honeypot") non échappés, qui cassent le Markdown Telegram
-        # sans prévenir si jamais rencontrés.
         try:
-            await msg.edit_text(text, parse_mode="Markdown", reply_markup=keyboard, disable_web_page_preview=True)
+            await msg.edit_text(text, reply_markup=keyboard, disable_web_page_preview=True)
         except Exception as e:
-            log.warning(f"Erreur d'affichage Markdown pour la sécurité de {token_mint}: {e}")
-            plain_text = text.replace("*", "").replace("`", "").replace("_", "")
-            await msg.edit_text(plain_text, reply_markup=keyboard, disable_web_page_preview=True)
+            log.warning("Security report display failed (%s)", type(e).__name__)
+            await msg.edit_text(text, reply_markup=keyboard, disable_web_page_preview=True)
 
     async def analyze_wallet_inline(self, update: Update, wallet_address: str):
         """
@@ -1847,7 +1934,7 @@ class SniperTelegramBot:
         try:
             await msg.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard), disable_web_page_preview=True)
         except Exception as e:
-            log.warning(f"Erreur d'affichage Markdown pour le résumé rapide de {wallet_address}: {e}")
+            log.warning(f"Erreur d'affichage Markdown pour le résumé rapide de {wallet_address}: {type(e).__name__}")
             plain_text = text.replace("*", "").replace("`", "").replace("_", "")
             await msg.edit_text(plain_text, reply_markup=InlineKeyboardMarkup(keyboard), disable_web_page_preview=True)
 
@@ -1925,7 +2012,7 @@ class SniperTelegramBot:
         try:
             await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard), disable_web_page_preview=True)
         except Exception as e:
-            log.warning(f"Erreur d'affichage Markdown pour les achats récents de {wallet_address}: {e}")
+            log.warning(f"Erreur d'affichage Markdown pour les achats récents de {wallet_address}: {type(e).__name__}")
             plain_text = text.replace("*", "").replace("`", "").replace("_", "")
             await query.edit_message_text(plain_text, reply_markup=InlineKeyboardMarkup(keyboard), disable_web_page_preview=True)
 
@@ -2054,7 +2141,7 @@ class SniperTelegramBot:
                 text += f"   G — Cohérence d'entrée : {consistency['reason']}\n"
                 text += "   _B, C1, C2 nécessitent un token de référence précis — non inclus ici._\n"
             except Exception as e:
-                log.warning(f"Erreur checklist copy trading pour {wallet_address}: {e}")
+                log.warning(f"Erreur checklist copy trading pour {wallet_address}: {type(e).__name__}")
                 text += "\n📋 _Checklist copy trading indisponible (erreur pendant le calcul)._\n"
 
         all_results = dev_results + trader_results
@@ -2121,7 +2208,7 @@ class SniperTelegramBot:
         try:
             await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard), disable_web_page_preview=True)
         except Exception as e:
-            log.warning(f"Erreur d'affichage Markdown pour le détail de {wallet_address}: {e}")
+            log.warning(f"Erreur d'affichage Markdown pour le détail de {wallet_address}: {type(e).__name__}")
             plain_text = text.replace("*", "").replace("`", "").replace("_", "")
             await query.edit_message_text(plain_text, reply_markup=InlineKeyboardMarkup(keyboard), disable_web_page_preview=True)
 
@@ -2219,7 +2306,7 @@ class SniperTelegramBot:
         try:
             await msg.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard), disable_web_page_preview=True)
         except Exception as e:
-            log.warning(f"Erreur d'affichage Markdown pour l'analyse de dev {dev_address}: {e}")
+            log.warning(f"Erreur d'affichage Markdown pour l'analyse de dev {dev_address}: {type(e).__name__}")
             plain_text = text.replace("*", "").replace("`", "").replace("_", "")
             await msg.edit_text(plain_text, reply_markup=InlineKeyboardMarkup(keyboard), disable_web_page_preview=True)
 
@@ -2298,7 +2385,7 @@ class SniperTelegramBot:
         try:
             await msg.edit_text(text, parse_mode="Markdown", reply_markup=keyboard, disable_web_page_preview=True)
         except Exception as e:
-            log.warning(f"Erreur d'affichage Markdown pour le score IA de {dev_address}: {e}")
+            log.warning(f"Erreur d'affichage Markdown pour le score IA de {dev_address}: {type(e).__name__}")
             plain_text = text.replace("*", "").replace("`", "").replace("_", "")
             await msg.edit_text(plain_text, reply_markup=keyboard, disable_web_page_preview=True)
 
@@ -2338,13 +2425,11 @@ class SniperTelegramBot:
             open_count=len(state.get("open_positions", [])), closed_count=len(closed),
             win_rate=(len(wins) / len(closed) * 100) if closed else 0,
         )
-        # AJOUTÉ (demande explicite, 19 août) : affiche le compteur du
-        # circuit breaker — avant, invisible nulle part dans Telegram, ce
-        # qui rendait un blocage silencieux impossible à diagnostiquer sans
-        # accès direct aux logs Railway.
-        session_losses = state.get("session_losses_usd", 0)
-        breaker_status = "🛑 ACTIF — achats bloqués" if session_losses >= config.CIRCUIT_BREAKER_USD else "🟢 inactif"
-        text += f"\n\n🛑 *Circuit breaker* : {breaker_status}\nPertes comptabilisées : `${session_losses:.2f}` / `${config.CIRCUIT_BREAKER_USD:.0f}`\n_Remise à zéro automatique toutes les 24h._"
+        pnl_warning = _pnl_fee_history_warning(self.data_store, lang)
+        if pnl_warning:
+            text += f"\n\n{pnl_warning}"
+        text += "\n\n" + _format_risk_status(state, config.CIRCUIT_BREAKER_USD)
+        text += "\n_Remise à zéro des pertes toutes les 24h._"
 
         keyboard = [
             [InlineKeyboardButton("🔄 Réinitialiser le circuit breaker maintenant", callback_data="askresetbreaker")],
@@ -3647,7 +3732,7 @@ class SniperTelegramBot:
             try:
                 await update.message.delete()
             except Exception as e:
-                log.warning(f"Impossible de supprimer le message contenant la clé privée : {e}")
+                log.warning(f"Impossible de supprimer le message contenant la clé privée : {type(e).__name__}")
 
             try:
                 result = wm.import_wallet(label, text.strip())
@@ -3965,7 +4050,7 @@ class SniperTelegramBot:
         try:
             await self.app.bot.delete_message(chat_id=chat_id, message_id=message_id)
         except Exception as e:
-            log.debug(f"Suppression différée du message {message_id} impossible : {e}")
+            log.debug(f"Suppression différée du message {message_id} impossible : {type(e).__name__}")
 
     async def _execute_disperse(self, query, wallet_label: str, destination: str, amount_sol: float):
         from wallet_manager import WalletManager

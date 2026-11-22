@@ -86,7 +86,8 @@ class CopyTradeListener:
         self._subscribed_wallets = set()
         self._sub_id_to_wallet = {}
         self._creation_mode_wallets = set()  # sous-ensemble surveillé pour les transferts SOL (seuil %)
-        self._recent_signatures = {}  # signature -> timestamp du premier traitement, voir _already_processed
+        self._recent_signatures = {}  # signatures dont le RPC a fourni une transaction exploitable
+        self._processing_signatures = set()  # protège aussi contre les notifications simultanées
 
     def _get_tracked_wallets(self) -> set:
         """
@@ -118,7 +119,7 @@ class CopyTradeListener:
             try:
                 await self._run_connection()
             except Exception as e:
-                log.error(f"Connexion copytrade WebSocket perdue ({e}), reconnexion dans 5s...")
+                log.error("External operation failed (%s)", type(e).__name__)
                 await asyncio.sleep(5)
 
     async def stop(self):
@@ -146,7 +147,7 @@ class CopyTradeListener:
             try:
                 await self._sync_subscriptions()
             except Exception as e:
-                log.debug(f"Erreur sync copytrade: {e}")
+                log.debug("External operation failed (%s)", type(e).__name__)
 
     async def _sync_subscriptions(self):
         """Ajoute les souscriptions pour les nouveaux wallets track_buy/track_sell.
@@ -208,12 +209,11 @@ class CopyTradeListener:
 
             await self._process_transaction(signature, is_swap_related)
         except Exception as e:
-            log.debug(f"Erreur traitement message copytrade: {e}")
+            log.debug("External operation failed (%s)", type(e).__name__)
 
     def _already_processed(self, signature: str) -> bool:
         """
-        Retourne True si cette signature a déjà été traitée récemment (doublon
-        à ignorer), False sinon — et l'enregistre dans ce cas pour la suite.
+        Retourne True si cette signature a déjà été traitée récemment.
         Purge occasionnelle des entrées trop anciennes pour ne jamais grossir
         sans limite sur une longue durée de fonctionnement.
         """
@@ -224,42 +224,55 @@ class CopyTradeListener:
 
         if signature in self._recent_signatures:
             return True
-        self._recent_signatures[signature] = now
         return False
 
+    def _remember_processed(self, signature: str) -> None:
+        """Mémorise uniquement les signatures dont le fetch RPC a réussi."""
+        self._recent_signatures[signature] = time.time()
+
     async def _process_transaction(self, signature: str, is_swap_related: bool = False):
-        if self._already_processed(signature):
+        if signature in self._processing_signatures or self._already_processed(signature):
             log.debug(f"Signature {signature[:8]}... déjà traitée récemment — doublon ignoré.")
             return
 
-        parsed = await self._fetch_parsed_transaction(signature)
-        if not parsed:
-            return
+        self._processing_signatures.add(signature)
+        try:
+            parsed = await self._fetch_parsed_transaction(signature)
+            if not parsed:
+                # Un échec transitoire RPC ne doit pas empoisonner le cache:
+                # une notification répétée pourra retenter le fetch.
+                return
 
-        # AJOUTÉ : vérification du transfert SOL important, indépendante de
-        # la classification achat/vente ci-dessous — un dev peut très bien
-        # transférer son SOL SANS que ce soit un swap.
-        if self._creation_mode_wallets:
-            await self._check_large_sol_transfer(parsed, signature, is_swap_related)
+            # Réserver pendant le fetch empêche les doublons concurrents; ne
+            # marquer terminé qu'après avoir reçu une transaction exploitable.
+            self._remember_processed(signature)
 
-        # AJOUTÉ suite à une demande explicite : alerte retrait SOL, TOUS
-        # wallets surveillés (pas juste track_creation), seuil en montant
-        # absolu plutôt qu'en % du solde.
-        if self.on_withdrawal:
-            await self._check_withdrawal(parsed, signature, is_swap_related)
+            # AJOUTÉ : vérification du transfert SOL important, indépendante de
+            # la classification achat/vente ci-dessous — un dev peut très bien
+            # transférer son SOL SANS que ce soit un swap.
+            if self._creation_mode_wallets:
+                await self._check_large_sol_transfer(parsed, signature, is_swap_related)
 
-        action_info = self._classify_transaction(parsed)
-        if not action_info:
-            return
+            # AJOUTÉ suite à une demande explicite : alerte retrait SOL, TOUS
+            # wallets surveillés (pas juste track_creation), seuil en montant
+            # absolu plutôt qu'en % du solde.
+            if self.on_withdrawal:
+                await self._check_withdrawal(parsed, signature, is_swap_related)
 
-        wallet = action_info["wallet"]
-        if wallet not in self._subscribed_wallets:
-            return
+            action_info = self._classify_transaction(parsed)
+            if not action_info:
+                return
 
-        if action_info["action"] == "buy" and self.on_buy:
-            await self.on_buy(wallet, action_info["token_mint"], signature)
-        elif action_info["action"] == "sell" and self.on_sell:
-            await self.on_sell(wallet, action_info["token_mint"], signature)
+            wallet = action_info["wallet"]
+            if wallet not in self._subscribed_wallets:
+                return
+
+            if action_info["action"] == "buy" and self.on_buy:
+                await self.on_buy(wallet, action_info["token_mint"], signature)
+            elif action_info["action"] == "sell" and self.on_sell:
+                await self.on_sell(wallet, action_info["token_mint"], signature)
+        finally:
+            self._processing_signatures.discard(signature)
 
     async def _check_large_sol_transfer(self, parsed: dict, signature: str, is_swap_related: bool = False):
         """
@@ -292,7 +305,7 @@ class CopyTradeListener:
             try:
                 current_balance = await wallet.get_sol_balance_of(from_account)
             except Exception as e:
-                log.debug(f"Erreur lecture solde pour {from_account}: {e}")
+                log.debug("External operation failed (%s)", type(e).__name__)
                 continue
 
             prior_balance_estimate = current_balance + amount_sol

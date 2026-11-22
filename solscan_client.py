@@ -117,7 +117,7 @@ async def find_fixed_amount_transfers(exchange_address: str, target_amount_sol: 
                     if len(transfers) < page_size:
                         break  # dernière page atteinte
         except Exception as e:
-            log.debug(f"Erreur Solscan (page {page}): {e}")
+            log.debug(f"Erreur Solscan (page {page}): {type(e).__name__}")
             break
 
     log.info(f"[Solscan] {len(matches)} transferts trouvés entre {lo_sol:.6f} et {hi_sol:.6f} SOL depuis {exchange_address[:8]}...")

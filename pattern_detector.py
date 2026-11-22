@@ -69,7 +69,7 @@ async def find_fixed_amount_recipients_helius_native(exchange_address: str, targ
             if result:
                 break
         except Exception as e:
-            log.debug(f"getTransfersByAddress (tentative {attempt+1}/3) a échoué : {e}")
+            log.debug(f"getTransfersByAddress (tentative {attempt+1}/3) a échoué : {type(e).__name__}")
         if attempt < 2:
             await asyncio.sleep(1.0 * (2 ** attempt))
 
@@ -406,5 +406,5 @@ def _extract_outgoing_transfer(tx: dict, source_address: str) -> dict:
             "amount_sol": max_increase / 1_000_000_000,
         }
     except (KeyError, IndexError, ValueError) as e:
-        log.debug(f"Erreur extraction transfert sortant: {e}")
+        log.debug(f"Erreur extraction transfert sortant: {type(e).__name__}")
         return None

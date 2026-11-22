@@ -66,7 +66,7 @@ class PositionPriceStream:
             try:
                 await self._run_connection()
             except Exception as e:
-                log.error(f"Connexion WebSocket surveillance de position perdue ({e}), reconnexion dans 5s...")
+                log.error("Position WebSocket connection failed (%s); reconnecting in 5 seconds", type(e).__name__)
                 self._connected_event.clear()
                 await asyncio.sleep(5)
 
@@ -116,7 +116,10 @@ class PositionPriceStream:
         try:
             bonding_curve_address = backtest._get_bonding_curve_address(token_mint)
         except Exception as e:
-            log.warning(f"⚠️ Surveillance WS — dérivation PDA impossible pour {token_mint[:8]}...: {e}")
+            log.warning(
+                "Position WebSocket PDA derivation failed for %s (%s)",
+                token_mint[:8], type(e).__name__,
+            )
             queue = asyncio.Queue(maxsize=50)
             self._queues[token_mint] = queue
             return queue
@@ -197,4 +200,4 @@ class PositionPriceStream:
                         pass
                 queue.put_nowait(price_info)
         except Exception as e:
-            log.debug(f"Erreur traitement message surveillance position: {e}")
+            log.debug("Position WebSocket message processing failed (%s)", type(e).__name__)

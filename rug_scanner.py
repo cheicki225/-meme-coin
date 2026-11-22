@@ -64,7 +64,7 @@ class RugScanner:
             try:
                 await self._scan_all_candidates()
             except Exception as e:
-                log.warning(f"⚠️ Erreur dans le rug scanner : {e}")
+                log.warning(f"⚠️ Erreur dans le rug scanner : {type(e).__name__}")
             await asyncio.sleep(config.RUG_SCAN_INTERVAL_S)
 
     def stop(self):
@@ -110,7 +110,7 @@ class RugScanner:
             try:
                 result = await self._check_filters(token_mint, info["dev_address"], age_hours)
             except Exception as e:
-                log.warning(f"⚠️ Erreur vérification filtres pour {token_mint[:12]}...: {e}")
+                log.warning(f"⚠️ Erreur vérification filtres pour {token_mint[:12]}...: {type(e).__name__}")
                 continue
 
             if result["passed"]:

@@ -92,7 +92,7 @@ class NewTokenListener:
             try:
                 await self._listen_once()
             except Exception as e:
-                log.error(f"Connexion WebSocket perdue ({e}), reconnexion dans 5s...")
+                log.error("External operation failed (%s)", type(e).__name__)
                 await asyncio.sleep(5)
 
     async def stop(self):
@@ -160,7 +160,7 @@ class NewTokenListener:
                         await self._handle_creation(signature)
 
                     except Exception as e:
-                        log.debug(f"Erreur traitement message WS: {e}")
+                        log.debug("External operation failed (%s)", type(e).__name__)
             finally:
                 if sync_task:
                     sync_task.cancel()
@@ -171,7 +171,7 @@ class NewTokenListener:
             try:
                 await self._sync_wallet_subscriptions()
             except Exception as e:
-                log.debug(f"Erreur sync detection (mode économique): {e}")
+                log.debug("External operation failed (%s)", type(e).__name__)
 
     async def _sync_wallet_subscriptions(self):
         current = self._get_tracked_creation_wallets()
@@ -234,7 +234,7 @@ class NewTokenListener:
                     data = await resp.json()
                     return data[0] if data else {}
         except Exception as e:
-            log.debug(f"Erreur fetch transaction parsée {signature}: {e}")
+            log.debug("External operation failed (%s)", type(e).__name__)
             return {}
 
     def _extract_creation_info(self, parsed: dict) -> tuple:

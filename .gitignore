@@ -3,3 +3,6 @@ sniper_data.json
 sniper_bot.log
 __pycache__/
 *.pyc
+*.sqlite3*
+*.db*
+backups/

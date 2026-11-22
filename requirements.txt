@@ -5,4 +5,5 @@ python-dotenv>=1.0.0
 solders>=0.28.0
 solana>=0.34.0
 base58>=2.1.0
+cryptography>=42.0.0
 Pillow>=10.0.0
