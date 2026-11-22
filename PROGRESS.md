@@ -45,9 +45,9 @@ Voir [PROJECT_ROADMAP.md](PROJECT_ROADMAP.md), [TESTING.md](TESTING.md) et [LIVE
 
 ## Mission 6 — validations indépendantes et benchmark — 22 novembre 2026
 
-- Branche dédiée : `codex/mission-6-validation-2026-11-22`, issue du head vérifié de la PR #5, `7fe6db45b1d661738a38006bbd8278bfc62b7e06`. `main`, son worktree original et les PR #1 à #5 sont préservés; aucune fusion n'a été faite.
+- Branche dédiée : `codex/mission-6-validation-2026-11-22`, issue du head vérifié de la PR #5, `7fe6db45b1d661738a38006bbd8278bfc62b7e06`. Implémentation Mission 6 : `817ddc4b55494abe3be674ba226528ccf3fb80d5`. `main`, son worktree original et les PR #1 à #5 sont préservés; aucune fusion n'a été faite.
 - Six sous-agents spécialisés ont vérifié Jupiter/CPI, récupération, RPC/performance, comptabilité/backtest, tests/qualité et sécurité indépendante. Résumé détaillé : [docs/MISSION_6_VALIDATION.md](docs/MISSION_6_VALIDATION.md).
 - Correctifs : blocage fail-closed si une base SQLite engagée ne peut pas être restaurée depuis SQLite; validation positive/finie de `CIRCUIT_BREAKER_USD`; simulation CPI pré-signature avec allowlist vide par défaut; métriques RPC par tentative et acceptation de `solana_ws`.
 - Résultats locaux : **378 tests réussis**, compilation et `git diff --check` réussis. Couverture locale absente; couverture ligne/branche désormais configurée en CI, valeur finale non encore confirmée.
-- Soak/benchmark : 10 000 cycles PAPER synthétiques vers localhost, 24h virtuelles en 73,507 s, 19 réouvertures SQLite; RPC loopback p50/p95/p99 = 6,699/10,357/19,921 ms; ce n'est pas une mesure mainnet ni un soak de 24h réel. Voir [docs/MISSION_6_BENCHMARK.md](docs/MISSION_6_BENCHMARK.md) et [JSON brut](docs/benchmarks/mission6-paper-soak.json).
+- Soak/benchmark : 10 000 cycles PAPER synthétiques vers localhost, 24h virtuelles en 71,928 s, 19 réouvertures SQLite; RPC loopback p50/p95/p99 = 6,473/10,236/18,825 ms; ce n'est pas une mesure mainnet ni un soak de 24h réel. Voir [docs/MISSION_6_BENCHMARK.md](docs/MISSION_6_BENCHMARK.md) et [JSON brut](docs/benchmarks/mission6-paper-soak.json).
 - Provenance OHLC, coûts historiques complets, audit sémantique des programmes CPI/DEX, soak sur endpoint PAPER cible et restauration de déploiement demeurent non vérifiés. LIVE reste bloqué.

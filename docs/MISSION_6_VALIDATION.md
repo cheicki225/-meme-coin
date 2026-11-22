@@ -8,7 +8,7 @@ Le travail est isolé sur `codex/mission-6-validation-2026-11-22`, issue du head
 
 La suite complète a donné **378 tests réussis, 0 échec**. Compilation et `git diff --check` ont réussi. Le pourcentage de couverture n'est pas disponible localement; la CI calcule maintenant les couvertures ligne/branche et téléverse les résultats. Le chiffre ne sera consigné qu'après exécution vérifiée de la CI finale.
 
-Le soak synthétique/accéléré équivalent à 24h virtuelles a exécuté **10 000 cycles** avec PAPER, dispatch synthétique, primitives buy/sell, SQLite temporaire, retries HTTP 429/503, fallback et 19 réouvertures SQLite. Durée murale : 73,507 s. Ce n'est pas un test de 24 heures réelles ou du bot complet.
+Le soak synthétique/accéléré équivalent à 24h virtuelles a exécuté **10 000 cycles** avec PAPER, dispatch synthétique, primitives buy/sell, SQLite temporaire, retries HTTP 429/503, fallback et 19 réouvertures SQLite. Durée murale : 71,928 s sur le code `817ddc4`. Ce n'est pas un test de 24 heures réelles ou du bot complet.
 
 ## Graphe des branches et des PR
 

@@ -14,16 +14,16 @@ Le serveur primaire renvoie un 429 une fois pour les identifiants divisibles par
 
 ## Résultat exécuté
 
-Run du 22 novembre 2026 sur Windows 10, Python 3.11.9, commit de base `7fe6db45b1d661738a38006bbd8278bfc62b7e06`; le JSON consigne la révision exacte du code. Durée murale : **73,507 secondes**.
+Run final du 22 novembre 2026 sur Windows 10, Python 3.11.9, code `817ddc4b55494abe3be674ba226528ccf3fb80d5`; le JSON consigne cette révision exacte. Durée murale : **71,928 secondes**.
 
 | Mesure locale synthétique | n | p50 | p95 | p99 |
 |---|---:|---:|---:|---:|
-| RPC `getHealth` primaire + fallback, bout en bout | 10 000 | 6,699 ms | 10,357 ms | 19,921 ms |
-| Tentatives RPC primaire | 10 405 | 6,516 ms | 9,511 ms | 11,792 ms |
-| Tentatives RPC fallback | 129 | 5,996 ms | 9,058 ms | 10,376 ms |
-| Dispatch détection token synthétique | 10 000 | 0,029 ms | 0,052 ms | 0,080 ms |
-| Primitives PAPER buy/sell | 10 000 | 0,029 ms | 0,052 ms | 0,073 ms |
-| Réouverture et lecture SQLite après checkpoints | 19 | 12,239 ms | 14,954 ms | 16,835 ms |
+| RPC `getHealth` primaire + fallback, bout en bout | 10 000 | 6,473 ms | 10,236 ms | 18,825 ms |
+| Tentatives RPC primaire | 10 405 | 6,287 ms | 9,385 ms | 12,891 ms |
+| Tentatives RPC fallback | 129 | 5,657 ms | 9,014 ms | 10,771 ms |
+| Dispatch détection token synthétique | 10 000 | 0,029 ms | 0,051 ms | 0,074 ms |
+| Primitives PAPER buy/sell | 10 000 | 0,029 ms | 0,051 ms | 0,070 ms |
+| Réouverture et lecture SQLite après checkpoints | 19 | 13,502 ms | 18,390 ms | 27,859 ms |
 
 Fautes injectées : **187 réponses 429**, **327 réponses 503 primaires**, **30 réponses 503 fallback**, fallback utilisé **99 fois**, et **10 échecs finaux sur 10 000**. Ces 10 échecs correspondent au scénario local où les deux endpoints sont indisponibles; ce n'est pas un taux d'échec de production.
 
