@@ -3,6 +3,7 @@ import struct
 
 import config
 from solders.hash import Hash
+from solders.address_lookup_table_account import AddressLookupTableAccount
 from solders.instruction import AccountMeta, Instruction
 from solders.keypair import Keypair
 from solders.message import MessageV0
@@ -243,5 +244,89 @@ def test_transaction_validator_rejects_multiple_jupiter_swaps():
             output_mint,
             expected_out_amount=900,
             slippage_bps=100,
+        )
+
+
+def test_transaction_validator_rejects_unreadable_transaction_and_wrong_payer():
+    payer, transaction, output_mint = _swap_transaction()
+    with pytest.raises(SwapError, match="illisible ou invalide"):
+        _validate_unsigned_transaction(
+            b"not-a-transaction", payer, config.SOL_MINT, 1_000, output_mint,
+            expected_out_amount=900, slippage_bps=100,
+        )
+
+    with pytest.raises(SwapError, match="payeur"):
+        _validate_unsigned_transaction(
+            transaction, Keypair(), config.SOL_MINT, 1_000, output_mint,
+            expected_out_amount=900, slippage_bps=100,
+        )
+
+
+def test_transaction_validator_requires_lookup_table_addresses_to_be_resolved():
+    payer = Keypair()
+    loaded_address = Pubkey.new_unique()
+    lookup_table = AddressLookupTableAccount(Pubkey.new_unique(), [loaded_address])
+    instruction = Instruction(
+        Pubkey.from_string("ComputeBudget111111111111111111111111111111"),
+        b"\x02\x00\x00\x00",
+        [AccountMeta(loaded_address, False, False)],
+    )
+    message = MessageV0.try_compile(payer.pubkey(), [instruction], [lookup_table], Hash.default())
+    transaction = bytes(VersionedTransaction(message, [payer]))
+    assert message.address_table_lookups
+
+    with pytest.raises(SwapError, match="must be resolved"):
+        _validate_unsigned_transaction(
+            transaction, payer, config.SOL_MINT, 1_000,
+            "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            expected_out_amount=900, slippage_bps=100,
+        )
+    with pytest.raises(SwapError, match="resolution is incomplete"):
+        _validate_unsigned_transaction(
+            transaction, payer, config.SOL_MINT, 1_000,
+            "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            expected_out_amount=900, slippage_bps=100,
+            resolved_lookup_addresses=([], []),
+        )
+
+
+def test_transaction_validator_rejects_additional_signers_and_missing_quote_binding():
+    payer, second_signer = Keypair(), Keypair()
+    multi_signer_instruction = Instruction(
+        Pubkey.new_unique(),
+        b"fixture",
+        [
+            AccountMeta(payer.pubkey(), True, False),
+            AccountMeta(second_signer.pubkey(), True, False),
+        ],
+    )
+    multi_signer_message = MessageV0.try_compile(
+        payer.pubkey(), [multi_signer_instruction], [], Hash.default(),
+    )
+    multi_signer_transaction = bytes(
+        VersionedTransaction(multi_signer_message, [payer, second_signer])
+    )
+    with pytest.raises(SwapError, match="signataires supplémentaires"):
+        _validate_unsigned_transaction(
+            multi_signer_transaction, payer, config.SOL_MINT, 1_000,
+            "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            expected_out_amount=900, slippage_bps=100,
+        )
+
+    payer, transaction, output_mint = _swap_transaction()
+    with pytest.raises(SwapError, match="attentes du devis manquent"):
+        _validate_unsigned_transaction(
+            transaction, payer, config.SOL_MINT, 1_000, output_mint,
+            expected_out_amount=None, slippage_bps=100,
+        )
+
+
+def test_transaction_validator_rejects_non_swap_top_level_transaction():
+    payer, transaction = _transaction("ComputeBudget111111111111111111111111111111", b"\x02\x00\x00\x00")
+    with pytest.raises(SwapError, match="ne contient pas d'instruction de swap"):
+        _validate_unsigned_transaction(
+            transaction, payer, config.SOL_MINT, 1_000,
+            "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            expected_out_amount=900, slippage_bps=100,
         )
 

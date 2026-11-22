@@ -1,0 +1,79 @@
+{
+  "schema": "mission7-public-rpc-readonly-v1",
+  "measurement_date": "2026-11-22",
+  "purpose": "Bounded read-only latency sample for public Solana RPC and slot WebSocket access; not a PAPER bot soak.",
+  "safety": {
+    "authenticated_keys_used": false,
+    "wallet_or_signer_loaded": false,
+    "transaction_signed": false,
+    "transaction_submission_method_called": false,
+    "operations": [
+      "HTTP getHealth",
+      "HTTP getSlot with confirmed commitment",
+      "WebSocket slotSubscribe",
+      "WebSocket slotUnsubscribe"
+    ]
+  },
+  "http": {
+    "window_utc": {
+      "start": "2026-11-22T20:59:41Z",
+      "end": "2026-11-22T21:00:48Z"
+    },
+    "sample_count": 40,
+    "request_matrix": {
+      "per_endpoint_method": 10,
+      "methods": {
+        "getHealth": { "params": [] },
+        "getSlot": { "params": [{ "commitment": "confirmed" }] }
+      }
+    },
+    "request_order": "JSON-RPC 2.0, IDs 1..40, order shuffled by Python random.Random(20261122), at least 1.0 s delay between sequential requests.",
+    "client": "PowerShell here-string piped to Python 3.11; each request launched a fresh curl.exe process with --max-time 8 and an outer 10 s process timeout.",
+    "latency_definition": "RTT is time.perf_counter around the curl subprocess, including process startup and fresh DNS/TCP/TLS/HTTP setup; curl time_total was parsed but not used for percentile calculations.",
+    "validation": "All responses were HTTP 200 with valid JSON-RPC results; getHealth returned ok and getSlot returned an integer.",
+    "statistics": "Successful RTTs only. Nearest-rank percentile ceil(p*n)-1; with n=10, p95 and p99 equal the maximum observation.",
+    "raw_per_request_rows_retained": false,
+    "results": {
+      "solana_public": {
+        "endpoint": "https://api.mainnet.solana.com",
+        "getHealth_ms": { "n": 10, "min": 453.26, "p50": 909.53, "p95": 1708.43, "p99": 1708.43, "failures": 0 },
+        "getSlot_ms": { "n": 10, "min": 457.91, "p50": 733.29, "p95": 1467.15, "p99": 1467.15, "failures": 0 },
+        "observed_slot_range": [472683635, 472683904]
+      },
+      "publicnode": {
+        "endpoint": "https://solana-rpc.publicnode.com",
+        "getHealth_ms": { "n": 10, "min": 340.83, "p50": 359.12, "p95": 463.01, "p99": 463.01, "failures": 0 },
+        "getSlot_ms": { "n": 10, "min": 336.67, "p50": 355.81, "p95": 660.52, "p99": 660.52, "failures": 0 },
+        "observed_slot_range": [472683608, 472683917]
+      }
+    }
+  },
+  "websocket": {
+    "endpoint": "wss://api.mainnet.solana.com",
+    "method": "slotSubscribe",
+    "sample_date": "2026-11-22",
+    "connection_ms": 1120.76,
+    "subscribe_ack_ms": 133.88,
+    "notifications": 12,
+    "slot_range": [472688203, 472688214],
+    "inter_notification_intervals_ms": { "n": 11, "p50": 296.68, "p95": 409.61, "p99": 409.61 },
+    "unsubscribe_acknowledged": true,
+    "total_duration_seconds": 4.82,
+    "raw_per_notification_rows_retained": false,
+    "statistics": "p95 and p99 use nearest-rank percentiles; with n=11 both equal the maximum interval."
+  },
+  "limitations": [
+    "The sample is short and unauthenticated; it does not represent the bot's configured aiohttp connection reuse, Helius enhanced feed, token event parsing, retries, confirmation paths, or sustained production reliability.",
+    "The HTTP request rows and WebSocket interval rows were not retained; only the aggregate values shown here are available. Individual sample values are not reconstructed.",
+    "Public RPC documentation says shared public endpoints are not intended for production use. These results are diagnostic only.",
+    "This is not a 24-hour PAPER soak and does not establish LIVE readiness."
+  ],
+  "sources": [
+    "https://solana.com/docs/rpc",
+    "https://solana.com/docs/references/clusters",
+    "https://solana.com/docs/rpc/http",
+    "https://solana.com/docs/rpc/websocket/slotsubscribe",
+    "https://solana.com/docs/intro/installation/solana-cli-basics",
+    "https://solana.com/docs/rpc/providers"
+  ]
+}
