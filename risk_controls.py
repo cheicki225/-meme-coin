@@ -16,8 +16,19 @@ def assess_new_position(
     """Decide whether a new position fits configured global risk limits."""
     if not isinstance(state, dict):
         return False, "invalid_position_state"
-    if state.get("emergency_stop"):
+    emergency_stop = state.get("emergency_stop", False)
+    if not isinstance(emergency_stop, bool):
+        return False, "invalid_emergency_stop_state"
+    if emergency_stop:
         return False, "emergency_stop_active"
+
+    # A malformed loss counter (especially NaN) must not make the caller's
+    # circuit-breaker comparison evaluate false and silently allow entries.
+    session_losses = state.get("session_losses_usd", 0.0)
+    if (not isinstance(session_losses, (int, float)) or isinstance(session_losses, bool)
+            or not math.isfinite(session_losses) or session_losses < 0):
+        return False, "invalid_session_loss_state"
+
     values = (proposed_exposure_usd, max_exposure_usd, reserved_exposure_usd)
     if any(not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) for value in values):
         return False, "invalid_exposure_value"
@@ -30,7 +41,7 @@ def assess_new_position(
             or reserved_positions < 0):
         return False, "invalid_reserved_positions"
 
-    positions = state.get("open_positions", [])
+    positions = state.get("open_positions")
     if not isinstance(positions, list):
         return False, "invalid_position_state"
     if len(positions) + reserved_positions >= max_open_positions:
@@ -39,11 +50,11 @@ def assess_new_position(
     for position in positions:
         if not isinstance(position, dict) or "cost_basis_usd" not in position:
             return False, "invalid_position_exposure"
-        try:
-            cost = float(position["cost_basis_usd"])
-        except (AttributeError, TypeError, ValueError, OverflowError):
+        cost = position["cost_basis_usd"]
+        if (not isinstance(cost, (int, float)) or isinstance(cost, bool)
+                or not math.isfinite(cost)):
             return False, "invalid_position_exposure"
-        if not math.isfinite(cost) or cost < 0:
+        if cost < 0:
             return False, "invalid_position_exposure"
         current += cost
     if current + reserved_exposure_usd + proposed_exposure_usd > max_exposure_usd:

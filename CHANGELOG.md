@@ -1,5 +1,13 @@
 # Journal des modifications
 
+## Non publié — comptabilité PAPER et qualité OHLC (22 novembre 2026)
+
+- Déduit les frais simulés des achats PAPER, des ajouts DCA et des ventes partielles/totales; les frais d'achat sont ajoutés au coût de revient et les frais de vente au PnL réalisé.
+- Fait passer Sell Initials par la vente simulée, comptabilise son PnL et son cashflow SOL net de frais, tout en gardant la méthode bloquée en LIVE.
+- Autorise un signal au close de la bougie de sortie à entrer à l'ouverture suivante; ajoute une validation explicite de l'intervalle des chandelles et un rapport de gaps lorsque l'intervalle est connu.
+- Durcit la reprise SQLite contre les erreurs transitoires et états JSON/signatures mal formés; renvoie le résultat de livraison Telegram et retente les alertes RPC non livrées.
+- Renforce les contrôles d'exposition sur les états de risque non valides et teste que l'arrêt d'urgence bloque les swaps LIVE d'achat et de vente sans liquidation automatique. Aucun swap réel exécuté.
+
 ## Non publié — correction de fiabilité et audit (15 novembre 2026)
 
 - Refuse les métadonnées Jupiter booléennes, flottantes, tronquées ou sans `gasless=false`; les erreurs HTTP Jupiter ne recopient plus le corps de réponse.

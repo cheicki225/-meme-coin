@@ -26,16 +26,33 @@ class RpcHealthMonitor:
         errors = int(metrics.get("errors", 0))
         error_rate = errors / total if total else 0.0
         should_alert = total >= self.minimum_requests and error_rate >= self.error_rate_threshold
-        if should_alert and self.notifier and time.monotonic() - self._last_alert_at >= self.cooldown_s:
-            self._last_alert_at = time.monotonic()
+        notified = False
+        now = time.monotonic()
+        if should_alert and self.notifier and now - self._last_alert_at >= self.cooldown_s:
             methods = sorted(metrics.get("errors_by_method", {}).items(), key=lambda item: item[1], reverse=True)[:3]
             summary = ", ".join(f"{method}: {count}" for method, count in methods) or "non détaillé"
-            await self.notifier.notify(
-                "rpc_alert",
-                f"⚠️ *Santé RPC dégradée*\nÉchecs: {error_rate:.0%} ({errors}/{total}). "
-                f"Méthodes les plus touchées: {summary}.",
-            )
-        return {"requests": total, "errors": errors, "error_rate": error_rate, "alert": should_alert}
+            try:
+                delivery_result = await self.notifier.notify(
+                    "rpc_alert",
+                    f"⚠️ *Santé RPC dégradée*\nÉchecs: {error_rate:.0%} ({errors}/{total}). "
+                    f"Méthodes les plus touchées: {summary}.",
+                )
+                # Notifier returns False when Telegram is unavailable. Treat
+                # None as success for compatibility with existing notifier adapters.
+                notified = delivery_result is not False
+            except Exception as exc:
+                # Keep the monitor loop alive and avoid logging exception text,
+                # which may contain a provider URL or credentials.
+                log.warning("RPC health alert delivery failed (%s)", type(exc).__name__)
+            if notified:
+                self._last_alert_at = now
+        return {
+            "requests": total,
+            "errors": errors,
+            "error_rate": error_rate,
+            "alert": should_alert,
+            "notified": notified,
+        }
 
     async def start(self, interval_s: int = 60) -> None:
         while True:

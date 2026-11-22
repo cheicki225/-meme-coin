@@ -92,7 +92,7 @@ Envoie `/start` au bot pour t'enregistrer (le `chat_id` est sauvegardé dans `sn
 - Config par rugger : Auto-Buy/Auto-Sell (toggle), Tracking Mode, Buy Config (montant, snipe delay, min/max MC, buy only once, Max Token Age, Follow Cooldown), Sell Config (TP multi-niveaux, SL, no-activity-sell), Protection (mode, fresh wallet, keep address, héritage, transfer ranges)
 - **Max Loss Counter** : coupe l'auto-buy après N pertes consécutives sur un wallet, réactivation manuelle
 - **Buy The Dip** : jusqu'à 3 paliers de DCA sous l'ATH (market cap), suivi correctement via le modèle `units`/`cost_basis_usd`
-- **Sell Initials** : récupère exactement la mise investie, laisse le reste en position à coût nul
+- **Sell Initials** : simule la récupération nette de la mise investie après frais estimés et laisse le reste en position à coût nul
 - **Trailing SL multi-paliers par market cap** : jusqu'à 5 paliers, seuil trailing différent selon le MC atteint
 - **Buy Mode Simple/Hardcore** : simulé (voir limite ci-dessous) avec écran de confirmation avant activation Hardcore
 - **Referral** : code généré et affiché (voir limite ci-dessous)
@@ -107,6 +107,7 @@ Envoie `/start` au bot pour t'enregistrer (le `chat_id` est sauvegardé dans `sn
 ### Fonctionnalités volontairement simulées/cosmétiques (pas de sens en PAPER trading)
 
 - **Buy Mode Simple/Hardcore** : F Project fait tourner une vraie course multi-serveurs (5 régions, multi-nonce) — impossible à répliquer sans cette infra. On simule juste un taux d'échec de transaction plus élevé en Hardcore (25%, aléatoire) et des frais simulés plus hauts, pour illustrer le compromis documenté, sans aucune vraie course de blocs.
+- **Frais PAPER** : le modèle estimatif est compté dans le coût d'entrée, le DCA et les sorties partielles/totales, y compris Sell Initials. Le taux SOL/USD est lu au moment de chaque action; le modèle Simple/Hardcore n'est pas une mesure de frais réseau réels.
 - **Referral** : aucun système de paiement/commission réel — F Project gère de vrais paiements entre comptes payants, ce qui n'existe pas ici (bot personnel, pas de commerce). Le code généré est purement déclaratif.
 
 ### Ce qui reste un stub complet (visible mais non exécuté)
@@ -132,6 +133,7 @@ python main.py
 - Traçage du funder d'un wallet + détection schéma "exchange" (si adresses vérifiées)
 - Backtest approximatif sur l'historique d'un dev
 - Paper trading avec TP/SL simulés; état persistant SQLite par défaut et import initial depuis l'ancien JSON.
+- PnL PAPER réalisé inclut les frais simulés des entrées, ajouts DCA et ventes; le cashflow SOL enregistré est net de ces frais simulés.
 - Collecteur wallet optionnel en lecture seule, avec curseurs et stockage SQLite.
 - Relecture de chandelles OHLC fournie par l'utilisateur avec frais, slippage et règles conservatrices dans `historical_backtest.py`.
 - PnL LIVE basé sur les soldes on-chain confirmés et les frais, sans utiliser le montant estimé du devis.

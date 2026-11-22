@@ -9,7 +9,7 @@
 | Jupiter V2 et validation locale | TESTED | Pas de test transactionnel mainnet signé ni de simulation adversariale du service réel |
 | Montants/frais/PnL confirmés | TESTED | Cours USD au moment de la transaction; pas de valorisation historique stable |
 | Reprise des signatures ambiguës | TESTED | Réconciliation encore manuelle si le statut on-chain reste indéterminé |
-| Contrôles d'exposition et arrêt d'urgence | TESTED | Pas de soak PAPER ni de preuve sur l'environnement cible |
+| Contrôles d'exposition et arrêt d'urgence | TESTED | En LIVE, l'arrêt bloque tous les swaps, ventes comprises, sans liquidation; pas de soak PAPER ni de preuve sur l'environnement cible |
 | RPC et WebSocket | BLOCKED | Fournisseur/quotas déployés inconnus; capacité dégradée sans Helius |
 | Revue de la transaction | IN PROGRESS | Instructions CPI/DEX et composants externes à auditer indépendamment |
 | Tests de sécurité des dépendances et secrets | IN PROGRESS | CI de la nouvelle révision à terminer et archiver |

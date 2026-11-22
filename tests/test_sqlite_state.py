@@ -57,3 +57,41 @@ def test_refuses_newer_schema_without_downgrading_it(tmp_path):
     with sqlite3.connect(path) as db:
         assert db.execute("PRAGMA user_version").fetchone()[0] == 42
 
+
+def test_refuses_newer_row_schema_without_falling_back_to_old_payload(tmp_path):
+    path = tmp_path / "state.sqlite3"
+    store = SQLiteStateStore(path)
+    store.save({"preserve": "this row"})
+    with sqlite3.connect(path) as db:
+        db.execute("UPDATE bot_state SET schema_version = 2 WHERE singleton = 1")
+
+    with pytest.raises(StateStoreError, match="newer than supported"):
+        SQLiteStateStore(path).load(dict)
+
+    with sqlite3.connect(path) as db:
+        assert db.execute(
+            "SELECT schema_version, payload FROM bot_state WHERE singleton = 1"
+        ).fetchone() == (2, '{"preserve":"this row"}')
+
+
+def test_rejects_invalid_row_schema_and_nonstandard_json_constants(tmp_path):
+    path = tmp_path / "state.sqlite3"
+    store = SQLiteStateStore(path)
+    store.save({"safe": True})
+    with sqlite3.connect(path) as db:
+        db.execute("UPDATE bot_state SET schema_version = 0 WHERE singleton = 1")
+    with pytest.raises(StateStoreCorruptError, match="schema version is invalid"):
+        SQLiteStateStore(path).load(dict)
+
+    with sqlite3.connect(path) as db:
+        db.execute("UPDATE bot_state SET schema_version = 1, payload = '{\"value\":NaN}' WHERE singleton = 1")
+    with pytest.raises(StateStoreCorruptError, match="invalid JSON"):
+        SQLiteStateStore(path).load(dict)
+
+
+def test_only_actual_sqlite_corruption_is_eligible_for_backup_recovery():
+    busy = sqlite3.OperationalError("database is locked")
+    malformed = sqlite3.DatabaseError("database disk image is malformed")
+    assert SQLiteStateStore._is_corruption_error(busy) is False
+    assert SQLiteStateStore._is_corruption_error(malformed) is True
+

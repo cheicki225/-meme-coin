@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable
@@ -55,8 +56,8 @@ class SQLiteStateStore:
                 mode = db.execute("PRAGMA journal_mode = WAL").fetchone()
                 if not mode or str(mode[0]).lower() != "wal":
                     raise StateStoreError("SQLite WAL mode could not be enabled")
-                integrity = db.execute("PRAGMA integrity_check").fetchone()
-                if not integrity or integrity[0] != "ok":
+                integrity = db.execute("PRAGMA integrity_check").fetchall()
+                if integrity != [("ok",)]:
                     raise StateStoreCorruptError(f"SQLite integrity check failed: {integrity}")
                 db.execute("""
                     CREATE TABLE IF NOT EXISTS bot_state (
@@ -74,7 +75,27 @@ class SQLiteStateStore:
                 if current_version < SCHEMA_VERSION:
                     db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         except sqlite3.DatabaseError as exc:
-            raise StateStoreCorruptError(f"Cannot open SQLite state database {self.path}") from exc
+            error_type = StateStoreCorruptError if self._is_corruption_error(exc) else StateStoreError
+            raise error_type(f"Cannot open SQLite state database {self.path}") from exc
+
+    @staticmethod
+    def _is_corruption_error(exc: sqlite3.DatabaseError) -> bool:
+        """Separate damaged database errors from transient/storage failures.
+
+        Recovery may replace a damaged primary database from a backup. It must
+        not do that for SQLITE_BUSY, SQLITE_IOERR, permission, or disk-full
+        errors, where the primary may still contain the newest committed state.
+        """
+        code = getattr(exc, "sqlite_errorcode", None)
+        if isinstance(code, int):
+            primary_code = code & 0xFF
+            return primary_code in {
+                sqlite3.SQLITE_CORRUPT,
+                sqlite3.SQLITE_NOTADB,
+                getattr(sqlite3, "SQLITE_FORMAT", -1),
+            }
+        message = str(exc).lower()
+        return any(marker in message for marker in ("database disk image is malformed", "file is not a database"))
 
     def load(
         self,
@@ -92,11 +113,15 @@ class SQLiteStateStore:
 
         if row:
             version, payload = row
+            if isinstance(version, bool) or not isinstance(version, int) or version < 1:
+                raise StateStoreCorruptError("Stored state schema version is invalid")
             if version > SCHEMA_VERSION:
                 raise StateStoreError(f"State schema {version} is newer than supported {SCHEMA_VERSION}")
+            if version < SCHEMA_VERSION:
+                raise StateStoreError(f"State schema {version} has no supported migration to {SCHEMA_VERSION}")
             try:
-                state = json.loads(payload)
-            except (json.JSONDecodeError, TypeError) as exc:
+                state = json.loads(payload, parse_constant=self._reject_json_constant)
+            except (json.JSONDecodeError, TypeError, ValueError) as exc:
                 raise StateStoreCorruptError("Stored state payload is invalid JSON") from exc
             if not isinstance(state, dict):
                 raise StateStoreCorruptError("Stored state payload must be a JSON object")
@@ -115,6 +140,10 @@ class SQLiteStateStore:
             state = default_factory()
         self.save(state)
         return state
+
+    @staticmethod
+    def _reject_json_constant(value: str):
+        raise ValueError(f"Non-standard JSON constant {value} is not allowed")
 
     def has_committed_state(self) -> bool:
         """Check whether a database contains a state row without creating one."""
@@ -152,20 +181,25 @@ class SQLiteStateStore:
         """Create a consistent SQLite backup, including committed WAL data."""
         target = Path(destination)
         target.parent.mkdir(parents=True, exist_ok=True)
-        temporary = target.with_suffix(target.suffix + ".tmp")
+        temporary_name = None
         try:
+            with tempfile.NamedTemporaryFile(
+                prefix=f".{target.name}.", suffix=".tmp", dir=target.parent, delete=False
+            ) as temporary_file:
+                temporary_name = temporary_file.name
             with self._connection() as source:
-                backup = sqlite3.connect(temporary)
+                backup = sqlite3.connect(temporary_name)
                 try:
                     source.backup(backup)
                 finally:
                     backup.close()
-            os.replace(temporary, target)
+            os.replace(temporary_name, target)
             return target
         except Exception:
-            try:
-                temporary.unlink(missing_ok=True)
-            except OSError:
-                pass
+            if temporary_name is not None:
+                try:
+                    Path(temporary_name).unlink(missing_ok=True)
+                except OSError:
+                    pass
             raise
 

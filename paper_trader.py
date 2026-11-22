@@ -58,6 +58,42 @@ async def _sold_sol_cashflow(sell_result: dict, proceeds_usd: float) -> float:
     return proceeds_usd / sol_usd
 
 
+def _simulated_paper_fee_sol(buy_mode: str) -> float:
+    """Return the configured PAPER-only per-transaction fee estimate."""
+    if buy_mode == "hardcore":
+        return round(random.uniform(0.01, HARDCORE_MAX_FEE_SOL), 4)
+    return SIMPLE_TYPICAL_FEE_SOL
+
+
+def _paper_fee_usd_at_rate(fee_sol: float, sol_usd: float) -> float:
+    """Convert a simulated fee using a validated transaction-time SOL rate."""
+    if not isinstance(fee_sol, (int, float)) or isinstance(fee_sol, bool) or not math.isfinite(fee_sol) or fee_sol < 0:
+        raise ValueError("Simulated fee must be a finite non-negative number")
+    if not isinstance(sol_usd, (int, float)) or isinstance(sol_usd, bool) or not math.isfinite(sol_usd) or sol_usd <= 0:
+        raise ValueError("SOL/USD rate must be a finite positive number")
+    return float(fee_sol) * float(sol_usd)
+
+
+async def _paper_fee_usd(fee_sol: float) -> float:
+    """Convert a simulated PAPER fee to USD at the transaction-time SOL rate."""
+    if not isinstance(fee_sol, (int, float)) or isinstance(fee_sol, bool) or not math.isfinite(fee_sol) or fee_sol < 0:
+        raise ValueError("Simulated fee must be a finite non-negative number")
+    if fee_sol == 0:
+        return 0.0
+    return _paper_fee_usd_at_rate(fee_sol, await get_sol_usd_rate())
+
+
+async def _paper_entry_accounting(cost_basis_usd: float, sol_invested: float, fee_sol: float) -> dict:
+    """Include the entry transaction fee in PAPER cost basis and cash outlay."""
+    fee_usd = await _paper_fee_usd(fee_sol)
+    return {
+        "cost_basis_usd": cost_basis_usd + fee_usd,
+        "total_sol_invested": sol_invested + fee_sol,
+        "simulated_fees_sol": fee_sol,
+        "simulated_fees_usd": fee_usd,
+    }
+
+
 def _build_position_keyboard(token_mint: str):
     """
     Boutons de vente rapide + refresh + liens externes, attachés directement
@@ -149,11 +185,29 @@ class PaperTrader:
         units = cost_basis_usd / entry_price
         return {"units": units, "cost_basis_usd": cost_basis_usd, "actual_price": entry_price, "signature": None}
 
-    async def _execute_sell(self, token_mint: str, units: float, current_price: float, settings: dict) -> dict:
+    async def _execute_sell(self, token_mint: str, units: float, current_price: float, settings: dict,
+                            *, simulated_fee_sol: float | None = None,
+                            simulated_fee_usd: float | None = None) -> dict:
         """Version PAPER : conversion directe au prix coté, aucun slippage simulé.
         Retourne None seulement si la vente doit être annulée (jamais en PAPER)."""
         proceeds_usd = units * current_price
-        return {"proceeds_usd": proceeds_usd, "signature": None}
+        if config.TRADING_MODE == "PAPER":
+            fee_sol = (
+                simulated_fee_sol if simulated_fee_sol is not None
+                else _simulated_paper_fee_sol(settings.get("buy_mode", "simple"))
+            )
+            fee_usd = (
+                simulated_fee_usd if simulated_fee_usd is not None
+                else await _paper_fee_usd(fee_sol)
+            )
+        else:
+            fee_sol = fee_usd = 0.0
+        return {
+            "proceeds_usd": proceeds_usd,
+            "signature": None,
+            "simulated_fee_sol": fee_sol,
+            "simulated_fee_usd": fee_usd,
+        }
 
     # ══════════════════════════════════════════════════════════
     # OUVERTURE DE POSITION
@@ -234,9 +288,10 @@ class PaperTrader:
         # Buy Mode : simulation d'échec de transaction en Hardcore (voir doc buy-modes.md)
         # "Une transaction qui fail = aucun SOL prélevé" -> on ne débite rien, on log juste le skip.
         buy_mode = settings.get("buy_mode", "simple")
-        simulated_fee_sol = SIMPLE_TYPICAL_FEE_SOL
-        if buy_mode == "hardcore":
-            simulated_fee_sol = round(random.uniform(0.01, HARDCORE_MAX_FEE_SOL), 4)
+        simulated_fee_sol = 0.0
+        if config.TRADING_MODE == "PAPER":
+            simulated_fee_sol = _simulated_paper_fee_sol(buy_mode)
+        if buy_mode == "hardcore" and config.TRADING_MODE == "PAPER":
             if random.random() < HARDCORE_FAIL_RATE:
                 log.info(f"🔥 [Hardcore] Transaction simulée en échec (CU exceeded) — aucun SOL débité.")
                 if self.notifier:
@@ -461,7 +516,12 @@ class PaperTrader:
             log.warning(f"Achat annulé/échoué pour {token_mint[:8]}...")
             return None
 
-        cost_basis_usd = buy_result["cost_basis_usd"]
+        entry_accounting = await _paper_entry_accounting(
+            buy_result["cost_basis_usd"],
+            buy_result.get("sol_cashflow", settings.get("buy_amount_sol", 0.1)),
+            simulated_fee_sol,
+        )
+        cost_basis_usd = entry_accounting["cost_basis_usd"]
         units = buy_result["units"]
         actual_entry_price = buy_result.get("actual_price", entry_price)
         buy_signature = buy_result.get("signature")
@@ -486,9 +546,10 @@ class PaperTrader:
             "status": "open",
             "reason": reason,
             "buy_mode": buy_mode,
-            "simulated_fees_sol": simulated_fee_sol,
+            "simulated_fees_sol": entry_accounting["simulated_fees_sol"],
+            "simulated_fees_usd": entry_accounting["simulated_fees_usd"],
             "tx_signatures": [buy_signature] if buy_signature else [],
-            "total_sol_invested": buy_result.get("sol_cashflow", settings.get("buy_amount_sol", 0.1)),
+            "total_sol_invested": entry_accounting["total_sol_invested"],
             "total_sol_received": 0.0,
             "mc_trailing_armed": False,
             "profit_trail_armed": False,
@@ -836,12 +897,20 @@ class PaperTrader:
             if i in position["dip_levels_hit"]:
                 continue
             if drop_pct >= level["drop_pct"]:
-                # Conversion SOL→USD au taux en direct — voir backtest.get_sol_usd_rate
-                dip_amount_usd = level["amount_sol"] * await get_sol_usd_rate()
+                # Keep the simulated token buy and its fee on the same SOL/USD
+                # snapshot so the position basis matches the modeled cash cost.
+                sol_usd = await get_sol_usd_rate()
+                dip_amount_usd = level["amount_sol"] * sol_usd
+                fee_sol = _simulated_paper_fee_sol(position.get("buy_mode", "simple"))
+                fee_usd = _paper_fee_usd_at_rate(fee_sol, sol_usd)
                 new_units = dip_amount_usd / price
                 position["units"] += new_units
-                position["cost_basis_usd"] += dip_amount_usd
-                position["total_sol_invested"] = position.get("total_sol_invested", 0) + level["amount_sol"]
+                position["cost_basis_usd"] += dip_amount_usd + fee_usd
+                position["total_sol_invested"] = (
+                    position.get("total_sol_invested", 0) + level["amount_sol"] + fee_sol
+                )
+                position["simulated_fees_sol"] = position.get("simulated_fees_sol", 0) + fee_sol
+                position["simulated_fees_usd"] = position.get("simulated_fees_usd", 0) + fee_usd
                 position["dip_levels_hit"].append(i)
                 self.data_store.save()
 
@@ -966,23 +1035,44 @@ class PaperTrader:
         if position.get("initials_sold"):
             return False
 
+        cost_basis = position["cost_basis_usd"]
+        fee_sol = _simulated_paper_fee_sol(position.get("buy_mode", "simple"))
+        fee_usd = await _paper_fee_usd(fee_sol)
         current_value = position["units"] * price
-        if current_value <= position["cost_basis_usd"]:
+        if current_value <= cost_basis + fee_usd:
             return False  # pas encore en profit, rien à récupérer
 
-        units_to_sell = position["cost_basis_usd"] / price
-        proceeds = units_to_sell * price  # == cost_basis_usd, par construction
+        units_to_sell = (cost_basis + fee_usd) / price
+        sell_result = await self._execute_sell(
+            position["token_mint"], units_to_sell, price, position.get("settings", {}),
+            simulated_fee_sol=fee_sol, simulated_fee_usd=fee_usd,
+        )
+        if sell_result is None:
+            return False
+        proceeds = sell_result["proceeds_usd"]
+        fee_sol = sell_result.get("simulated_fee_sol", 0.0)
+        fee_usd = sell_result.get("simulated_fee_usd", 0.0)
+        sol_received = await _sold_sol_cashflow(sell_result, proceeds)
+        recovered = proceeds - fee_usd
+        cost_removed = cost_basis
+        pnl_usd = recovered - cost_removed
 
         position["units"] -= units_to_sell
-        recovered = position["cost_basis_usd"]
         position["cost_basis_usd"] = 0  # le reste devient un moonbag à coût nul
         position["initials_sold"] = True
+        position["total_sol_received"] = position.get("total_sol_received", 0) + sol_received - fee_sol
+        position["simulated_fees_sol"] = position.get("simulated_fees_sol", 0) + fee_sol
+        position["simulated_fees_usd"] = position.get("simulated_fees_usd", 0) + fee_usd
 
         state = self.data_store.state
         state.setdefault("trades", []).append({
             "token_mint": position["token_mint"], "type": "sell_initials",
-            "recovered_usd": recovered, "time": time.time(),
+            "recovered_usd": recovered, "pnl_usd": pnl_usd,
+            "fees_usd": fee_usd, "time": time.time(),
         })
+        state["total_pnl_usd"] = state.get("total_pnl_usd", 0) + pnl_usd
+        if pnl_usd < 0:
+            state["session_losses_usd"] = state.get("session_losses_usd", 0) + abs(pnl_usd)
         self.data_store.save()
 
         log.info(f"💰 [PAPER] Sell Initials sur {position['token_mint'][:8]}... — {recovered:.2f}$ récupérés.")
@@ -1196,12 +1286,16 @@ class PaperTrader:
         proceeds = sell_result["proceeds_usd"]
         sell_signature = sell_result.get("signature")
         sol_received = await _sold_sol_cashflow(sell_result, proceeds)
+        simulated_fee_sol = sell_result.get("simulated_fee_sol", 0.0)
+        simulated_fee_usd = sell_result.get("simulated_fee_usd", 0.0)
         cost_removed = position["cost_basis_usd"] * sell_ratio
-        pnl_usd = proceeds - cost_removed
+        pnl_usd = proceeds - simulated_fee_usd - cost_removed
 
         position["units"] -= units_sold
         position["cost_basis_usd"] -= cost_removed
-        position["total_sol_received"] = position.get("total_sol_received", 0) + sol_received
+        position["total_sol_received"] = position.get("total_sol_received", 0) + sol_received - simulated_fee_sol
+        position["simulated_fees_sol"] = position.get("simulated_fees_sol", 0) + simulated_fee_sol
+        position["simulated_fees_usd"] = position.get("simulated_fees_usd", 0) + simulated_fee_usd
         if sell_signature:
             position.setdefault("tx_signatures", []).append(sell_signature)
         position["fee_lamports"] = int(position.get("fee_lamports", 0)) + int(sell_result.get("fee_lamports", 0))
@@ -1257,14 +1351,18 @@ class PaperTrader:
         proceeds = sell_result["proceeds_usd"]
         sell_signature = sell_result.get("signature")
         sol_received = await _sold_sol_cashflow(sell_result, proceeds)
-        pnl_usd = proceeds - position["cost_basis_usd"]
+        simulated_fee_sol = sell_result.get("simulated_fee_sol", 0.0)
+        simulated_fee_usd = sell_result.get("simulated_fee_usd", 0.0)
+        pnl_usd = proceeds - simulated_fee_usd - position["cost_basis_usd"]
 
         position["status"] = "closed"
         position["exit_price"] = exit_price
         position["exit_time"] = time.time()
         position["result_pct"] = change_pct
         position["close_reason"] = close_reason
-        position["total_sol_received"] = position.get("total_sol_received", 0) + sol_received
+        position["total_sol_received"] = position.get("total_sol_received", 0) + sol_received - simulated_fee_sol
+        position["simulated_fees_sol"] = position.get("simulated_fees_sol", 0) + simulated_fee_sol
+        position["simulated_fees_usd"] = position.get("simulated_fees_usd", 0) + simulated_fee_usd
         position["units"] = 0
         position["cost_basis_usd"] = 0
         if sell_signature:

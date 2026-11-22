@@ -12,11 +12,11 @@ python -m pytest -q
 
 Dans l'environnement local de cette revue, un plugin pytest global incompatible avec `eth_typing` empêche le chargement automatique normal. La désactivation ci-dessus permet de charger les tests du projet sans modifier l'environnement global. La CI GitHub n'utilise pas cette option.
 
-Dernière vérification locale de cette révision : `compileall` réussi et **170 tests passés** (15 novembre 2026). Le `git diff --check` est également passé.
+Dernière vérification locale : `python -m compileall -q .` réussi, `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q` exécuté le 22 novembre 2026 avec **196 tests réussis**, et `git diff --check` sans erreur. Les avertissements affichés par Git concernent uniquement la conversion de fins de ligne LF vers CRLF.
 
 ## CI configurée
 
-Le workflow `.github/workflows/ci.yml` installe les dépendances, compile les sources, vérifie le mode PAPER par défaut, exécute pytest, Ruff sur les erreurs critiques, `pip-audit` et Gitleaks. Le résultat de ces étapes doit être vérifié sur le nouveau commit; un passage local ne remplace pas cette CI. Ruff, pip-audit et Gitleaks ne sont pas installés dans l'environnement local actuel; ils doivent s'exécuter dans GitHub Actions. L'installation locale des outils a échoué à la vérification TLS du dépôt Python, sans contournement de TLS.
+Le workflow `.github/workflows/ci.yml` installe les dépendances, compile les sources, vérifie le mode PAPER par défaut, exécute pytest, Ruff sur les erreurs critiques, `pip-audit` et Gitleaks. Le résultat de ces étapes doit être vérifié sur le nouveau commit; le dernier commit `cb92d1a` avait une CI verte, mais cette révision modifiée attend son run. Ruff, pip-audit et Gitleaks ne sont pas installés dans l'environnement local actuel; ils doivent s'exécuter dans GitHub Actions. L'installation locale des outils a échoué à la vérification TLS du dépôt Python, sans contournement de TLS.
 
 ## Portée des tests
 

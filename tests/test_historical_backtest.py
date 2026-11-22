@@ -34,11 +34,60 @@ def test_ambiguous_candle_uses_stop_loss_first():
     assert result["trades"][0]["net_pnl_usd"] == pytest.approx(-10)
 
 
+def test_signal_on_exit_candle_can_enter_on_the_following_candle():
+    candles = [
+        _candle(1, 100, 100, 100, 100),
+        _candle(2, 100, 105, 95, 100),
+        _candle(3, 100, 111, 99, 110),
+        _candle(4, 105, 106, 104, 105),
+        _candle(5, 105, 106, 104, 105),
+    ]
+    result = run_backtest(
+        candles, [0, 2], take_profit_pct=10, stop_loss_pct=20,
+        fee_bps=0, slippage_bps=0,
+    )
+    assert [trade["entry_signal_index"] for trade in result["trades"]] == [0, 2]
+    assert [trade["entry_index"] for trade in result["trades"]] == [1, 3]
+
+
 def test_rejects_bad_ohlc_and_signals_without_next_candle():
     with pytest.raises(BacktestInputError, match="inconsistent"):
         run_backtest([_candle(1, 100, 90, 80, 95)], [])
     with pytest.raises(BacktestInputError, match="following candle"):
         run_backtest([_candle(1, 100, 101, 99, 100)], [0])
+
+
+def test_expected_interval_rejects_gaps_unless_explicitly_allowed():
+    candles = [
+        _candle(60, 100, 101, 99, 100),
+        _candle(180, 100, 101, 99, 100),
+    ]
+    with pytest.raises(BacktestInputError, match="1 missing candles"):
+        run_backtest(candles, [], expected_interval_s=60)
+
+    result = run_backtest(
+        candles, [], expected_interval_s=60, allowed_missing_candles=1
+    )
+    assert result["data_quality"]["gap_count"] == 1
+    assert result["data_quality"]["missing_candle_count"] == 1
+    assert result["data_quality"]["gaps"] == [{
+        "from_timestamp": 60,
+        "to_timestamp": 180,
+        "missing_candles": 1,
+    }]
+
+
+@pytest.mark.parametrize("expected_interval_s", [True, 0, -60, 1.5, "60"])
+def test_expected_interval_requires_a_positive_integer(expected_interval_s):
+    candles = [_candle(60, 100, 101, 99, 100)]
+    with pytest.raises(BacktestInputError, match="expected_interval_s"):
+        run_backtest(candles, [], expected_interval_s=expected_interval_s)
+
+
+def test_expected_interval_rejects_timestamps_off_interval_grid():
+    candles = [_candle(60, 100, 101, 99, 100), _candle(181, 100, 101, 99, 100)]
+    with pytest.raises(BacktestInputError, match="do not align"):
+        run_backtest(candles, [], expected_interval_s=60)
 
 
 def test_malformed_signal_indices_raise_domain_error():

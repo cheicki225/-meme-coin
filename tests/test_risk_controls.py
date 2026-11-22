@@ -52,3 +52,42 @@ def test_invalid_position_reservation_fails_closed():
         reserved_positions=-1,
     ) == (False, "invalid_reserved_positions")
 
+
+def test_malformed_stop_loss_state_fails_closed():
+    assert assess_new_position(
+        {"emergency_stop": "false", "open_positions": []},
+        10,
+        max_exposure_usd=250,
+        max_open_positions=10,
+    ) == (False, "invalid_emergency_stop_state")
+
+    assert assess_new_position(
+        {"session_losses_usd": float("nan"), "open_positions": []},
+        10,
+        max_exposure_usd=250,
+        max_open_positions=10,
+    ) == (False, "invalid_session_loss_state")
+
+    assert assess_new_position(
+        {"session_losses_usd": True, "open_positions": []},
+        10,
+        max_exposure_usd=250,
+        max_open_positions=10,
+    ) == (False, "invalid_session_loss_state")
+
+
+def test_malformed_position_cost_and_missing_positions_fail_closed():
+    assert assess_new_position(
+        {"open_positions": [{"cost_basis_usd": True}]},
+        10,
+        max_exposure_usd=250,
+        max_open_positions=10,
+    ) == (False, "invalid_position_exposure")
+
+    assert assess_new_position(
+        {},
+        10,
+        max_exposure_usd=250,
+        max_open_positions=10,
+    ) == (False, "invalid_position_state")
+

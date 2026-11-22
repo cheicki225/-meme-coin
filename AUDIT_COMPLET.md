@@ -18,20 +18,20 @@ Les principaux points relevés étaient l'utilisation des anciens endpoints Jupi
 - **Transactions ambiguës :** signature journalisée avant soumission; aucun retry automatique; une signature non résolue conserve l'arrêt d'urgence après redémarrage. MultiBuy LIVE reste refusé tant que chaque wallet n'est pas comptabilisé séparément.
 - **RPC et alertes :** métriques de latence/erreur, surveillance avec cooldown, erreurs explicites et notifications Telegram pour RPC, collecte et risque.
 - **Backtest :** moteur de replay OHLC déterministe accessible via `backtest.replay_historical_ohlc`; entrée à la bougie suivante, frais et slippage sur chaque jambe, SL d'abord si une bougie touche TP et SL. Le moteur requiert des données de chandelles fournies et ne prétend pas générer un historique.
-- **Risque :** expositions réservées sous verrou contre les achats concurrents, plafond de positions et d'exposition, arrêt persistant après dépassement de pertes, commandes Telegram `/halt` et `/resume`; transferts manuels bloqués en PAPER et plafonnés en LIVE.
+- **Risque :** expositions réservées sous verrou contre les achats concurrents, plafond de positions et d'exposition, arrêt persistant après dépassement de pertes, commandes Telegram `/halt` et `/resume`; transferts manuels bloqués en PAPER et plafonnés en LIVE. En LIVE, l'arrêt bloque les swaps d'achat et de vente et ne liquide pas les positions.
 
-## Progression et limites au 15 novembre 2026
+## Progression et limites au 22 novembre 2026
 
 La revue des 16 fichiers de la PR #3 est consignée ci-dessus. Depuis cette revue, la branche de suivi ajoute la validation transactionnelle Jupiter, SQLite/récupération, collecte wallet, contrôles de risque et tests. La correction du 15 novembre durcit les nombres RPC/Jupiter, retries, journaux, mode RPC public dégradé et replay chronologique.
 
-Le score actualisé et son barème sont maintenus dans [PROGRESS.md](PROGRESS.md): **70 % d'avancement de développement pondéré** (10 objectifs à poids égal; VERIFIED=100, TESTED=75, IMPLEMENTED=50, IN PROGRESS=25, NOT STARTED/BLOCKED=0). Il ne signifie ni disponibilité de production, ni résultat financier, ni readiness LIVE.
+Le score actualisé et son barème sont maintenus dans [PROGRESS.md](PROGRESS.md): **72,5 % d'avancement de développement pondéré** (10 objectifs à poids égal; VERIFIED=100, TESTED=75, IMPLEMENTED=50, IN PROGRESS=25, NOT STARTED/BLOCKED=0). Il ne signifie ni disponibilité de production, ni résultat financier, ni readiness LIVE.
 
 ## États distincts
 
-- **Développement :** 70 % selon le barème publié.
-- **Tests locaux :** `compileall` réussi et 170 tests passés sur le commit de travail; voir [TESTING.md](TESTING.md).
-- **Sécurité :** IN PROGRESS. Jupiter/comptabilité sont couverts par tests mockés; l'audit indépendant CPI/DEX et le nouveau résultat pip-audit/Gitleaks restent à confirmer.
-- **PAPER :** mode par défaut et code testé, mais soak, restauration déployée, frais simulés PnL et service RPC cible restent à vérifier.
+- **Développement :** 72,5 % selon le barème publié.
+- **Tests locaux :** `compileall` réussi et 196 tests passés le 22 novembre 2026; voir [TESTING.md](TESTING.md). Aucun ordre réel n'a été diffusé.
+- **Sécurité :** IN PROGRESS. Jupiter/comptabilité sont couverts par tests mockés; l'audit indépendant CPI/DEX et la CI de la nouvelle révision restent à confirmer.
+- **PAPER :** mode par défaut. Les frais simulés d'entrée, DCA, sorties partielles/totales et Sell Initials sont désormais intégrés aux coûts/cashflows et testés; soak, restauration déployée et endpoint RPC cible restent à vérifier.
 - **LIVE : BLOCKED / NOT READY.** Aucune transaction réelle exécutée. Aucun test mainnet, portefeuille financé, soak ni audit indépendant complet.
 
 ## Travaux encore ouverts
@@ -39,10 +39,10 @@ Le score actualisé et son barème sont maintenus dans [PROGRESS.md](PROGRESS.md
 1. Confirmer sur GitHub la CI complète du nouveau commit (compilation, tests, Ruff, pip-audit et scan Gitleaks) et corriger tout échec.
 2. Exécuter un soak PAPER dans l'environnement cible; vérifier alertes Telegram, reprise après arrêt et restauration de sauvegarde.
 3. Ajouter une réconciliation guidée de signatures pendantes à partir du RPC; garder l'arrêt tant que l'issue financière n'est pas certaine.
-4. Relier le replay OHLC aux entrées historiques de la stratégie et à un dataset versionné; mesurer la provenance, les gaps, les coûts et le risque de lookahead.
+4. Relier le replay OHLC aux entrées historiques de la stratégie et à un dataset versionné; la validation temporelle/gaps existe lorsque l'appelant fournit l'intervalle attendu, mais provenance, coûts et risque de lookahead de bout en bout restent ouverts.
 5. Faire une revue CPI/DEX indépendante de la politique de transaction et vérifier le contrat de l'API Jupiter courant.
 6. Mesurer les limites, fraîcheur et charge du fournisseur RPC réellement configuré; le déploiement n'a pas été inspecté.
-7. Décider et tester une version explicite du modèle de frais PAPER. Les frais simulés actuels sont enregistrés mais ne sont pas déduits du PnL PAPER.
+7. Calibrer les frais simulés PAPER sur des observations documentées; le modèle actuel est déterministe en mode Simple et aléatoire en Hardcore, et ne remplace pas des frais de marché vérifiés.
 
 Voir aussi [PROJECT_ROADMAP.md](PROJECT_ROADMAP.md), [RPC_PUBLIC_LIMITATIONS.md](RPC_PUBLIC_LIMITATIONS.md), [BACKTESTING.md](BACKTESTING.md) et [LIVE_READINESS.md](LIVE_READINESS.md).
 

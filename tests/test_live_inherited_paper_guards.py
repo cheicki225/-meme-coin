@@ -31,3 +31,29 @@ def test_live_sell_initials_refuses_state_only_simulation(monkeypatch):
     result = asyncio.run(paper_trader.PaperTrader.sell_initials(object(), position, 3.0))
     assert result is False
     assert position == before
+
+
+def test_live_emergency_stop_blocks_buys_and_sells_without_submitting(monkeypatch):
+    import jupiter_executor
+    from live_trader import LiveTrader
+
+    monkeypatch.setattr(config, "TRADING_MODE", "LIVE")
+
+    class Store:
+        state = {"emergency_stop": True, "pending_transactions": []}
+
+    async def unexpected_swap(*_args, **_kwargs):
+        raise AssertionError("emergency stop must block every LIVE swap")
+
+    monkeypatch.setattr(jupiter_executor, "execute_swap", unexpected_swap)
+    trader = LiveTrader(Store())
+
+    buy_result = asyncio.run(trader._execute_swap_tracked(
+        config.SOL_MINT, "TokenMint", 1, 100, None, False,
+    ))
+    sell_result = asyncio.run(trader._execute_swap_tracked(
+        "TokenMint", config.SOL_MINT, 1, 100, None, False,
+    ))
+
+    assert buy_result is None
+    assert sell_result is None

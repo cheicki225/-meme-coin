@@ -27,8 +27,17 @@ def _finite_number(value, field: str) -> float:
     return number
 
 
-def _validate_candles(candles: list[dict]) -> None:
+def _validate_candles(
+    candles: list[dict], *, expected_interval_s: int | None = None, allowed_missing_candles: int = 0
+) -> list[dict]:
+    if expected_interval_s is not None and (
+        type(expected_interval_s) is not int or expected_interval_s <= 0
+    ):
+        raise BacktestInputError("expected_interval_s must be a positive integer")
+    if type(allowed_missing_candles) is not int or allowed_missing_candles < 0:
+        raise BacktestInputError("allowed_missing_candles must be a non-negative integer")
     previous_time = None
+    gaps = []
     for index, candle in enumerate(candles):
         if not isinstance(candle, dict):
             raise BacktestInputError(f"candle {index} must be an object")
@@ -48,7 +57,24 @@ def _validate_candles(candles: list[dict]) -> None:
             raise BacktestInputError(f"candle {index} has inconsistent OHLC prices")
         if previous_time is not None and timestamp <= previous_time:
             raise BacktestInputError("candle timestamps must be strictly increasing")
+        if previous_time is not None and expected_interval_s is not None:
+            elapsed = timestamp - previous_time
+            if elapsed % expected_interval_s:
+                raise BacktestInputError("candle timestamps do not align to expected_interval_s")
+            missing = elapsed // expected_interval_s - 1
+            if missing > allowed_missing_candles:
+                raise BacktestInputError(
+                    f"candle gap contains {missing} missing candles; "
+                    f"allowed_missing_candles is {allowed_missing_candles}"
+                )
+            if missing:
+                gaps.append({
+                    "from_timestamp": previous_time,
+                    "to_timestamp": timestamp,
+                    "missing_candles": missing,
+                })
         previous_time = timestamp
+    return gaps
 
 
 def run_backtest(
@@ -60,6 +86,8 @@ def run_backtest(
     stop_loss_pct: float = 30.0,
     fee_bps: int = 100,
     slippage_bps: int = 100,
+    expected_interval_s: int | None = None,
+    allowed_missing_candles: int = 0,
 ) -> dict:
     """Replay single-position entries and return net results after costs.
 
@@ -69,7 +97,11 @@ def run_backtest(
     adverse on both sides and fees are charged on each executed notional.
     """
     rows = list(candles)
-    _validate_candles(rows)
+    gaps = _validate_candles(
+        rows,
+        expected_interval_s=expected_interval_s,
+        allowed_missing_candles=allowed_missing_candles,
+    )
     raw_signals = list(entry_signal_indices)
     if any(not isinstance(index, int) or isinstance(index, bool) for index in raw_signals):
         raise BacktestInputError("entry signals must be integer candle indices")
@@ -147,7 +179,10 @@ def run_backtest(
             "return_pct": pnl / position_usd * 100,
             "exit_reason": exit_reason,
         })
-        cursor = exit_index + 1
+        # The exit candle's close is a valid signal observation. Permit a
+        # signal there to enter on the following candle, while the preceding
+        # position is already closed.
+        cursor = exit_index
 
     equity = 0.0
     peak = 0.0
@@ -165,6 +200,14 @@ def run_backtest(
         "fees_usd": sum(trade["fees_usd"] for trade in trades),
         "max_drawdown_usd": max_drawdown,
         "data_points": len(rows),
+        "data_quality": {
+            "expected_interval_s": expected_interval_s,
+            "gap_count": len(gaps),
+            "missing_candle_count": sum(gap["missing_candles"] for gap in gaps),
+            "gaps": gaps,
+            "first_timestamp": rows[0]["timestamp"] if rows else None,
+            "last_timestamp": rows[-1]["timestamp"] if rows else None,
+        },
         "assumptions": {
             "entry": "next candle open after signal close",
             "ambiguous_bar": "stop loss first",
