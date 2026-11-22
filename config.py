@@ -55,6 +55,16 @@ HELIUS_RPC_URL = os.getenv("SOLANA_RPC_URL") or (f"https://mainnet.helius-rpc.co
 HELIUS_WS_URL = f"wss://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}" if HELIUS_API_KEY else None
 # API "Enhanced Transactions" de Helius : parse déjà les instructions Pump.fun
 HELIUS_PARSE_TX_URL = f"https://api.helius.xyz/v0/transactions/?api-key={HELIUS_API_KEY}"
+# Conservative per-provider default for shared/public RPC; set from the actual plan quota.
+SOLANA_RPC_REQUESTS_PER_SECOND = _positive_finite_float_env(
+    "SOLANA_RPC_REQUESTS_PER_SECOND", "3"
+)
+# Helius applies a separate quota to Enhanced APIs. The default leaves a 50%
+# margin under its currently documented Free-plan limit; set it below the
+# configured plan's actual quota when the account tier is known.
+HELIUS_ENHANCED_REQUESTS_PER_SECOND = _positive_finite_float_env(
+    "HELIUS_ENHANCED_REQUESTS_PER_SECOND", "1"
+)
 
 # ── RPC de secours (Alchemy) — utilisé automatiquement par execution/rpc_client.py
 # si Helius échoue/timeout. Laisse ALCHEMY_API_KEY vide pour désactiver (Helius seul).
