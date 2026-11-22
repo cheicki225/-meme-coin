@@ -56,6 +56,17 @@ Quatre agents spécialisés ont contribué à des tâches indépendantes : audit
 
 La disponibilité de web-research-problem-solver a été vérifiée puis le skill a été appliqué aux problèmes pytest global et TLS/pip-audit. La recherche a comparé l’isolement par venv à la désactivation de l’autoload pytest et a examiné les options locales pip-audit; elle s’est appuyée sur les sources officielles [pytest plugins](https://docs.pytest.org/en/stable/how-to/plugins.html), [pip TLS certificates](https://pip.pypa.io/en/stable/topics/https-certificates/) et [pip-audit](https://github.com/pypa/pip-audit). Le diagnostic a confirmé que le premier échec TLS de pip pouvait être évité avec truststore sous pip, sans désactiver la vérification. La tentative pip-audit stricte locale échoue toujours lors de la requête de vulnérabilités; elle ne compte pas comme résultat sans vulnérabilité. La CI de la PR reste la source prévue pour l’audit reproductible des dépendances.
 
+## CI GitHub observée
+
+La CI [run 45072851307](https://github.com/cheicki225/-meme-coin/actions/runs/45072851307), run #213, a terminé avec succès sur le commit 51165105a88ed907da055727243eeb7a3abe4463. Le job validate a exécuté avec succès l'installation CI, la compilation, la vérification du mode PAPER par défaut, la suite de tests, Ruff, pip-audit, Gitleaks et le téléversement de la couverture.
+
+- Pytest : 424 tests réussis en 1,75 s.
+- pip-audit : No known vulnerabilities found.
+- Couverture combinée affichée par la CI : 30,63 %; l’artefact de couverture 14774245089 contient coverage.json et coverage.xml.
+- Le run n’a révélé aucun échec de validation; aucun ordre ni signature n’a été utilisé.
+
+Ce run valide le commit de code et tests 5116510. Une mise à jour documentaire de Mission 7 sera poussée ensuite; son propre head doit aussi obtenir une CI verte.
+
 ## Validation et publication
 
 Commandes locales exécutées dans le clone dédié :
@@ -69,4 +80,4 @@ Commandes locales exécutées dans le clone dédié :
 - .venv\Scripts\pip-audit.exe --local --strict — bloqué par l’erreur TLS au flux PyPI.
 - git diff --cached --check — réussi sans sortie après staging explicite.
 
-Dépendances installées uniquement dans .venv locale non suivie par Git. Aucun secret n’a été ajouté. Les résultats CI de Mission 7 ne sont pas encore vérifiés dans ce rapport; ils seront ajoutés après publication de la branche et exécution de GitHub Actions. Le statut final restera **PARTIALLY_READY / MANUAL_VERIFICATION_REQUIRED** tant que le soak de 24 h et la vérification indépendante des programmes DEX sont incomplets.
+Dépendances installées uniquement dans .venv locale non suivie par Git. Aucun secret n’a été ajouté. La CI du commit 5116510 est verte; le commit documentaire de ce rapport doit encore passer sa propre CI avant qu’on qualifie le head final de vert. Le statut reste **PARTIALLY_READY / MANUAL_VERIFICATION_REQUIRED** tant que le soak de 24 h et la vérification indépendante des programmes DEX sont incomplets.
