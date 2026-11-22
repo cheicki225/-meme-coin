@@ -78,7 +78,7 @@ class Notifier:
 
         chat_id = self.data_store.state.get("telegram_chat_id")
         if not self.bot or not chat_id:
-            log.info(f"[notify_photo:{category}] (Telegram non connecté) {caption}")
+            log.info("telegram_photo_not_sent reason=not_connected")
             return
 
         try:
@@ -88,4 +88,7 @@ class Notifier:
                 caption=caption, parse_mode="Markdown", reply_markup=reply_markup,
             )
         except Exception as e:
-            log.error("Telegram photo notification failed for %s (%s)", category, type(e).__name__)
+            log.error(
+                "telegram_photo_send_failed exception_type=%s",
+                type(e).__name__,
+            )
