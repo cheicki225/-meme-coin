@@ -6,7 +6,7 @@ Date : 22 novembre 2026. Point de départ : tête PR #5, commit `7fe6db45b1d6617
 
 Le travail est isolé sur `codex/mission-6-validation-2026-11-22`, issue du head vérifié de la PR #5. `main`, le worktree original et les PR #1 à #5 sont préservés et non fusionnés. PAPER est resté le mode effectif; aucun portefeuille, RPC public, endpoint Jupiter ou programme DEX n'a été utilisé. Les clés sont vides dans le harnais, dotenv y est désactivé, et aucun secret n'a été affiché ou commité. Aucune transaction n'a été signée ou soumise.
 
-La suite complète a donné **378 tests réussis, 0 échec**. Compilation et `git diff --check` ont réussi. Le pourcentage de couverture n'est pas disponible localement; la CI calcule maintenant les couvertures ligne/branche et téléverse les résultats. Le chiffre ne sera consigné qu'après exécution vérifiée de la CI finale.
+La suite complète a donné **378 tests réussis, 0 échec**, en local et en CI. Compilation et `git diff --check` ont réussi. Le rapport `coverage.json` de la CI donne **31,89 % lignes** (3 226/10 116), **24,71 % branches** (922/3 732) et **29,95 % combiné**. Le [run 45064722874](https://github.com/cheicki225/-meme-coin/actions/runs/45064722874) est vert; son artefact de couverture a été téléchargé et inspecté.
 
 Le soak synthétique/accéléré équivalent à 24h virtuelles a exécuté **10 000 cycles** avec PAPER, dispatch synthétique, primitives buy/sell, SQLite temporaire, retries HTTP 429/503, fallback et 19 réouvertures SQLite. Durée murale : 71,928 s sur le code `817ddc4`. Ce n'est pas un test de 24 heures réelles ou du bot complet.
 
@@ -26,7 +26,7 @@ main
 
 La nouvelle branche part du commit exact de la PR #5; aucune modification ni fusion n'a été faite aux PR antérieures. La publication d'une nouvelle PR est séparée de toute fusion.
 
-La PR [#6](https://github.com/cheicki225/-meme-coin/pull/6) est ouverte et cible la branche de la PR #5. Lors de sa création, GitHub n'avait encore associé aucun run CI à sa tête; les résultats de la CI ne sont donc pas supposés ici.
+La PR [#6](https://github.com/cheicki225/-meme-coin/pull/6) est ouverte et cible la branche de la PR #5. Le run CI [45064722874](https://github.com/cheicki225/-meme-coin/actions/runs/45064722874) sur le head `3c4307b2ab5823d116a698a0ed73d13eb9d3f190` a réussi : tests, compilation, lint, audit des dépendances, scan de secrets et téléversement de la couverture.
 
 ## Orchestration parallèle
 
@@ -71,11 +71,11 @@ Voir [MISSION_6_BACKTEST_ACCOUNTING.md](MISSION_6_BACKTEST_ACCOUNTING.md). Le fo
 
 ## Tests, couverture et dépendances
 
-- Tests complets : 378 réussis, 0 échoué, exécutés avec `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`.
+- Tests complets : 378 réussis, 0 échoué, localement avec `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` et en CI.
 - Compilation : `python -m compileall -q .` — réussie.
 - `git diff --check` — réussi.
-- Couverture: `coverage` absent localement; collecte ligne/branche ajoutée à la CI, rapport/JSON/XML téléversés. Valeur effective en attente de la CI de la tête finale.
-- Ruff, pip-audit absents localement; la CI est configurée pour exécuter lint, audit des dépendances et Gitleaks. Aucun résultat CI final n'est revendiqué avant son observation.
+- Couverture CI réelle : **31,89 % lignes** (3 226/10 116), **24,71 % branches** (922/3 732), **29,95 % combiné**; rapport JSON/XML téléversé. Voir [MISSION_6_COVERAGE.md](MISSION_6_COVERAGE.md).
+- Ruff et pip-audit absents localement; leurs étapes CI sont réussies, tout comme Gitleaks, sur le run [45064722874](https://github.com/cheicki225/-meme-coin/actions/runs/45064722874).
 - Le Skill `web-research-problem-solver` était absent du catalogue local; les faits externes sont liés directement aux docs officielles Solana et F Project.
 
 La suite locale pytest sans `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` est bloquée avant discovery par un plugin global Web3 qui importe `ContractName` depuis `eth_typing`; avec l'autoload plugins désactivé, tous les tests passent.

@@ -21,6 +21,13 @@ coverage json -o coverage.json
 coverage xml -o coverage.xml
 ```
 
-Elle téléverse `coverage.json` et `coverage.xml`. Après exécution de la CI sur la tête finale, inscrire ici les résultats vérifiables : `couverture lignes = <valeur CI>`, `branches = <valeur CI>`, `run CI = <lien>`. Les pourcentages sont absents tant que ce run n'a pas été observé; aucun résultat n'est estimé depuis le nombre de tests.
+Elle téléverse `coverage.json` et `coverage.xml`. Sur la tête `3c4307b2ab5823d116a698a0ed73d13eb9d3f190`, la CI a confirmé **378 tests réussis** et les valeurs exactes tirées de `coverage.json` sont :
+
+- Lignes : **3 226 / 10 116 = 31,89 %**.
+- Branches : **922 / 3 732 = 24,71 %**.
+- Couverture totale combinée rapportée par Coverage.py : **29,95 %**.
+- [Run CI 45064722874](https://github.com/cheicki225/-meme-coin/actions/runs/45064722874), job `validate` réussi; artefact `mission-coverage-45064722874` (ID `14770472989`).
+
+Ces valeurs couvrent le code Python inclus par `--source=.` avec les exclusions montrées plus haut. Les fichiers de tests et environnements virtuels sont exclus. Ce taux ne signifie pas que 70 % des parcours critiques de trading sont validés : les lacunes métier et d'exploitation figurent dans les rapports ci-dessous.
 
 Les essais de pannes sont décrits dans [le rapport récupération](MISSION_6_RECOVERY_REPORT.md) et [le rapport sécurité](MISSION_6_SECURITY_REPORT.md).
