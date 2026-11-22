@@ -139,6 +139,8 @@ def test_rpc_monitor_ignores_duplicate_snapshot_with_no_new_rpc_requests(monkeyp
     notifier = Notifier()
     snapshot = {"requests": 20, "errors": 8, "errors_by_method": {"getTransaction": 8}}
     monkeypatch.setattr(rpc_health_monitor.rpc_client, "get_metrics", lambda: snapshot, raising=False)
+    # The first alert is allowed even when monotonic uptime is below cooldown.
+    monkeypatch.setattr(rpc_health_monitor, "time", SimpleNamespace(monotonic=lambda: 1.0))
     monitor = rpc_health_monitor.RpcHealthMonitor(notifier)
 
     first = asyncio.run(monitor.run_once())

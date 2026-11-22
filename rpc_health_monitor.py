@@ -18,7 +18,7 @@ class RpcHealthMonitor:
         self.minimum_requests = minimum_requests
         self.error_rate_threshold = error_rate_threshold
         self.cooldown_s = cooldown_s
-        self._last_alert_at = 0.0
+        self._last_alert_at: float | None = None
         self._last_metrics_snapshot: dict | None = None
 
     @staticmethod
@@ -81,7 +81,11 @@ class RpcHealthMonitor:
         should_alert = total >= self.minimum_requests and error_rate >= self.error_rate_threshold
         notified = False
         now = time.monotonic()
-        if should_alert and self.notifier and now - self._last_alert_at >= self.cooldown_s:
+        cooldown_elapsed = (
+            self._last_alert_at is None
+            or now - self._last_alert_at >= self.cooldown_s
+        )
+        if should_alert and self.notifier and cooldown_elapsed:
             methods = sorted(
                 ((method, count) for method, count in errors_by_method.items() if count > 0),
                 key=lambda item: item[1],
