@@ -16,7 +16,7 @@ Dernière vérification locale : `python -m compileall -q .` réussi, `PYTEST_DI
 
 ## CI configurée
 
-Le workflow `.github/workflows/ci.yml` installe les dépendances, compile les sources, vérifie le mode PAPER par défaut, exécute pytest, Ruff sur les erreurs critiques, `pip-audit` et Gitleaks. Le run GitHub Actions **#199** sur le commit précédent `aa5a001` était vert; il ne valide pas les changements locaux de cette mise à jour. Ruff, pip-audit et Gitleaks ne sont pas installés dans l'environnement local actuel. Le résultat CI du nouveau commit doit être vérifié après publication de la branche.
+Le workflow `.github/workflows/ci.yml` installe les dépendances, compile les sources, vérifie le mode PAPER par défaut, exécute pytest, Ruff sur les erreurs critiques, `pip-audit` et Gitleaks. Le run GitHub Actions **[#202](https://github.com/cheicki225/-meme-coin/actions/runs/45047677013)** est vert sur `0e4f100`, avec chacune de ces étapes réussie. Ruff, pip-audit et Gitleaks ne sont pas installés dans l'environnement local actuel; ils ont été exécutés par cette CI.
 
 ## Portée des tests
 

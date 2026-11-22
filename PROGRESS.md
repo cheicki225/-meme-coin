@@ -16,7 +16,7 @@ Chaque objectif compte de façon égale. Barème publié pour rendre l'estimatio
 | 6 | RPC et erreurs | TESTED | 75 | Retry 429/5xx, `Retry-After`, jitter, métriques en deltas et journaux expurgés testés; charge, fraîcheur et endpoint déployé inconnus |
 | 7 | Monitoring et Telegram | TESTED | 75 | Retry d'alerte non livrée, état du coupe-circuit, arrêt d'urgence et opérations en attente affichés; adaptateurs mockés, aucun envoi de déploiement vérifié |
 | 8 | Backtesting | IN PROGRESS | 25 | Dataset OHLC versionné/hashé, timestamps signaux exacts, coûts et gaps annotés; authenticité des sources et intégration complète à la stratégie restent absentes |
-| 9 | Tests automatisés | TESTED | 75 | 318 tests locaux réussis; CI du nouveau diff en attente. Le run #199 vert ne couvre que le commit précédent `aa5a001` |
+| 9 | Tests automatisés | TESTED | 75 | 318 tests locaux réussis; CI #202 verte sur `0e4f100`, incluant compilation, défaut PAPER, tests, Ruff, pip-audit et Gitleaks |
 | 10 | Pertes, exposition, arrêt d'urgence | TESTED | 75 | Garde d'exposition, réservations et rollback mémoire du kill switch testés; en LIVE l'arrêt bloque achats et ventes sans liquider; aucun soak PAPER |
 
 **Avancement pondéré : 72,5 %** (`725 / 10`). La valeur est une estimation de maturité d'implémentation selon le barème ci-dessus; ce n'est pas un taux de fonctionnalités prêtes pour des fonds.
@@ -25,7 +25,7 @@ Chaque objectif compte de façon égale. Barème publié pour rendre l'estimatio
 
 - **Développement : 72,5 %**, score pondéré documenté ci-dessus.
 - **Tests locaux :** compilation réussie et **318 tests réussis** avec `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`; le taux de couverture lignes/branches n'a pas été mesuré.
-- **Sécurité : IN PROGRESS.** Le run #199 valide le commit précédent `aa5a001`; le nouveau diff doit encore passer la CI. Aucun audit indépendant des programmes CPI/DEX.
+- **Sécurité : IN PROGRESS.** CI #202 verte sur `0e4f100`, incluant audit des dépendances et secrets; l'audit indépendant des programmes CPI/DEX reste ouvert.
 - **PAPER : IN PROGRESS.** C'est le mode par défaut; frais simulés intégrés et testés. Il reste à faire un soak et une restauration dans l'environnement cible.
 - **LIVE : BLOCKED / NOT READY.** Aucune transaction réelle exécutée; pas d'intégration mainnet, soak, restauration en production ou revue indépendante complète. Ne pas activer les deux opt-ins LIVE.
 

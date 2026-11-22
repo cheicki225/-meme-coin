@@ -11,7 +11,7 @@
 - Parse les contrôles GoPlus Solana et refuse les résultats incomplets, parts LP incohérentes et TVL DEX rapportées sous le seuil configurable (10 000 USD par défaut lorsque le filtre est actif).
 - Signale les PnL hérités dont les frais ne peuvent être reconstruits; le marquage persistant n'altère pas les totaux ni les anciennes positions.
 - Ajoute un format OHLC JSON versionné/hashé, la correspondance de signaux par timestamps exacts et les gaps traversés par les trades.
-- Augmente la suite locale à 318 tests réussis; la CI du nouveau commit reste à vérifier.
+- Augmente la suite locale à 318 tests réussis; la CI #202 passe compilation, mode PAPER, tests, Ruff, pip-audit et Gitleaks.
 
 ## Non publié — correction de fiabilité et audit (15 novembre 2026)
 

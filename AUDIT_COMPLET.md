@@ -31,19 +31,18 @@ Le score actualisé et son barème sont maintenus dans [PROGRESS.md](PROGRESS.md
 
 - **Développement :** 72,5 % selon le barème publié.
 - **Tests locaux :** `compileall` réussi et 318 tests passés le 22 novembre 2026; voir [TESTING.md](TESTING.md). Aucun ordre réel n'a été diffusé.
-- **Sécurité :** IN PROGRESS. Le run #199 du commit précédent `aa5a001` était vert; la CI du nouveau diff doit encore être observée. L'audit indépendant CPI/DEX reste à faire.
+- **Sécurité :** IN PROGRESS. CI #202 verte sur `0e4f100`, incluant lint, audit des dépendances et scan de secrets; l'audit indépendant CPI/DEX reste à faire.
 - **PAPER :** mode par défaut. Les frais simulés d'entrée, DCA, sorties partielles/totales et Sell Initials sont désormais intégrés aux coûts/cashflows et testés; soak, restauration déployée et endpoint RPC cible restent à vérifier.
 - **LIVE : BLOCKED / NOT READY.** Aucune transaction réelle exécutée. Aucun test mainnet, portefeuille financé, soak ni audit indépendant complet.
 
 ## Travaux encore ouverts
 
-1. Confirmer sur GitHub la CI complète du nouveau commit (compilation, tests, Ruff, pip-audit et scan Gitleaks) et corriger tout échec.
-2. Exécuter un soak PAPER dans l'environnement cible; vérifier alertes Telegram, reprise après arrêt et restauration de sauvegarde.
-3. Ajouter une réconciliation guidée de signatures pendantes à partir du RPC; garder l'arrêt tant que l'issue financière n'est pas certaine.
-4. Relier le replay OHLC aux entrées historiques réellement produites par la stratégie et à des données dont la provenance est vérifiée; l'archive versionnée/hashée existe, mais son hash n'authentifie pas la source, les coûts de marché restent incomplets et le lookahead n'est pas validé de bout en bout.
-5. Faire une revue CPI/DEX indépendante de la politique de transaction et vérifier le contrat de l'API Jupiter courant.
-6. Mesurer les limites, fraîcheur et charge du fournisseur RPC réellement configuré; le déploiement n'a pas été inspecté.
-7. Calibrer les frais simulés PAPER sur des observations documentées; le modèle actuel est déterministe en mode Simple et aléatoire en Hardcore, et ne remplace pas des frais de marché vérifiés.
+1. Exécuter un soak PAPER dans l'environnement cible; vérifier alertes Telegram, reprise après arrêt et restauration de sauvegarde.
+2. Ajouter une réconciliation guidée de signatures pendantes à partir du RPC; garder l'arrêt tant que l'issue financière n'est pas certaine.
+3. Relier le replay OHLC aux entrées historiques réellement produites par la stratégie et à des données dont la provenance est vérifiée; l'archive versionnée/hashée existe, mais son hash n'authentifie pas la source, les coûts de marché restent incomplets et le lookahead n'est pas validé de bout en bout.
+4. Faire une revue CPI/DEX indépendante de la politique de transaction et vérifier le contrat de l'API Jupiter courant.
+5. Mesurer les limites, fraîcheur et charge du fournisseur RPC réellement configuré; le déploiement n'a pas été inspecté.
+6. Calibrer les frais simulés PAPER sur des observations documentées; le modèle actuel est déterministe en mode Simple et aléatoire en Hardcore, et ne remplace pas des frais de marché vérifiés.
 
 Voir aussi [PROJECT_ROADMAP.md](PROJECT_ROADMAP.md), [RPC_PUBLIC_LIMITATIONS.md](RPC_PUBLIC_LIMITATIONS.md), [BACKTESTING.md](BACKTESTING.md) et [LIVE_READINESS.md](LIVE_READINESS.md).
 
