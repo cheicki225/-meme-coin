@@ -33,7 +33,7 @@ Gardez `TRADING_MODE=PAPER` et `LIVE_EXECUTION_ENABLED=false`. Le code LIVE exig
 
 ## Validation de sécurité requise
 
-Avant toute décision LIVE, terminer la CI de la branche de suivi, tester les réponses Jupiter adversariales, exécuter un soak PAPER dans l'environnement cible, vérifier la restauration et la reprise, puis faire une revue indépendante des instructions on-chain et du PnL. N'utilisez pas un wallet qui contient des fonds à long terme.
+Avant toute décision LIVE, la CI de la branche doit rester verte (run 45057315402 sur `4456952` réussi), tester les réponses Jupiter adversariales, exécuter un soak PAPER dans l'environnement cible, vérifier la restauration et la reprise, puis faire une revue indépendante des instructions on-chain et du PnL. N'utilisez pas un wallet qui contient des fonds à long terme.
 
 ## Revue du 22 novembre 2026
 

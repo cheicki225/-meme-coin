@@ -12,11 +12,11 @@ python -m pytest -q
 
 Dans l'environnement local de cette revue, un plugin pytest global incompatible avec `eth_typing` empêche le chargement automatique normal. La désactivation ci-dessus permet de charger les tests du projet sans modifier l'environnement global. La CI GitHub n'utilise pas cette option.
 
-Dernière vérification locale sur `codex/mission-performance-2026-11-22` : `python -m compileall -q .` réussi, `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q` exécuté le 22 novembre 2026 avec **348 tests réussis**, et `git diff --check` sans erreur. Le head précédent de la PR #4 a eu la CI #203 verte; la CI de cette nouvelle branche est encore à lancer.
+Dernière vérification locale sur `codex/mission-performance-2026-11-22` : `python -m compileall -q .` réussi, `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q` exécuté le 22 novembre 2026 avec **348 tests réussis**, et `git diff --check` sans erreur. La CI GitHub [45057315402](https://github.com/cheicki225/-meme-coin/actions/runs/45057315402) est verte sur le commit `4456952` : installation, compilation, défaut PAPER, pytest, Ruff, pip-audit et Gitleaks ont tous réussi.
 
 ## CI configurée
 
-Le workflow `.github/workflows/ci.yml` installe les dépendances, compile les sources, vérifie le mode PAPER par défaut, exécute pytest, Ruff sur les erreurs critiques, `pip-audit` et Gitleaks. Le run GitHub Actions **[#203](https://github.com/cheicki225/-meme-coin/actions/runs/45047919815)** est vert sur le head précédent `e234c731`; la nouvelle branche de mission n'a pas encore exécuté cette CI. Ruff et pip-audit ne sont pas disponibles dans l'environnement local; leur installation isolée a échoué à vérifier le certificat TLS de PyPI. Gitleaks n'est pas installé localement.
+Le workflow `.github/workflows/ci.yml` installe les dépendances, compile les sources, vérifie le mode PAPER par défaut, exécute pytest, Ruff sur les erreurs critiques, `pip-audit` et Gitleaks. La CI [45057315402](https://github.com/cheicki225/-meme-coin/actions/runs/45057315402) est verte sur le commit `4456952`, et ne signale plus l'avertissement de runtime Node. Ruff et pip-audit ne sont pas disponibles dans l'environnement local; leur installation isolée a échoué à vérifier le certificat TLS de PyPI. Gitleaks n'est pas installé localement.
 
 ## Portée des tests
 
