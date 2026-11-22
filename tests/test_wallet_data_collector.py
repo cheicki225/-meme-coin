@@ -37,6 +37,17 @@ def test_sqlite_events_are_idempotent_and_cursor_survives_restart(tmp_path):
     collector.set_collection_cursor(WALLET, "sig-1", path)
     assert collector.get_collection_cursor(WALLET, path) == "sig-1"
     assert collector.read_wallet_activity(WALLET, path)[0]["token_delta_raw"] == "4"
+    assert len(collector.read_wallet_activity(WALLET, path, limit=1)) == 1
+
+
+def test_read_wallet_activity_rejects_unbounded_or_malformed_limit(tmp_path):
+    for invalid in (True, 0, -1, 1001, 1.5, "10"):
+        try:
+            collector.read_wallet_activity(WALLET, tmp_path / "empty.sqlite3", limit=invalid)
+        except ValueError as exc:
+            assert "limit" in str(exc)
+        else:
+            raise AssertionError("invalid read limit must be rejected")
 
 
 def test_collector_works_with_public_http_rpc_and_advances_cursor_safely(monkeypatch, tmp_path):
@@ -55,6 +66,7 @@ def test_collector_works_with_public_http_rpc_and_advances_cursor_safely(monkeyp
     monkeypatch.setattr(wallet_history, "_get_raw_transaction", failed_transaction)
     result = asyncio.run(collector.collect_wallet(WALLET, limit=5, db_path=tmp_path / "events.sqlite3"))
     assert result["status"] == "partial"
+    assert result["reason"] == "transaction_fetch_partial"
     assert collector.get_collection_cursor(WALLET, tmp_path / "events.sqlite3") == "newest"
 
 

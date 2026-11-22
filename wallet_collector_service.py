@@ -49,16 +49,36 @@ class WalletCollectorService:
                     log.error("Read-only collection failed (%s)", type(exc).__name__)
                     result = {"status": "error", "reason": type(exc).__name__}
                 results.append(result)
-                if result.get("status") in {"error", "unavailable"}:
+                if result.get("status") in {"error", "unavailable", "partial"}:
                     await self._alert_failure(result.get("reason", result.get("status")))
 
+            cursor_key = "wallet_collector_next_index"
+            cursor_existed = cursor_key in self.data_store.state
+            previous_cursor = self.data_store.state.get(cursor_key)
             self.data_store.state["wallet_collector_next_index"] = next_index
-            self.data_store.save()
+            try:
+                self.data_store.save()
+            except Exception as exc:
+                if cursor_existed:
+                    self.data_store.state[cursor_key] = previous_cursor
+                else:
+                    self.data_store.state.pop(cursor_key, None)
+                log.error("Wallet collector cursor persistence failed (%s)", type(exc).__name__)
+                await self._alert_failure("cursor_persistence_failed")
+                return {
+                    "status": "partial",
+                    "reason": "cursor_persistence_failed",
+                    "wallets_scanned": len(selected),
+                    "events_detected": sum(int(item.get("events_detected", 0) or 0) for item in results),
+                    "results": results,
+                    "cursor_saved": False,
+                }
             return {
                 "status": "partial" if any(item.get("status") in {"error", "partial"} for item in results) else "ok",
                 "wallets_scanned": len(selected),
                 "events_detected": sum(int(item.get("events_detected", 0) or 0) for item in results),
                 "results": results,
+                "cursor_saved": True,
             }
 
     async def _alert_failure(self, reason: str) -> None:

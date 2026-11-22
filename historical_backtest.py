@@ -124,6 +124,9 @@ def run_backtest(
     slip_rate = slippage_bps / 10_000
     signal_set = set(signals)
     trades = []
+    equity = 0.0
+    peak = 0.0
+    max_drawdown = 0.0
     cursor = 0
     while cursor < len(rows) - 1:
         if cursor not in signal_set:
@@ -173,6 +176,41 @@ def run_backtest(
         entry_fee = position_usd * fee_rate
         exit_fee = gross_proceeds * fee_rate
         pnl = net_proceeds - position_usd
+
+        # Track conservative mark-to-market equity while the position is
+        # open. For ordinary bars, high-before-low gives the largest possible
+        # intrabar drawdown from OHLC alone. A TP bar marks the low before its
+        # fill unless the TP was crossed at the open; an SL bar exits at the
+        # modeled stop/open fill and is never marked below its completed fill.
+        for index in range(entry_index, exit_index + 1):
+            candle = rows[index]
+            opened = float(candle["open"])
+            high = float(candle["high"])
+            low = float(candle["low"])
+            if index < exit_index:
+                mark_prices = (high, low)
+            elif exit_reason == "stop_loss":
+                if opened <= sl:
+                    mark_prices = (opened,)
+                elif high >= tp:
+                    # The replay resolves a same-bar TP/SL ambiguity as SL first.
+                    mark_prices = (exit_price,)
+                else:
+                    mark_prices = (high, exit_price)
+            elif exit_reason == "take_profit":
+                mark_prices = (opened,) if opened >= tp else (low,)
+            else:
+                mark_prices = (high, low)
+
+            for mark_price in mark_prices:
+                liquidation_value = units * mark_price * (1 - slip_rate) * (1 - fee_rate)
+                marked_equity = equity + liquidation_value - position_usd
+                peak = max(peak, marked_equity)
+                max_drawdown = max(max_drawdown, peak - marked_equity)
+
+        equity += pnl
+        peak = max(peak, equity)
+        max_drawdown = max(max_drawdown, peak - equity)
         trades.append({
             "entry_signal_index": cursor,
             "entry_index": entry_index,
@@ -197,13 +235,6 @@ def run_backtest(
         # position is already closed.
         cursor = exit_index
 
-    equity = 0.0
-    peak = 0.0
-    max_drawdown = 0.0
-    for trade in trades:
-        equity += trade["net_pnl_usd"]
-        peak = max(peak, equity)
-        max_drawdown = max(max_drawdown, peak - equity)
     wins = sum(trade["net_pnl_usd"] > 0 for trade in trades)
     return {
         "trades": trades,
@@ -226,6 +257,7 @@ def run_backtest(
             "ambiguous_bar": "stop loss first",
             "slippage_bps_each_side": slippage_bps,
             "fee_bps_each_side": fee_bps,
+            "drawdown_path": "conservative_mark_to_market_from_OHLC",
         },
     }
 

@@ -507,6 +507,22 @@ def _validate_order(order: dict, user_pubkey: str) -> None:
             raise SwapError(f"Payeur tiers non autorisé dans l'ordre Jupiter ({field}).")
 
 
+def _assert_confirmed_token_input_amount(
+    input_mint: str, requested_amount: int, confirmed_amount: int,
+) -> None:
+    """Reject unmodeled token debit differences; native SOL deltas include fees."""
+    if input_mint == config.SOL_MINT:
+        return
+    if (type(requested_amount) is not int or requested_amount <= 0
+            or type(confirmed_amount) is not int or confirmed_amount <= 0):
+        raise SwapError("Confirmed token input amount is invalid; signature remains blocked for reconciliation.")
+    if confirmed_amount != requested_amount:
+        raise SwapError(
+            "Confirmed token debit differs from the exact-in request; "
+            "the signature remains blocked for manual reconciliation."
+        )
+
+
 @measure_async("jupiter.build", "jupiter")
 async def _build_swap_transaction(order: dict, user_pubkey: str) -> str:
     """Return the v0 transaction from an already validated V2 order."""
@@ -693,6 +709,7 @@ async def execute_swap(input_mint: str, output_mint: str, amount_lamports: int, 
         output_amount = max(0, accounting["native_delta_lamports"])
     else:
         output_amount = max(0, int(output_delta or 0))
+    _assert_confirmed_token_input_amount(input_mint, amount_lamports, input_amount)
     if input_amount <= 0 or output_amount <= 0:
         raise SwapError(
             f"Transaction {signature} is confirmed but actual swap amounts are unavailable; "

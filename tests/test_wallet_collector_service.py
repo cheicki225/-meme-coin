@@ -74,6 +74,66 @@ def test_collector_alerts_failures_without_exposing_provider_errors(monkeypatch)
     assert len(notifier.messages) == 1
 
 
+def test_collector_alerts_on_partial_results_and_keeps_retry_cooldown(monkeypatch):
+    store = Store()
+    notifier = Notifier()
+
+    async def collect(wallet, limit, db_path):
+        return {
+            "status": "partial", "reason": "transaction_fetch_partial",
+            "transactions_unavailable": 1, "events_detected": 2,
+        }
+
+    monkeypatch.setattr(service, "_collect_wallet", collect)
+    monkeypatch.setattr(config, "WALLET_COLLECTOR_MAX_WALLETS_PER_CYCLE", 1, raising=False)
+    monkeypatch.setattr(config, "WALLET_COLLECTOR_SIGNATURES_PER_WALLET", 10, raising=False)
+    monkeypatch.setattr(config, "WALLET_ACTIVITY_DB_FILE", "wallets.sqlite3", raising=False)
+    monkeypatch.setattr(service.time, "monotonic", lambda: 0.0)
+    collector = service.WalletCollectorService(store, notifier)
+
+    result = asyncio.run(collector.run_once())
+
+    assert result["status"] == "partial"
+    assert notifier.messages[0][0] == "collector_alert"
+    assert "transaction_fetch_partial" in notifier.messages[0][1]
+
+
+def test_cursor_save_failure_rolls_back_in_memory_and_next_cycle_retries(monkeypatch):
+    class FailingStore(Store):
+        def __init__(self):
+            super().__init__()
+            self.fail_once = True
+
+        def save(self):
+            if self.fail_once:
+                self.fail_once = False
+                raise OSError("disk unavailable")
+            super().save()
+
+    store = FailingStore()
+    seen = []
+
+    async def collect(wallet, limit, db_path):
+        seen.append(wallet)
+        return {"status": "ok", "events_detected": 1}
+
+    monkeypatch.setattr(service, "_collect_wallet", collect)
+    monkeypatch.setattr(config, "WALLET_COLLECTOR_MAX_WALLETS_PER_CYCLE", 2, raising=False)
+    monkeypatch.setattr(config, "WALLET_COLLECTOR_SIGNATURES_PER_WALLET", 10, raising=False)
+    monkeypatch.setattr(config, "WALLET_ACTIVITY_DB_FILE", "wallets.sqlite3", raising=False)
+    collector = service.WalletCollectorService(store)
+
+    failed = asyncio.run(collector.run_once())
+    assert failed["reason"] == "cursor_persistence_failed"
+    assert failed["cursor_saved"] is False
+    assert "wallet_collector_next_index" not in store.state
+
+    succeeded = asyncio.run(collector.run_once())
+    assert succeeded["cursor_saved"] is True
+    assert seen == ["wallet-0", "wallet-1", "wallet-0", "wallet-1"]
+    assert store.state["wallet_collector_next_index"] == 2
+
+
 def test_collector_retries_alert_after_telegram_returns_false(monkeypatch):
     store = Store()
     notifier = Notifier([False, True])

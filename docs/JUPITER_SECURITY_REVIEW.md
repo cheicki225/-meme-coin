@@ -19,6 +19,7 @@ Un défaut HTTP important a été corrigé : `aiohttp` suivait les redirections 
 
 - Les URL d'ordre et d'exécution sont constantes dans `config.py`; les appels attendent la clé API et n'acceptent que les routes Metis.
 - Le devis est lié aux mints, montants, minimum reçu, slippage et impact configurés avant signature.
+- Pour une entrée par token non natif, le débit de token confirmé doit correspondre exactement au montant exact-in demandé. Un écart laisse la signature en attente et bloque l'exécution; les débits SOL sont comptabilisés à partir du delta natif, frais et loyer inclus.
 - La transaction construite est inspectée avant signature : payeur/signataire, lookup tables, programmes top-level, ATA et transferts pris en charge.
 - La signature locale est persistée avant l'appel à Jupiter. Les issues ambiguës restent en attente et aucun renvoi automatique n'est ajouté.
 - Les échanges HTTP et RPC n'enregistrent pas le corps signé, la clé API, la signature ou les réponses fournisseur dans les métriques.

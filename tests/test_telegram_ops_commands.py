@@ -1,5 +1,6 @@
 import asyncio
 
+import config
 import telegram_bot
 from telegram_bot import SniperTelegramBot
 
@@ -37,6 +38,58 @@ def test_performance_command_keeps_stage_underscores_literal(monkeypatch):
     text, kwargs = update.effective_message.replies[0]
     assert "strategy.open_position" in text
     assert "parse_mode" not in kwargs
+
+
+def test_activity_command_shows_collector_candidates_read_only(monkeypatch):
+    import wallet_data_collector
+
+    calls = []
+
+    def read_activity(wallet, db_path, limit):
+        calls.append((wallet, db_path, limit))
+        return [{
+            "event_type": "buy_candidate", "token_mint": "TokenMint123",
+            "token_delta_raw": "2500000", "block_time": 123,
+        }]
+
+    monkeypatch.setattr(wallet_data_collector, "read_wallet_activity", read_activity)
+
+    class Store:
+        state = {"monitored_dev_wallets": {"wallet-public": {}}}
+
+    class Context:
+        args = ["wallet-public"]
+
+    bot = SniperTelegramBot(Store(), object(), object())
+    update = _Update()
+    asyncio.run(bot.cmd_collected_activity(update, Context()))
+
+    reply = update.effective_message.replies[0][0]
+    assert "lecture seule" in reply
+    assert "ne sont pas des ordres" in reply
+    assert "PnL réalisé : non calculé" in reply
+    assert "buy_candidate" in reply
+    assert calls == [("wallet-public", config.WALLET_ACTIVITY_DB_FILE, 10)]
+
+
+def test_activity_command_refuses_wallets_outside_monitor_list(monkeypatch):
+    import wallet_data_collector
+
+    def unexpected_read(*_args, **_kwargs):
+        raise AssertionError("unmonitored wallets must not be queried")
+
+    monkeypatch.setattr(wallet_data_collector, "read_wallet_activity", unexpected_read)
+
+    class Store:
+        state = {"monitored_dev_wallets": {"wallet-public": {}}}
+
+    class Context:
+        args = ["wallet-not-monitored"]
+
+    bot = SniperTelegramBot(Store(), object(), object())
+    update = _Update()
+    asyncio.run(bot.cmd_collected_activity(update, Context()))
+    assert "ne figure pas" in update.effective_message.replies[0][0]
 
 
 def test_reconcile_command_is_read_only_and_reports_results(monkeypatch):

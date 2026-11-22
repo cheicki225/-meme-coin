@@ -353,6 +353,7 @@ class SniperTelegramBot:
         self.app.add_handler(CommandHandler("ruggers", self.cmd_ruggers))
         self.app.add_handler(CommandHandler("copytrade", self.cmd_copytrade))
         self.app.add_handler(CommandHandler("wallets", self.cmd_wallets))
+        self.app.add_handler(CommandHandler("activity", self.cmd_collected_activity))
         self.app.add_handler(CommandHandler("positions", self.cmd_positions))
         self.app.add_handler(CommandHandler("help", self.cmd_help))
         self.app.add_handler(CommandHandler("settings", self.cmd_settings))
@@ -392,6 +393,7 @@ class SniperTelegramBot:
             BotCommand("ruggers", "🎯 Ruggeurs (sniping de dev)"),
             BotCommand("copytrade", "📋 Copy Trading"),
             BotCommand("wallets", "💰 Portefeuilles"),
+            BotCommand("activity", "🧾 Activité collectée (lecture seule)"),
             BotCommand("positions", "📊 Positions ouvertes"),
             BotCommand("analyze", "🔍 Analyser un coin"),
             BotCommand("wallet", "🔎 Analyse de wallet"),
@@ -529,6 +531,50 @@ class SniperTelegramBot:
         await update.effective_message.reply_text(
             "⏱️ Performance locale\n\n" + report,
         )
+
+    async def cmd_collected_activity(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Display read-only wallet collector candidates; never treats them as orders."""
+        args = getattr(context, "args", []) or []
+        if len(args) != 1:
+            await update.effective_message.reply_text("Usage : /activity <wallet surveillé>")
+            return
+        address = args[0]
+        monitored = self.data_store.state.get("monitored_dev_wallets", {})
+        if not isinstance(monitored, dict) or address not in monitored:
+            await update.effective_message.reply_text("Ce wallet ne figure pas dans la liste surveillée.")
+            return
+
+        try:
+            import wallet_data_collector
+
+            rows = await asyncio.to_thread(
+                wallet_data_collector.read_wallet_activity,
+                address,
+                config.WALLET_ACTIVITY_DB_FILE,
+                limit=10,
+            )
+        except Exception as exc:
+            await update.effective_message.reply_text(
+                f"Lecture du collecteur indisponible ({type(exc).__name__})."
+            )
+            return
+        if not rows:
+            await update.effective_message.reply_text("Aucune activité collectée pour ce wallet.")
+            return
+
+        lines = [
+            "Activité observée (lecture seule). Ces événements ne sont pas des ordres; "
+            "PnL réalisé : non calculé."
+        ]
+        for row in rows[:10]:
+            event_type = str(row.get("event_type") or "unknown")[:24]
+            mint = row.get("token_mint")
+            mint_label = f"{mint[:8]}…" if isinstance(mint, str) and mint else "inconnu"
+            raw_delta = str(row.get("token_delta_raw") or "?")[:32]
+            timestamp = row.get("block_time")
+            timestamp_label = str(timestamp)[:20] if type(timestamp) is int else "inconnu"
+            lines.append(f"• {event_type} | mint {mint_label} | delta raw {raw_delta} | slot-time {timestamp_label}")
+        await update.effective_message.reply_text("\n".join(lines))
 
     async def cmd_reconcile(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Read finalized Solana status only; never signs or submits a transaction."""
