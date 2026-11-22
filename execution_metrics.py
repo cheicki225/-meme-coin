@@ -26,13 +26,15 @@ _ALLOWED_STAGES = frozenset({
     "websocket.copytrade_message", "copytrade.process_transaction",
     "jupiter.order", "jupiter.build", "jupiter.submit", "jupiter.accounting_fetch",
     "jupiter.confirm", "jupiter.execute_swap", "jupiter.sign",
+    "jupiter.cpi_simulate",
     "decision.new_token_dispatch", "decision.copytrade_buy", "decision.copytrade_sell",
     "decision.evaluate_dev", "strategy.open_position", "strategy.partial_close",
-    "strategy.close_position", "rpc.request", "websocket.new_token_creation",
+    "strategy.close_position", "rpc.request", "rpc.endpoint_attempt",
+    "websocket.new_token_creation",
 })
 _ALLOWED_PROVIDERS = frozenset({
     "unknown", "helius", "jupiter", "solana_rpc", "local", "internal",
-    "rpc_primary", "rpc_fallback",
+    "rpc_primary", "rpc_fallback", "solana_ws",
 })
 _MAX_EVENTS = 10_000
 _MAX_QUEUE = 4_096

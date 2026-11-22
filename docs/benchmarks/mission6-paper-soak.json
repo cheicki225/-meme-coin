@@ -1,0 +1,134 @@
+{
+  "benchmark": "mission6_synthetic_paper_component_soak",
+  "code_revision": "817ddc4b55494abe3be674ba226528ccf3fb80d5",
+  "data": {
+    "authenticated_provider_provenance": false,
+    "kind": "synthetic_only",
+    "real_token_or_ohlcv_data": false
+  },
+  "external_hosts_contacted": [],
+  "generated_at_utc": "2026-11-22T20:03:21.658650+00:00",
+  "latency": {
+    "paper_trade_primitives": {
+      "count": 10000,
+      "p50_ms": 0.029,
+      "p95_ms": 0.051,
+      "p99_ms": 0.07
+    },
+    "rpc_fallback_attempt": {
+      "count": 129,
+      "p50_ms": 5.657,
+      "p95_ms": 9.014,
+      "p99_ms": 10.771
+    },
+    "rpc_primary_attempt": {
+      "count": 10405,
+      "p50_ms": 6.287,
+      "p95_ms": 9.385,
+      "p99_ms": 12.891
+    },
+    "rpc_read_end_to_end": {
+      "count": 10000,
+      "p50_ms": 6.473,
+      "p95_ms": 10.236,
+      "p99_ms": 18.825
+    },
+    "sqlite_restart_recovery": {
+      "count": 19,
+      "p50_ms": 13.502,
+      "p95_ms": 18.39,
+      "p99_ms": 27.859
+    },
+    "token_detection_dispatch": {
+      "count": 10000,
+      "p50_ms": 0.029,
+      "p95_ms": 0.051,
+      "p99_ms": 0.074
+    }
+  },
+  "limitations": [
+    "Accelerated synthetic component test; not a 24-hour wall-clock deployment soak.",
+    "Loopback timings do not represent Solana or provider latency.",
+    "No full bot startup, WebSocket provider, Jupiter, DEX program, Telegram, or real token feed was used.",
+    "Fault injection covers HTTP 429/503, fallback, SQLite close/reopen, and a separate subprocess-crash test; it does not emulate physical disk failure.",
+    "No actual SOL price, chain transaction fee, slippage, MEV, or historical OHLCV fee reconstruction is measured."
+  ],
+  "live_execution_enabled": false,
+  "mode": "PAPER",
+  "paper_fee_simulation": {
+    "entry_fee_per_cycle_sol": 5e-06,
+    "entry_fees_total_sol": 0.05,
+    "exit_fee_per_cycle_sol": 5e-06,
+    "exit_fees_total_sol": 0.05,
+    "market_execution_or_actual_chain_fees": false,
+    "usd_conversion_rate": 100.0
+  },
+  "platform": "Windows-10-10.0.26200-SP0",
+  "python": "3.11.9",
+  "telemetry": {
+    "dropped_events": 0,
+    "events": 10000,
+    "stages": {
+      "rpc.endpoint_attempt:rpc_fallback": {
+        "count": 45,
+        "failure_rate": 0.2667,
+        "max_ms": 11.058,
+        "p50_ms": 5.625,
+        "p95_ms": 8.153,
+        "p99_ms": 9.865
+      },
+      "rpc.endpoint_attempt:rpc_primary": {
+        "count": 3409,
+        "failure_rate": 0.0507,
+        "max_ms": 24.791,
+        "p50_ms": 6.172,
+        "p95_ms": 8.658,
+        "p99_ms": 10.137
+      },
+      "rpc.request:rpc_fallback": {
+        "count": 37,
+        "failure_rate": 0.1081,
+        "max_ms": 33.044,
+        "p50_ms": 18.794,
+        "p95_ms": 30.995,
+        "p99_ms": 32.55
+      },
+      "rpc.request:rpc_primary": {
+        "count": 3236,
+        "failure_rate": 0.0,
+        "max_ms": 24.861,
+        "p50_ms": 6.363,
+        "p95_ms": 9.129,
+        "p99_ms": 12.882
+      },
+      "websocket.new_token_creation:solana_ws": {
+        "count": 3273,
+        "failure_rate": 0.0,
+        "max_ms": 12.214,
+        "p50_ms": 0.006,
+        "p95_ms": 0.009,
+        "p99_ms": 0.016
+      }
+    }
+  },
+  "transaction_submissions": 0,
+  "workload": {
+    "crash_recovery_process_test": "covered by tests/test_datastore_recovery.py",
+    "cycles": 10000,
+    "detection_events": 10000,
+    "rpc_fault_injection": {
+      "fallback_503": 30,
+      "fallback_used": 99,
+      "final_failures": 10,
+      "primary_429": 187,
+      "primary_503": 327
+    },
+    "rpc_methods": [
+      "getHealth"
+    ],
+    "sqlite_restarts_verified": 19,
+    "state_cycles_recovered": 10000,
+    "virtual_duration_hours": 24.0,
+    "wall_duration_seconds": 71.928
+  }
+}

@@ -43,3 +43,62 @@ def test_rpc_metrics_distinguish_primary_and_fallback_path(monkeypatch, tmp_path
     assert summary["stages"]["rpc.request:rpc_fallback"]["failure_rate"] == 0
     assert calls == 2
     assert "private-path-placeholder" not in metrics_path.read_text(encoding="utf-8")
+
+
+def test_rpc_metrics_record_each_primary_retry_separately(monkeypatch, tmp_path):
+    metrics_path = tmp_path / "attempts.jsonl"
+    monkeypatch.setenv("EXECUTION_METRICS_PATH", str(metrics_path))
+    responses = [
+        {"status": 429, "headers": {"Retry-After": "0"}, "body": {}},
+        {"status": 200, "headers": {}, "body": {"jsonrpc": "2.0", "result": 42}},
+    ]
+
+    class Response:
+        def __init__(self, response):
+            self.status = response["status"]
+            self.headers = response["headers"]
+            self.body = response["body"]
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def json(self):
+            return self.body
+
+    class Session:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        def post(self, *_args, **_kwargs):
+            return Response(responses.pop(0))
+
+    async def no_wait():
+        return None
+
+    async def no_sleep(_delay):
+        return None
+
+    monkeypatch.setattr(rpc_client.aiohttp, "ClientSession", Session)
+    monkeypatch.setattr(rpc_client._rate_limiter, "wait_if_needed", no_wait)
+    monkeypatch.setattr(rpc_client.asyncio, "sleep", no_sleep)
+
+    result = asyncio.run(rpc_client._try_endpoint(
+        "https://rpc.invalid/credential-redacted", {"method": "getSlot"}, 1,
+        max_retries=2, provider="rpc_primary",
+    ))
+
+    assert result == 42
+    summary = summarize_metrics(metrics_path)
+    attempt = summary["stages"]["rpc.endpoint_attempt:rpc_primary"]
+    assert attempt["count"] == 2
+    assert attempt["failure_rate"] == 0.5
+    assert len(responses) == 0

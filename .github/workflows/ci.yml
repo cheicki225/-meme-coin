@@ -13,6 +13,8 @@ jobs:
   validate:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      PYTHON_DOTENV_DISABLED: "true"
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -26,7 +28,7 @@ jobs:
           cache: pip
 
       - name: Install dependencies
-        run: python -m pip install --upgrade pip && pip install -r requirements.txt pytest ruff pip-audit
+        run: python -m pip install --upgrade pip && pip install -r requirements-ci.txt
 
       - name: Compile Python sources
         run: python -m compileall -q .
@@ -42,15 +44,29 @@ jobs:
           PY
 
       - name: Run unit tests
-        run: pytest -q
+        run: |
+          coverage run --branch --source=. --omit='tests/*,test_*.py,.venv/*,venv/*' -m pytest -q
+          coverage report --precision=2
+          coverage json -o coverage.json
+          coverage xml -o coverage.xml
 
       - name: Lint critical errors
         run: ruff check --select E9,F63,F7,F82 .
 
       - name: Audit dependencies
-        run: pip-audit -r requirements.txt
+        run: pip-audit -r requirements-ci.txt
 
       - name: Scan repository secrets
         uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mission-coverage-${{ github.run_id }}
+          path: |
+            coverage.json
+            coverage.xml
+          if-no-files-found: ignore

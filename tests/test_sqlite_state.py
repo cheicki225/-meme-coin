@@ -61,6 +61,22 @@ def test_rejects_non_json_state_without_overwriting_previous_commit(tmp_path):
     assert SQLiteStateStore(tmp_path / "state.sqlite3").load(dict) == {"version": 1}
 
 
+def test_sqlite_write_failure_preserves_last_committed_snapshot(tmp_path):
+    path = tmp_path / "state.sqlite3"
+    store = SQLiteStateStore(path)
+    store.save({"version": 1, "emergency_stop": True})
+    with sqlite3.connect(path) as db:
+        db.execute("""
+            CREATE TRIGGER reject_state_update BEFORE UPDATE ON bot_state
+            BEGIN SELECT RAISE(ABORT, 'simulated SQLite storage fault'); END
+        """)
+
+    with pytest.raises(StateStoreError, match="commit failed"):
+        store.save({"version": 2, "emergency_stop": False})
+
+    assert SQLiteStateStore(path).load(dict) == {"version": 1, "emergency_stop": True}
+
+
 def test_refuses_newer_schema_without_downgrading_it(tmp_path):
     path = tmp_path / "state.sqlite3"
     with sqlite3.connect(path) as db:

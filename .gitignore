@@ -4,6 +4,10 @@ sniper_bot.log
 data/execution_metrics.jsonl*
 __pycache__/
 *.pyc
+.coverage
+.coverage.*
+coverage.json
+coverage.xml
 *.sqlite3*
 *.db*
 backups/
