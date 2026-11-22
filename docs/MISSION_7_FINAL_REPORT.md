@@ -58,14 +58,20 @@ La disponibilité de web-research-problem-solver a été vérifiée puis le skil
 
 ## CI GitHub observée
 
-La CI [run 45072851307](https://github.com/cheicki225/-meme-coin/actions/runs/45072851307), run #213, a terminé avec succès sur le commit 51165105a88ed907da055727243eeb7a3abe4463. Le job validate a exécuté avec succès l'installation CI, la compilation, la vérification du mode PAPER par défaut, la suite de tests, Ruff, pip-audit, Gitleaks et le téléversement de la couverture.
+Deux runs CI successifs ont réussi :
 
-- Pytest : 424 tests réussis en 1,75 s.
+- [Run 45072851307 (#213)](https://github.com/cheicki225/-meme-coin/actions/runs/45072851307) sur le commit de code/tests 51165105a88ed907da055727243eeb7a3abe4463.
+- [Run 45073157671 (#214)](https://github.com/cheicki225/-meme-coin/actions/runs/45073157671) sur le commit documentaire 6f082a2c60ed5a017ff5420fc663f1b919205ecc; le code et les tests sont identiques.
+
+Le job validate a exécuté avec succès l’installation CI, la compilation, la vérification du mode PAPER par défaut, la suite de tests, Ruff, pip-audit, Gitleaks et le téléversement de la couverture.
+
+- Run #213 : 424 tests réussis en 1,75 s.
+- Run #214 : 424 tests réussis en 1,60 s.
 - pip-audit : No known vulnerabilities found.
-- Couverture combinée affichée par la CI : 30,63 %; l’artefact de couverture 14774245089 contient coverage.json et coverage.xml.
-- Le run n’a révélé aucun échec de validation; aucun ordre ni signature n’a été utilisé.
+- Couverture combinée affichée par la CI : 30,63 %; l’artefact du run #214, ID 14773313991, contient coverage.json et coverage.xml.
+- Aucun échec de validation; aucun ordre ni signature n’a été utilisé.
 
-Ce run valide le commit de code et tests 5116510. Une mise à jour documentaire de Mission 7 sera poussée ensuite; son propre head doit aussi obtenir une CI verte.
+Le statut courant du head est visible dans les checks de la [PR #8](https://github.com/cheicki225/-meme-coin/pull/8). Les mises à jour documentaires ne modifient pas le code ou les tests de cette validation.
 
 ## Validation et publication
 
@@ -80,4 +86,4 @@ Commandes locales exécutées dans le clone dédié :
 - .venv\Scripts\pip-audit.exe --local --strict — bloqué par l’erreur TLS au flux PyPI.
 - git diff --cached --check — réussi sans sortie après staging explicite.
 
-Dépendances installées uniquement dans .venv locale non suivie par Git. Aucun secret n’a été ajouté. La CI du commit 5116510 est verte; le commit documentaire de ce rapport doit encore passer sa propre CI avant qu’on qualifie le head final de vert. Le statut reste **PARTIALLY_READY / MANUAL_VERIFICATION_REQUIRED** tant que le soak de 24 h et la vérification indépendante des programmes DEX sont incomplets.
+Dépendances installées uniquement dans .venv locale non suivie par Git. Aucun secret n’a été ajouté. Les runs #213 et #214 ont réussi sur les commits 5116510 et 6f082a2; le code et les tests sont identiques au présent rapport. Les checks du head courant sont liés dans la PR #8. Le statut reste **PARTIALLY_READY / MANUAL_VERIFICATION_REQUIRED** tant que le soak de 24 h et la vérification indépendante des programmes DEX sont incomplets.
