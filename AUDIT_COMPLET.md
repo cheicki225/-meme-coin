@@ -30,7 +30,7 @@ Le score actualisé et son barème sont maintenus dans [PROGRESS.md](PROGRESS.md
 ## États distincts
 
 - **Développement :** 72,5 % selon le barème publié.
-- **Tests locaux :** `compileall` réussi et 357 tests passés sur `codex/mission-performance-2026-11-22`; le head PR #4 de départ en passait 318. La dernière CI verte précède les derniers correctifs; voir [TESTING.md](TESTING.md) pour son run et les contrôles locaux. Aucun ordre réel n'a été diffusé.
+- **Tests :** `compileall` réussi et 357 tests passés localement et dans la CI [45059131294](https://github.com/cheicki225/-meme-coin/actions/runs/45059131294) sur `a30f11a`; Ruff, pip-audit et Gitleaks ont aussi réussi. Le head PR #4 de départ en passait 318. Aucun ordre réel n'a été diffusé.
 - **Sécurité :** IN PROGRESS. CI #202 verte sur `0e4f100`, incluant lint, audit des dépendances et scan de secrets; l'audit indépendant CPI/DEX reste à faire.
 - **PAPER :** mode par défaut. Les frais simulés d'entrée, DCA, sorties partielles/totales et Sell Initials sont désormais intégrés aux coûts/cashflows et testés; soak, restauration déployée et endpoint RPC cible restent à vérifier.
 - **LIVE : BLOCKED / NOT READY.** Aucune transaction réelle exécutée. Aucun test mainnet, portefeuille financé, soak ni audit indépendant complet.
