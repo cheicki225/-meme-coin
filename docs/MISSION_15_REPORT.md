@@ -57,7 +57,9 @@ Les validations ci-dessous doivent correspondre au HEAD final de cette branche. 
 - Le premier essai pytest sans désactivation des plugins a échoué pendant le chargement d'un plugin pytest global `web3` incompatible avec `eth_typing.ContractName`; `TESTING.md` décrit ce problème local et autorise ce contournement.
 - La revue indépendante en lecture seule a trouvé des cas P2 liés aux fenêtres métriques tronquées, timestamps métriques, versions d'imputation des frais et historique de trades sans positions associées. Ils ont été corrigés et couverts par des tests; le contrôle final n'a trouvé aucun autre problème. Il ne s'agit pas d'une approbation GitHub.
 - Un test SQLite WAL garde un writer de fixture ouvert pendant la lecture et vérifie que la base, le `-wal` et le `-shm` conservent leur taille.
-- `coverage`, `ruff`, `pip-audit` et `gitleaks` ne sont pas installés dans l'environnement Python/terminal local; aucun paquet n'a été installé. Ces étapes restent à prouver sur le HEAD final via GitHub Actions. La couverture locale n'a donc pas été mesurée.
+- `coverage`, `ruff`, `pip-audit` et `gitleaks` n'étaient pas installés dans l'environnement Python/terminal local; aucun paquet n'a été installé. La couverture locale n'a donc pas été mesurée.
+- Sur le commit de code `2dc6fdc92718cbe8e48bea88d91680e4f03088fe`, le run GitHub Actions [45512203002](https://github.com/cheicki225/-meme-coin/actions/runs/45512203002) a réussi : compilation, défaut PAPER, pytest, Ruff, pip-audit, Gitleaks et téléversement couverture. L'artefact [coverage](https://github.com/cheicki225/-meme-coin/actions/runs/45512203002/artifacts/14976151438) est attaché à ce run. Le rapport reste sans pourcentage de couverture faute d'avoir extrait cette valeur de l'artefact.
+- Une mise à jour documentaire suit ce commit de code; la CI de la tête de PR mise à jour doit également être vérifiée avant clôture.
 
 ## Sécurité, retour arrière et preuves manquantes
 
