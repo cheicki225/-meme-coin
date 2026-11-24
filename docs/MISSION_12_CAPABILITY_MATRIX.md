@@ -1,0 +1,42 @@
+# Mission 12 — Wallet Intelligence, Copy Trading and PAPER Sniping
+
+## Scope and base
+
+This Mission 12 branch is stacked on the exact open Mission 10 head `0cc54f77312d6fbf89e0f99c191f840bbddaf985` (PR #21). PR #19 (confirmed-accounting primitives) and PR #20 (PAPER buy-the-dip guards) remain open sibling PRs based on PR #12; this branch does not merge or duplicate either change. Mission 11 is now published as draft PR #22 on the same PR #21 head. Its verified changed-file list does not overlap the three Mission 12 paths (`helius_event_store.py`, the new offline-pipeline test, and this matrix). PR #22 selectively includes the #19/#20 commits according to its description; this branch remains an independent sibling and does not include them.
+
+This report describes code and offline tests on this branch. It is not evidence of a live Helius feed, provider availability, a PAPER soak, mainnet execution, profitability, or LIVE readiness.
+
+## Capability matrix
+
+| Area | Present and wired | Mission 12 work and evidence | Limits and non-claims |
+|---|---|---|---|
+| Wallet Intelligence | Optional, read-only SQLite collector; per-wallet signature cursor; idempotent `(signature, wallet, mint)` rows; partial/error states do not become an empty history. | Existing tests cover cursor, duplicate rows, failed fetches, partial pages and restart. | Collected balance deltas are candidates, not decoded swaps. The collector does not establish cost basis, realized PnL or automatic trade inputs. |
+| Developer monitoring | Tracked `track_creation` wallets flow from token notifications into the existing `SniperBot.on_new_token` callback. The optional `RugScanner` stores candidates and issues periodic heuristic alerts. | Synthetic notification exercises the tracked developer path, timestamp provenance and configured GoPlus honeypot refusal in `tests/test_mission12_offline_pipeline.py`. | `RugScanner` is not an admission gate. GoPlus is optional per wallet and is disabled by default in `config.DEFAULT_WALLET_SETTINGS`; a positive heuristic scan does not establish token safety. |
+| Helius event handling | SQLite inbox persists before parsing, deduplicates by stream/signature, processes each stream by inbox sequence and advances the checkpoint only after handler success. Pre-effect read failures can retry; ambiguous effects remain `UNKNOWN`. | Mission 12 rejects new live inbox writes while a stream is paused or awaiting recovery. Synthetic timeout and HTTP 429 cases keep the stream paused and checkpoint stable, then recover oldest-first when history becomes available. | The sequence is local enqueue order, not authenticated chain-time order. WebSocket subscriptions use `processed`; history replay uses `confirmed`. Slots are optional and do not prove wall-clock time, canonicality, or same-fork ordering. |
+| Copy buy | `CopyTradeListener` classifies observed token/SOL balance movements, then calls the bot callback and existing `PaperTrader.open_position` admission path. | Synthetic Helius transaction drives the real listener and callback into PAPER simulation; a repeated signature yields one position, and the tests check global risk admission, emergency stop, configured GoPlus honeypot refusal, unavailable GoPlus data refusal, and privacy-safe latency output. | Classification is heuristic and does not decode every router/CPI route. The test is synthetic; no provider response or real order was used. The GoPlus gate remains optional and disabled by default; saved wallet settings can also opt out. Duplicate protection is scoped to a stream/signature, not a global exactly-once guarantee across every possible stream. |
+| Copy sell | Observed sell candidates are routed through the existing `on_copytrade_sell` callback for configured `track_sell` wallets. | Existing callback and PAPER trade tests cover the component paths. Mission 11 PR #22 now includes a fail-closed PAPER exit-price path and a dedicated regression test. | No same-block behavior or reliable mirroring latency is claimed. This Mission 12 branch does not include or depend on PR #22. |
+| PAPER sniping | A tracked developer's new-token notification can call `PaperTrader.open_position`; PAPER's existing simulated entry uses local price fixtures in the offline test. | The offline pipeline test confirms a synthetic honeypot result blocks the simulated entry while preserving the event checkpoint. Emergency stop also blocks the copy-buy simulation. | “Front Run Sell” remains a polling heuristic. Neither same-block execution nor a sniping success rate is demonstrated. Other entry settings and the optional security-check default remain unchanged. |
+| Provenance and timestamps | RugScanner only accepts a positive integer creation timestamp from `raw.timestamp` and labels its source; Wallet Intelligence distinguishes provider `block_time` from local `collected_at`. | Tests assert the synthetic Enhanced timestamp source and that latency metrics identify stage/provider category without recording wallet, mint or signature. | Provider assertions are not cryptographic provenance. Helius category labels do not identify the configured endpoint. Local receive time is not chain time; no external clock accuracy or feed freshness has been measured. |
+| Latency and validation | Existing metrics summarize bounded p50/p95/p99 by fixed stage/provider labels. CI already runs compilation, PAPER-default assertion, full pytest with branch coverage, critical Ruff, pip-audit and Gitleaks. | New tests are automatically included in the existing CI workflow; no dependency or workflow change is needed. | Local synthetic percentiles describe only the fixture run. CI coverage and security results must be read from a run attached to the exact pushed commit. |
+
+## Mission 12 change details
+
+`HeliusEventStore.enqueue` now refuses a new, non-replay event when its stream is paused or marked for recovery. History replay may still enqueue verified events while rebuilding the gap. Rejections are aggregated as `paused_intake_rejections`; no signature or stream name is exposed in the metrics summary.
+
+If history-page retrieval raises a timeout, 429-style error or other source exception, replay returns a sanitized `EventRecoveryError`. Recovery stays fail-closed: the durable checkpoint is not advanced, intake remains paused, and a later connection can attempt recovery again. This does not add an unbounded or transaction retry.
+
+## Safety and proof boundary
+
+- PAPER is the only mode exercised. The test fixtures replace pricing, security and token-history reads; no network connection is made.
+- The successful copy-buy fixture clears the emergency stop only in synthetic state to test a permitted PAPER simulation; a separate fixture verifies that an active stop blocks entry.
+- The dangerous-token fixture uses a synthetic GoPlus honeypot result with the per-wallet security check enabled. This proves the existing configured gate, not that the default disabled option protects every wallet.
+- No private key, wallet key, live provider, signed transaction, RPC submission, Telegram bot or funded wallet was used.
+- The queue still preserves local arrival order. There is no canonical time ordering guarantee for `processed` notifications, no transaction-index ordering within a slot, no fork/reorg guarantee and no same-block front running.
+- Mission 11's fail-closed copy-sell price handling is in sibling PR #22, not this branch. Full runtime orchestration, live-provider validation and integration of the sibling missions remain open; Mission 12 does not claim to complete them.
+
+## Local validation on 2026-11-24
+
+- Python 3.11.9; `python -m compileall -q .`: passed.
+- Targeted suite: `tests/test_mission12_offline_pipeline.py`, Helius event-store/listener tests and CopyTrade listener tests: **30 passed**.
+- Full offline suite: `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q`: **630 passed**. The documented plugin-autoload workaround was used; dotenv was disabled, PAPER forced, LIVE disabled, key/token variables empty, and the RPC URL directed to loopback.
+- Local `coverage`, Ruff and `pip-audit` executables are absent, so no local results are claimed for them. The configured GitHub Actions run on the pushed commit must supply branch coverage, Ruff, pip-audit and Gitleaks evidence before those controls are reported as passed.

@@ -38,6 +38,10 @@ class EventQueueFullError(EventStoreError):
     """Raised when a notification cannot be durably added within configured bounds."""
 
 
+class EventIntakePausedError(EventStoreError):
+    """Raised when new live events arrive before a stream's history is recovered."""
+
+
 class EventRecoveryError(EventStoreError):
     """Raised when history replay cannot prove the gap was completely recovered."""
 
@@ -256,6 +260,29 @@ class HeliusEventStore:
                             "helius",
                         )
                     return result
+
+                stream_state = db.execute(
+                    "SELECT recovery_required, intake_paused FROM event_streams "
+                    "WHERE stream=?",
+                    (stream,),
+                ).fetchone()
+                if (
+                    not is_replay
+                    and stream_state
+                    and (bool(stream_state[0]) or bool(stream_state[1]))
+                ):
+                    self._counter(db, "paused_intake_rejections")
+                    db.commit()
+                    with correlate_event(correlation_id):
+                        record_execution_metric(
+                            "event.inbox_enqueue",
+                            (time.perf_counter() - started) * 1000,
+                            "failure",
+                            "helius",
+                        )
+                    raise EventIntakePausedError(
+                        "Helius event intake is paused until history recovery completes"
+                    )
 
                 pending_count, pending_bytes = db.execute(
                     """
@@ -697,6 +724,9 @@ class HeliusEventStore:
             "replayed": replayed,
             "retried": int(counters.get("retried", 0)),
             "queue_full": queue_full,
+            "paused_intake_rejections": int(
+                counters.get("paused_intake_rejections", 0)
+            ),
             "unpersisted_rejection_rate": round(
                 queue_full / max(received + queue_full, 1), 6
             ),
@@ -856,7 +886,15 @@ async def replay_stream_history(
     max_items = store.max_pending_events
     max_pages = (max_items // page_limit) + 2
     for _ in range(max_pages):
-        page = await fetch_page(address, before, page_limit)
+        try:
+            page = await fetch_page(address, before, page_limit)
+        except Exception:
+            # Keep provider details, URLs, and exception text out of logs and
+            # persisted event state. The stream remains paused and can retry
+            # recovery on its next connection.
+            raise EventRecoveryError(
+                "History replay source is temporarily unavailable"
+            ) from None
         if not isinstance(page, list):
             raise EventRecoveryError("History replay returned an invalid page")
         if not page:
