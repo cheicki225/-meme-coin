@@ -75,7 +75,7 @@
     },
     {
       "id": "mission_8_5_8_6_reconciliation",
-      "title": "Compare PR #12 and #13 integration paths without duplicating Mission 8.5 work",
+      "title": "Compare PR #12 and #13 integration paths, including stacked PR #18 security fixes",
       "priority": "P0",
       "depends_on": [
         "mission_8_5_helius_reliability",
@@ -89,7 +89,10 @@
         "execution_metrics.py",
         "helius_event_store.py",
         "tests/test_rpc_retry_policy.py",
-        "tests/test_helius_event_store.py"
+        "tests/test_helius_event_store.py",
+        "telegram_bot.py",
+        "tests/test_rpc_redirect_security.py",
+        "tests/test_telegram_wallet_message_deletion.py"
       ],
       "budget_minutes": 180,
       "max_attempts": 3,

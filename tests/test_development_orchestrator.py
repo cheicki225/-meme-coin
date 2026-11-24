@@ -711,6 +711,14 @@ def test_mission_manifest_tracks_open_pr_work_and_respects_capacity(
     }
 
     assert len(plan.tasks) == 18
+    reconciliation_scopes = set(
+        plan.by_id["mission_8_5_8_6_reconciliation"].scope_files
+    )
+    assert {
+        "telegram_bot.py",
+        "tests/test_rpc_redirect_security.py",
+        "tests/test_telegram_wallet_message_deletion.py",
+    }.issubset(reconciliation_scopes)
     assert {
         task.task_id for task in plan.tasks
         if task.initial_status == "external_in_progress"
