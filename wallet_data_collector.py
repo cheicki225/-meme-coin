@@ -22,6 +22,14 @@ import wallet_history
 
 log = logging.getLogger("wallet_data_collector")
 DEFAULT_DB_PATH = Path(getattr(config, "WALLET_ACTIVITY_DB_FILE", "data/wallet_intelligence.sqlite3"))
+COLLECTION_SOURCE = "solana_rpc_getTransaction_pump_fun_balance_deltas_v1"
+MAX_TOKEN_AMOUNT = (1 << 64) - 1
+BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+BASE58_VALUES = {character: index for index, character in enumerate(BASE58_ALPHABET)}
+
+
+class WalletNormalizationError(ValueError):
+    """Raised when relevant transaction data is insufficient to classify safely."""
 
 
 def _account_key(value: Any) -> str | None:
@@ -31,6 +39,22 @@ def _account_key(value: Any) -> str | None:
         key = value.get("pubkey")
         return key if isinstance(key, str) else None
     return None
+
+
+def _is_solana_pubkey(value: Any) -> bool:
+    """Return whether a string is a base58 encoding of exactly 32 bytes."""
+    if (
+        not isinstance(value, str)
+        or not 1 <= len(value) <= 44
+        or any(char not in BASE58_VALUES for char in value)
+    ):
+        return False
+    leading_zero_bytes = len(value) - len(value.lstrip("1"))
+    decoded_value = 0
+    for character in value:
+        decoded_value = decoded_value * 58 + BASE58_VALUES[character]
+    decoded_bytes = (decoded_value.bit_length() + 7) // 8
+    return leading_zero_bytes + decoded_bytes == 32
 
 
 def _wallet_token_deltas(tx: dict, wallet: str) -> list[dict]:
@@ -65,6 +89,70 @@ def _wallet_token_deltas(tx: dict, wallet: str) -> list[dict]:
     return result
 
 
+def _require_complete_pump_token_balances(wallet: str, meta: dict) -> None:
+    """Reject incomplete Pump.fun token balance metadata instead of skipping it."""
+    for field in ("preTokenBalances", "postTokenBalances"):
+        rows = meta.get(field)
+        if not isinstance(rows, list):
+            raise WalletNormalizationError("Pump.fun token balance metadata is unavailable")
+        for row in rows:
+            if not isinstance(row, dict):
+                raise WalletNormalizationError("Pump.fun token balance row is malformed")
+            owner = row.get("owner")
+            if not isinstance(owner, str) or not owner.strip():
+                raise WalletNormalizationError("Pump.fun token balance owner is unavailable")
+            if owner != wallet:
+                continue
+            mint = row.get("mint")
+            token_amount = row.get("uiTokenAmount")
+            amount = token_amount.get("amount") if isinstance(token_amount, dict) else None
+            decimals = token_amount.get("decimals") if isinstance(token_amount, dict) else None
+            if (
+                not isinstance(mint, str)
+                or not mint.strip()
+                or not isinstance(amount, str)
+                or not amount.isascii()
+                or not amount.isdigit()
+                or len(amount) > 20
+                or int(amount) > MAX_TOKEN_AMOUNT
+                or isinstance(decimals, bool)
+                or not isinstance(decimals, int)
+                or not 0 <= decimals <= 255
+            ):
+                raise WalletNormalizationError("Wallet token balance row is incomplete")
+
+
+def _require_complete_instruction_metadata(tx: dict, meta: dict) -> None:
+    """Reject RPC instruction shapes that could hide a Pump.fun invocation."""
+    transaction = tx.get("transaction")
+    message = transaction.get("message") if isinstance(transaction, dict) else None
+    instructions = message.get("instructions") if isinstance(message, dict) else None
+    if not isinstance(instructions, list):
+        raise WalletNormalizationError("Top-level transaction instructions are unavailable")
+
+    inner_groups = meta.get("innerInstructions")
+    if not isinstance(inner_groups, list):
+        raise WalletNormalizationError("Inner transaction instructions are unavailable")
+
+    for instruction in instructions:
+        if (
+            not isinstance(instruction, dict)
+            or not _is_solana_pubkey(instruction.get("programId"))
+        ):
+            raise WalletNormalizationError("Top-level transaction instruction is malformed")
+
+    for group in inner_groups:
+        inner_instructions = group.get("instructions") if isinstance(group, dict) else None
+        if not isinstance(inner_instructions, list):
+            raise WalletNormalizationError("Inner transaction instruction group is malformed")
+        for instruction in inner_instructions:
+            if (
+                not isinstance(instruction, dict)
+                or not _is_solana_pubkey(instruction.get("programId"))
+            ):
+                raise WalletNormalizationError("Inner transaction instruction is malformed")
+
+
 def normalize_transaction(wallet: str, signature: str, tx: dict) -> dict | None:
     """Normalise un mouvement observé; ne prétend pas identifier un swap certain."""
     if not isinstance(tx, dict) or not isinstance(tx.get("meta"), dict):
@@ -72,6 +160,11 @@ def normalize_transaction(wallet: str, signature: str, tx: dict) -> dict | None:
     meta = tx["meta"]
     if meta.get("err") is not None:
         return None
+    _require_complete_instruction_metadata(tx, meta)
+    pump_fun = wallet_history._transaction_involves_program(tx, config.PUMP_FUN_PROGRAM_ID)
+    if not pump_fun:
+        return None
+    _require_complete_pump_token_balances(wallet, meta)
     message = (tx.get("transaction") or {}).get("message") or {}
     keys = [_account_key(k) for k in message.get("accountKeys", [])]
     try:
@@ -87,8 +180,7 @@ def normalize_transaction(wallet: str, signature: str, tx: dict) -> dict | None:
         sol_delta = None
 
     token_deltas = _wallet_token_deltas(tx, wallet)
-    pump_fun = wallet_history._transaction_involves_program(tx, config.PUMP_FUN_PROGRAM_ID)
-    if not pump_fun or not token_deltas:
+    if not token_deltas:
         return None
 
     # Une transaction peut affecter plusieurs mints; stocker un événement par mint.
@@ -114,7 +206,7 @@ def normalize_transaction(wallet: str, signature: str, tx: dict) -> dict | None:
             "realized_pnl_sol": None,
             "entry_price_sol": None,
             "exit_price_sol": None,
-            "source": "solana_rpc_pump_fun_balance_deltas",
+            "source": COLLECTION_SOURCE,
         })
     return {"signature": signature, "events": events}
 
@@ -202,12 +294,13 @@ def set_collection_cursor(wallet: str, signature: str, db_path: str | Path = DEF
 
 def store_events(events: list[dict], db_path: str | Path = DEFAULT_DB_PATH) -> int:
     initialize_store(db_path)
+    stored_at = int(time.time())
     rows = [
         (
             e["signature"], e["wallet_address"], e["token_mint"], e.get("block_time"),
             e["event_type"], str(e["token_delta_raw"]), e.get("token_decimals"),
             e.get("sol_delta"), e["classification_confidence"], None, None, None,
-            e["source"], int(time.time()),
+            e["source"], e.get("collected_at", stored_at),
         )
         for e in events
     ]
@@ -264,14 +357,29 @@ async def collect_wallet(wallet: str, limit: int = 100, db_path: str | Path = DE
         )
     except Exception as exc:
         log.warning("Wallet signature collection failed (%s)", type(exc).__name__)
-        return {"status": "error", "reason": "signature_fetch_failed", "wallet": wallet}
+        return {
+            "status": "error", "reason": "signature_fetch_failed", "wallet": wallet,
+            "source": COLLECTION_SOURCE, "collection_scope": "bounded_signature_page",
+            "signature_limit": limit, "completeness": "unknown", "cursor_advanced": False,
+        }
     if not isinstance(signatures, list):
-        return {"status": "error", "reason": "invalid_signature_response", "wallet": wallet}
+        return {
+            "status": "error", "reason": "invalid_signature_response", "wallet": wallet,
+            "source": COLLECTION_SOURCE, "collection_scope": "bounded_signature_page",
+            "signature_limit": limit, "completeness": "unknown", "cursor_advanced": False,
+        }
+    if len(signatures) > limit:
+        return {
+            "status": "error", "reason": "signature_page_exceeds_limit", "wallet": wallet,
+            "source": COLLECTION_SOURCE, "collection_scope": "bounded_signature_page",
+            "signature_limit": limit, "completeness": "unknown", "cursor_advanced": False,
+        }
 
-    events, failed = [], 0
+    events, failed, invalid_signature_records = [], 0, 0
     for item in signatures:
         signature = item.get("signature") if isinstance(item, dict) else None
-        if not signature:
+        if not isinstance(signature, str) or not signature.strip():
+            invalid_signature_records += 1
             continue
         try:
             tx = await wallet_history._get_raw_transaction(signature)
@@ -281,24 +389,61 @@ async def collect_wallet(wallet: str, limit: int = 100, db_path: str | Path = DE
         if not tx:
             failed += 1
             continue
-        normalized = normalize_transaction(wallet, signature, tx)
+        if not isinstance(tx, dict) or not isinstance(tx.get("meta"), dict):
+            failed += 1
+            continue
+        try:
+            normalized = normalize_transaction(wallet, signature, tx)
+        except WalletNormalizationError:
+            failed += 1
+            continue
         if normalized:
             events.extend(normalized["events"])
 
+    collected_at = int(time.time())
+    for event in events:
+        event["collected_at"] = collected_at
+
+    cursor_advanced = False
+    newest_item = signatures[0] if signatures else None
+    newest_signature = newest_item.get("signature") if isinstance(newest_item, dict) else None
     try:
         inserted = store_events(events, db_path)
-        if failed == 0 and signatures:
-            newest = signatures[0].get("signature") if isinstance(signatures[0], dict) else None
-            if newest:
-                set_collection_cursor(wallet, newest, db_path)
+        if failed == 0 and invalid_signature_records == 0 and newest_signature:
+            set_collection_cursor(wallet, newest_signature, db_path)
+            cursor_advanced = True
     except (OSError, sqlite3.Error) as exc:
         log.error("Wallet activity persistence failed (%s)", type(exc).__name__)
-        return {"status": "error", "reason": "storage_failed", "wallet": wallet}
+        return {
+            "status": "error", "reason": "storage_failed", "wallet": wallet,
+            "source": COLLECTION_SOURCE, "collection_scope": "bounded_signature_page",
+            "signature_limit": limit, "completeness": "unknown",
+            "freshness_basis": "local_collected_at; source block_time may be absent",
+            "collected_at": collected_at, "cursor_advanced": False,
+            "invalid_signature_records": invalid_signature_records,
+            "transactions_unavailable": failed,
+        }
+    incomplete = failed > 0 or invalid_signature_records > 0
+    if invalid_signature_records:
+        reason = "invalid_signature_record"
+    else:
+        reason = "transaction_fetch_partial" if failed else None
+    page_completeness = (
+        "partial" if incomplete else "empty_page" if not signatures else "current_page_processed"
+    )
     return {
-        "status": "partial" if failed else "ok",
-        "reason": "transaction_fetch_partial" if failed else None,
+        "status": "partial" if incomplete else "ok",
+        "reason": reason,
         "wallet": wallet,
+        "source": COLLECTION_SOURCE,
+        "collection_scope": "bounded_signature_page",
+        "signature_limit": limit,
+        "completeness": page_completeness,
+        "freshness_basis": "local_collected_at; source block_time may be absent",
+        "collected_at": collected_at,
+        "cursor_advanced": cursor_advanced,
         "signatures_scanned": len(signatures),
+        "invalid_signature_records": invalid_signature_records,
         "transactions_unavailable": failed,
         "events_detected": len(events),
         "events_inserted": inserted,
