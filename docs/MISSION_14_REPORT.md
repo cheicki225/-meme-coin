@@ -15,7 +15,7 @@
 - PR #21 est ouverte, en brouillon, head `0cc54f77312d6fbf89e0f99c191f840bbddaf985`.
 - PR #22 est ouverte, en brouillon, mergeable, et cible exactement le head courant de #21. Elle reprend déjà les changements #19 et #20. La Mission 14 est empilée sur son head exact `9590196c40a64ef478a4d4e7c44ade5dee105f12`.
 - PR #23 est ouverte, en brouillon, mergeable, et reste une branche sœur basée sur #21 au SHA `0cc54f77312d6fbf89e0f99c191f840bbddaf985`. Elle modifie `helius_event_store.py`, `docs/MISSION_12_CAPABILITY_MATRIX.md` et `tests/test_mission12_offline_pipeline.py`; ces changements ne sont pas nécessaires aux lots 14A–14C et n'ont pas été repris.
-- La recherche GitHub n'a trouvé ni branche ni PR Mission 13 publiée au moment de cet audit. La PR #13 existante est Mission 8.5. L'autre session Mission 13 n'étant pas inspectable depuis cette branche, un chevauchement futur ne peut être exclu; le travail 14 évite les modules de stratégie, `paper_trader.py` et `backtest.py`.
+- À l'inventaire initial, aucune branche ni PR Mission 13 n'était publiée; la PR #13 existante est Mission 8.5. Ensuite, la PR Mission 13 **#24** est apparue, ouverte en brouillon et mergeable, head `ff2c2fbbe04ea3e175ee7f864cc52978c3fb613b`, sœur de #22 sur la branche Mission 10 `codex/mission-10-autonomous-execution-integration-2026-11-24` au SHA `0cc54f77312d6fbf89e0f99c191f840bbddaf985`. Sa comparaison exacte à sa base montre huit chemins : trois modules `mission13_*`, son rapport, son fixture synthétique et trois tests Mission 13. Aucun ne chevauche les six chemins Mission 14. Le travail 14 reste isolé sur la branche #22 et évite également `paper_trader.py` et `backtest.py`.
 - Le checkout `main` local contenait de nombreuses modifications suivies et non suivies. Il n'a pas été modifié. Le travail est dans un worktree séparé créé depuis le head vérifié de #22.
 
 ## 14A — Audit comptable
@@ -69,4 +69,4 @@ Tous les tests utilisent des fixtures synthétiques ou des chemins temporaires. 
 
 ## Prochaine étape
 
-Une CI supplémentaire est déclenchée par cette mise à jour documentaire; son SHA et son résultat seront confirmés avant de conclure. Le head #22 est resté `9590196c40a64ef478a4d4e7c44ade5dee105f12` lors de la dernière vérification. Aucune PR ne sera fusionnée automatiquement.
+Les preuves de code et de CI ci-dessus portent sur le SHA Mission 14 `5022d4315461a3520e488e7259f10f624e270059`; les commits ultérieurs ne modifient que ce rapport. L'état CI du head courant est visible sur la [PR #25](https://github.com/cheicki225/-meme-coin/pull/25). Le head #22 était `9590196c40a64ef478a4d4e7c44ade5dee105f12` lors de la dernière vérification. Aucune PR ne sera fusionnée automatiquement.
