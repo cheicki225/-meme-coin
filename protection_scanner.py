@@ -34,7 +34,6 @@ import asyncio
 import copy
 import json
 import logging
-import time
 
 import websockets
 
@@ -42,24 +41,37 @@ import config
 import pattern_detector
 import fund_tracer
 import rpc_client
+from execution_metrics import measure_execution
+from helius_event_store import (
+    EventQueueFullError,
+    EventStoreError,
+    EventRecord,
+    HeliusEventStore,
+    RetryableEventError,
+    drain_stream,
+    get_default_event_store,
+    recover_required_streams,
+)
 
 log = logging.getLogger("protection_scanner")
 
-# Même principe de déduplication que copytrade_listener.py — évite de
-# traiter deux fois une notification WebSocket dupliquée pour la même
-# transaction (comportement documenté et déjà observé côté Helius).
-_SIGNATURE_CACHE_MAX_SIZE = 500
-_SIGNATURE_CACHE_TTL_S = 120
-
-
 class ProtectionScanner:
-    def __init__(self, data_store, notifier=None):
+    def __init__(
+        self,
+        data_store,
+        notifier=None,
+        *,
+        event_store: HeliusEventStore | None = None,
+    ):
         self.data_store = data_store
         self.notifier = notifier
+        self._event_store = event_store or get_default_event_store()
         self._running = False
         self._ws = None
         self._subscribed_addresses = set()
-        self._recent_signatures = {}
+        self._sub_id_to_address: dict[int, str] = {}
+        self._request_id_to_address: dict[int, str] = {}
+        self._next_request_id = 0
 
     async def start(self):
         self._running = True
@@ -77,6 +89,9 @@ class ProtectionScanner:
         while self._running:
             try:
                 await self._run_connection()
+            except EventStoreError:
+                self._running = False
+                log.critical("Protection event storage failed; listener stopped fail-closed")
             except Exception as e:
                 log.error("External operation failed (%s)", type(e).__name__)
                 await asyncio.sleep(5)
@@ -88,16 +103,41 @@ class ProtectionScanner:
         async with websockets.connect(config.HELIUS_WS_URL, ping_interval=20) as ws:
             self._ws = ws
             self._subscribed_addresses = set()
+            self._sub_id_to_address = {}
+            self._request_id_to_address = {}
+            known_streams = set(self._event_store.stream_names("protection:"))
 
             await self._sync_subscriptions()
+            for stream in known_streams:
+                self._event_store.mark_recovery_required(stream, "connection_gap")
+            ready = await recover_required_streams(
+                self._event_store,
+                "protection:",
+                self._process_event_record,
+                self._address_for_stream,
+            )
+            if not ready:
+                log.error("Protection event recovery is incomplete; intake remains paused")
+                await ws.close()
+                await asyncio.sleep(5)
+                return
             log.info(f"✅ Protection scanner connecté en WebSocket — synchronisation toutes les {config.PROTECTION_SCAN_INTERVAL_S}s.")
 
             sync_task = asyncio.create_task(self._periodic_sync())
+            retry_task = asyncio.create_task(self._retry_pending_events())
             try:
                 async for message in ws:
                     await self._handle_message(message)
             finally:
                 sync_task.cancel()
+                retry_task.cancel()
+                for task in (sync_task, retry_task):
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
+                for stream in self._event_store.stream_names("protection:"):
+                    self._event_store.mark_recovery_required(stream, "connection_gap")
 
     async def _periodic_sync(self):
         while True:
@@ -117,13 +157,17 @@ class ProtectionScanner:
         new_addresses = current_addresses - self._subscribed_addresses
 
         for address in new_addresses:
+            self._next_request_id += 1
+            request_id = self._next_request_id
             sub_msg = {
                 "jsonrpc": "2.0",
-                "id": len(self._subscribed_addresses) + 1,
+                "id": request_id,
                 "method": "logsSubscribe",
                 "params": [{"mentions": [address]}, {"commitment": "confirmed"}],
             }
             await self._ws.send(json.dumps(sub_msg))
+            self._event_store.ensure_stream(f"protection:{address}")
+            self._request_id_to_address[request_id] = address
             self._subscribed_addresses.add(address)
 
         if new_addresses:
@@ -132,37 +176,131 @@ class ProtectionScanner:
     async def _handle_message(self, message: str):
         try:
             data = json.loads(message)
+            if "error" in data and "id" in data:
+                raise ValueError("Protection subscription was rejected")
             if "result" in data and "id" in data:
-                return  # réponse à une souscription, rien à traiter
-
-            result = data.get("params", {}).get("result", {})
-            value = result.get("value", {})
-            signature = value.get("signature")
-            if not signature or self._already_processed(signature):
+                request_id = data.get("id")
+                subscription_id = data.get("result")
+                address = self._request_id_to_address.pop(request_id, None)
+                if not address or type(subscription_id) is not int:
+                    raise ValueError("Protection subscription acknowledgement is invalid")
+                self._sub_id_to_address[subscription_id] = address
                 return
 
-            await self._process_live_transaction(signature)
+            params = data.get("params", {})
+            result = params.get("result", {})
+            value = result.get("value", {})
+            signature = value.get("signature")
+            if not isinstance(signature, str) or not signature:
+                if "params" in data:
+                    raise ValueError("Protection notification has no valid signature")
+                return
+
+            subscription_id = params.get("subscription")
+            address = self._sub_id_to_address.get(subscription_id)
+            if address is None and len(self._subscribed_addresses) == 1:
+                address = next(iter(self._subscribed_addresses))
+            if address is None:
+                for tracked_address in self._subscribed_addresses:
+                    self._event_store.mark_recovery_required(
+                        f"protection:{tracked_address}", "subscription_mapping"
+                    )
+                log.error("Protection subscription mapping is unavailable; intake paused")
+                if self._ws is not None:
+                    await self._ws.close()
+                return
+
+            context = result.get("context", {})
+            slot = context.get("slot") if isinstance(context, dict) else None
+            await self._process_live_transaction(
+                signature,
+                source=f"protection:{address}",
+                slot=slot if type(slot) is int else None,
+            )
+        except EventQueueFullError:
+            log.error("Protection event inbox full; pausing WebSocket intake for history replay")
+            if self._ws is not None:
+                await self._ws.close()
+        except EventStoreError:
+            self._running = False
+            log.critical("Protection event storage failed; listener stopped fail-closed")
+            if self._ws is not None:
+                await self._ws.close()
+            raise
         except Exception as e:
-            log.debug("External operation failed (%s)", type(e).__name__)
+            for address in self._subscribed_addresses:
+                self._event_store.mark_recovery_required(
+                    f"protection:{address}", "invalid_notification"
+                )
+            log.error("Protection notification rejected (%s); reconnecting for replay", type(e).__name__)
+            if self._ws is not None:
+                await self._ws.close()
 
-    def _already_processed(self, signature: str) -> bool:
-        now = time.time()
-        if len(self._recent_signatures) > _SIGNATURE_CACHE_MAX_SIZE:
-            cutoff = now - _SIGNATURE_CACHE_TTL_S
-            self._recent_signatures = {s: t for s, t in self._recent_signatures.items() if t > cutoff}
-        if signature in self._recent_signatures:
-            return True
-        self._recent_signatures[signature] = now
-        return False
+    @staticmethod
+    def _address_for_stream(stream: str) -> str | None:
+        address = stream.removeprefix("protection:")
+        return address if address else None
 
-    async def _process_live_transaction(self, signature: str):
-        """Reçoit une notification WebSocket pour une adresse surveillée,
-        récupère la transaction parsée, et vérifie si elle contient un
-        transfert SOL sortant correspondant aux critères d'une des cibles."""
-        parsed = await rpc_client.fetch_parsed_transaction(signature)
+    async def _process_live_transaction(
+        self,
+        signature: str,
+        *,
+        source: str | None = None,
+        slot: int | None = None,
+        is_replay: bool = False,
+    ):
+        """Persist first, then parse and evaluate one protection event."""
+        if source is None:
+            if len(self._subscribed_addresses) == 1:
+                source = f"protection:{next(iter(self._subscribed_addresses))}"
+            else:
+                source = "protection:unmapped"
+        self._event_store.enqueue(
+            source,
+            signature,
+            {"replayed": bool(is_replay)},
+            slot=slot,
+            is_replay=is_replay,
+        )
+
+        result = await self._drain_event_stream(source)
+        if result == "unknown" and self._ws is not None:
+            await self._ws.close()
+
+    async def _drain_event_stream(self, stream: str) -> str:
+        result = await drain_stream(
+            self._event_store, stream, self._process_event_record
+        )
+        if result == "unknown":
+            log.error("Protection event stream is blocked pending manual review")
+        return result
+
+    async def _retry_pending_events(self):
+        while True:
+            try:
+                for stream in self._event_store.stream_names("protection:"):
+                    result = await self._drain_event_stream(stream)
+                    if result == "unknown" and self._ws is not None:
+                        await self._ws.close()
+                await asyncio.sleep(1)
+            except EventStoreError:
+                self._running = False
+                log.critical("Protection event storage failed; listener stopped fail-closed")
+                if self._ws is not None:
+                    await self._ws.close()
+                return
+
+    async def _process_event_record(self, event: EventRecord) -> None:
+        with measure_execution("event.parse", "helius"):
+            parsed = await rpc_client.fetch_parsed_transaction(event.signature)
         if not parsed:
-            return
+            raise RetryableEventError("enhanced_fetch_unavailable")
 
+        self._event_store.mark_effect_started(event.event_id)
+        with measure_execution("event.decision", "internal"):
+            await self._process_parsed_transaction(parsed)
+
+    async def _process_parsed_transaction(self, parsed: dict) -> None:
         native_transfers = parsed.get("nativeTransfers", []) or []
         if not native_transfers:
             return
