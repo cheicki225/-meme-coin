@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SKILLS_ROOT = ROOT / ".agents" / "skills"
 CATALOG = ROOT / "SKILLS_CATALOG.md"
 SCENARIOS = ROOT / "docs" / "SKILLS_VALIDATION_SCENARIOS.md"
+RESULTS = ROOT / "docs" / "SKILLS_BEHAVIORAL_RESULTS.md"
 
 EXPECTED_SKILLS = {
     "project-master",
@@ -41,6 +42,12 @@ REQUIRED_HEADINGS = (
     "Limites",
     "Passages de relais",
 )
+EXPECTED_RESULT_IDS = {
+    *(f"P{number:02}" for number in range(1, 16)),
+    *(f"N{number:02}" for number in range(1, 7)),
+    *(f"A{number:02}" for number in range(1, 7)),
+}
+RESULT_ROW = re.compile(r"^\| (P\d{2}|N\d{2}|A\d{2}) \| (OBSERVED|PARTIAL|NOT_RUN) \|", re.MULTILINE)
 
 
 def parse_frontmatter(text: str, path: Path) -> tuple[dict[str, object], str]:
@@ -129,6 +136,31 @@ def check_skill(path: Path, errors: list[str]) -> None:
             errors.append(f"{path}: broken local link {target}")
 
 
+def check_behavioral_results(path: Path, errors: list[str]) -> None:
+    """Check that every planned scenario has an explicit observed/unrun result."""
+    if not path.is_file():
+        errors.append(f"missing required file: {path.relative_to(ROOT)}")
+        return
+
+    content = path.read_text(encoding="utf-8-sig")
+    matches = RESULT_ROW.findall(content)
+    found = {scenario_id for scenario_id, _status in matches}
+    duplicates = sorted(
+        scenario_id for scenario_id in found
+        if sum(1 for matched_id, _status in matches if matched_id == scenario_id) > 1
+    )
+    if duplicates:
+        errors.append(f"behavioral result matrix has duplicate IDs: {duplicates}")
+    if found != EXPECTED_RESULT_IDS:
+        errors.append(
+            "behavioral result IDs differ from planned scenarios; "
+            f"missing={sorted(EXPECTED_RESULT_IDS - found)}, "
+            f"unexpected={sorted(found - EXPECTED_RESULT_IDS)}"
+        )
+    if "does not test Codex skill selection" in content:
+        errors.append("behavioral result report must distinguish observations from structure tests")
+
+
 def main() -> int:
     errors: list[str] = []
     manifests = sorted(SKILLS_ROOT.glob("*/SKILL.md")) if SKILLS_ROOT.exists() else []
@@ -143,7 +175,7 @@ def main() -> int:
     for path in manifests:
         check_skill(path, errors)
 
-    for required_file in (CATALOG, SCENARIOS):
+    for required_file in (CATALOG, SCENARIOS, RESULTS):
         if not required_file.is_file():
             errors.append(f"missing required file: {required_file.relative_to(ROOT)}")
     if CATALOG.is_file():
@@ -160,6 +192,11 @@ def main() -> int:
                 errors.append(f"scenario matrix does not mention {name}")
         if "web-research-problem-solver" not in scenarios:
             errors.append("scenario matrix must cover conditional research routing")
+        for scenario_id in ("A01", "A02", "A03", "A04", "A05", "A06"):
+            if f"| {scenario_id} |" not in scenarios:
+                errors.append(f"scenario matrix is missing ambiguous case {scenario_id}")
+    if RESULTS.is_file():
+        check_behavioral_results(RESULTS, errors)
 
     if errors:
         for error in errors:
@@ -168,7 +205,7 @@ def main() -> int:
 
     print(
         f"Validated {len(manifests)} skill manifests, required sections, local links, "
-        "catalog entries, and routing scenarios."
+        "catalog entries, routing scenarios, and behavioral result rows."
     )
     print(
         "Structural validation only: Codex invocation behavior, bot tests, and "
