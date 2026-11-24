@@ -30,7 +30,9 @@ _ALLOWED_STAGES = frozenset({
     "decision.new_token_dispatch", "decision.copytrade_buy", "decision.copytrade_sell",
     "decision.evaluate_dev", "strategy.open_position", "strategy.partial_close",
     "strategy.close_position", "rpc.request", "rpc.endpoint_attempt",
-    "websocket.new_token_creation",
+    "rpc.rate_limit_wait", "rpc.read_coalesced", "websocket.new_token_creation",
+    "websocket.parse_transaction", "websocket.creation_callback",
+    "websocket.reconnect_wait", "websocket.subscription_send",
 })
 _ALLOWED_PROVIDERS = frozenset({
     "unknown", "helius", "jupiter", "solana_rpc", "local", "internal",

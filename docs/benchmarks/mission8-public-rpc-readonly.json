@@ -1,0 +1,87 @@
+{
+  "mission": 8,
+  "measured_on_utc": "2026-11-22",
+  "execution_context": "Codex execution host; egress region unknown",
+  "mode": "read-only public RPC and WebSocket methods",
+  "credentials_used": false,
+  "transaction_or_signature_used": false,
+  "raw_per_request_traces_retained": false,
+  "http_unpaired": [
+    {
+      "endpoint": "https://api.mainnet.solana.com",
+      "method": "getSlot",
+      "commitment": "confirmed",
+      "sample_count": 30,
+      "interval_seconds": 0.4,
+      "timeout_seconds": 1.5,
+      "success_count": 21,
+      "failure_count": 9,
+      "failure_rate_percent": 30.0,
+      "failures": {
+        "timeout": 9
+      },
+      "latency_ms": {
+        "p50": 160.19,
+        "p95": 1511.61,
+        "p99": 1514.82
+      },
+      "percentile_caveat": "n=30; p95 and p99 are near the observed sample maximum"
+    },
+    {
+      "endpoint": "https://solana-rpc.publicnode.com",
+      "method": "getSlot",
+      "commitment": "confirmed",
+      "sample_count": 30,
+      "interval_seconds": 0.4,
+      "timeout_seconds": 1.5,
+      "success_count": 30,
+      "failure_count": 0,
+      "failure_rate_percent": 0.0,
+      "failures": {},
+      "latency_ms": {
+        "p50": 134.95,
+        "p95": 239.37,
+        "p99": 325.33
+      },
+      "percentile_caveat": "n=30; p95 and p99 are near the observed sample maximum"
+    }
+  ],
+  "http_paired_slots": {
+    "sample_count": 10,
+    "paired_requests_succeeded": 10,
+    "slot_delta_public_solana_minus_publicnode": {
+      "min": 0,
+      "median": 1,
+      "p95": 4,
+      "max": 4
+    },
+    "caveat": "Short simultaneous sample; not a general freshness ranking"
+  },
+  "websocket": {
+    "endpoint": "wss://api.mainnet.solana.com",
+    "method": "slotSubscribe",
+    "notification_count": 30,
+    "handshake_ms": 1982.16,
+    "subscription_ack_ms": 490.63,
+    "first_notification_ms": 522.21,
+    "notification_interarrival_ms": {
+      "p50": 268.66,
+      "p95": 603.04,
+      "p99": 659.64
+    },
+    "event_loss_rate": null,
+    "event_loss_rate_reason": "No independent expected-slot sequence was recorded"
+  },
+  "limitations": [
+    "Small sample from one execution host and one time window",
+    "Egress region and deployment environment are unknown",
+    "No load test, bot pipeline measurement, or provider quota validation",
+    "No raw per-request traces retained",
+    "Not comparable to F Project without public comparable traces and methodology"
+  ],
+  "public_sources": [
+    "https://solana.com/docs/references/clusters",
+    "https://solana.com/docs/rpc/providers",
+    "https://f-project-1.gitbook.io/f-project-playbook"
+  ]
+}

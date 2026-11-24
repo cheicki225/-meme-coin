@@ -21,15 +21,20 @@ une latence et des limites de débit qui rendent le sniping peu fiable.
 import asyncio
 import json
 import logging
+import random
+import time
 import aiohttp
 import websockets
 
 import config
 import rpc_client
-from execution_metrics import measure_async
+from execution_metrics import measure_execution
 import wallet
 
 log = logging.getLogger("detection")
+
+_RECONNECT_MAX_DELAY_S = 30.0
+_RECONNECT_STABLE_CONNECTION_S = 60.0
 
 
 class NewTokenListener:
@@ -77,6 +82,7 @@ class NewTokenListener:
         self.data_store = data_store
         self._running = False
         self._ws = None
+        self._stop_event: asyncio.Event | None = None
         self._subscribed_wallets = set()
         self._per_wallet_mode = False
 
@@ -89,15 +95,57 @@ class NewTokenListener:
             return
 
         self._running = True
+        self._stop_event = asyncio.Event()
+        reconnect_attempt = 0
         while self._running:
+            started = time.monotonic()
             try:
                 await self._listen_once()
+                if self._running:
+                    log.warning("WebSocket stream closed; scheduling a reconnect")
+            except asyncio.CancelledError:
+                raise
             except Exception as e:
                 log.error("External operation failed (%s)", type(e).__name__)
-                await asyncio.sleep(5)
+            finally:
+                self._ws = None
+
+            if not self._running:
+                break
+            if time.monotonic() - started >= _RECONNECT_STABLE_CONNECTION_S:
+                reconnect_attempt = 0
+            delay = self._reconnect_delay(reconnect_attempt)
+            reconnect_attempt = min(reconnect_attempt + 1, 16)
+            log.info("WebSocket reconnect scheduled in %.2f seconds", delay)
+            with measure_execution("websocket.reconnect_wait", "solana_ws") as metric:
+                completed = await self._wait_before_reconnect(delay)
+                metric["outcome"] = "success" if completed and self._running else "skipped"
 
     async def stop(self):
         self._running = False
+        if self._stop_event is not None:
+            self._stop_event.set()
+        ws = self._ws
+        if ws is not None:
+            await ws.close()
+
+    @staticmethod
+    def _reconnect_delay(attempt: int) -> float:
+        """Return bounded exponential backoff with positive jitter."""
+        base = min(0.5 * (2 ** max(attempt, 0)), 24.0)
+        jitter = random.uniform(0.0, min(base * 0.25, 6.0))
+        return min(base + jitter, _RECONNECT_MAX_DELAY_S)
+
+    async def _wait_before_reconnect(self, delay: float) -> bool:
+        """Wait for the backoff delay; return false when stop interrupts it."""
+        if self._stop_event is None:
+            await asyncio.sleep(delay)
+            return True
+        try:
+            await asyncio.wait_for(self._stop_event.wait(), timeout=delay)
+        except asyncio.TimeoutError:
+            return True
+        return False
 
     def _should_use_per_wallet_mode(self) -> bool:
         if not self.data_store:
@@ -117,6 +165,9 @@ class NewTokenListener:
 
         async with websockets.connect(config.HELIUS_WS_URL, ping_interval=20) as ws:
             self._ws = ws
+            sync_task = None
+            if not self._running:
+                return
 
             if self._per_wallet_mode:
                 self._subscribed_wallets = set()
@@ -137,9 +188,9 @@ class NewTokenListener:
                         {"commitment": "processed"},
                     ],
                 }
-                await ws.send(json.dumps(subscribe_msg))
+                with measure_execution("websocket.subscription_send", "solana_ws"):
+                    await ws.send(json.dumps(subscribe_msg))
                 log.info("✅ Abonné aux logs Pump.fun — écoute en cours (toute la plateforme)...")
-                sync_task = None
 
             try:
                 async for message in ws:
@@ -165,6 +216,11 @@ class NewTokenListener:
             finally:
                 if sync_task:
                     sync_task.cancel()
+                    try:
+                        await sync_task
+                    except asyncio.CancelledError:
+                        pass
+                self._ws = None
 
     async def _periodic_sync(self):
         while True:
@@ -185,31 +241,35 @@ class NewTokenListener:
                 "method": "logsSubscribe",
                 "params": [{"mentions": [wallet_addr]}, {"commitment": "processed"}],
             }
-            await self._ws.send(json.dumps(sub_msg))
+            with measure_execution("websocket.subscription_send", "solana_ws"):
+                await self._ws.send(json.dumps(sub_msg))
             self._subscribed_wallets.add(wallet_addr)
 
         if new_wallets:
             log.info(f"🔔 {len(new_wallets)} wallet(s) de plus souscrit(s) en détection (mode économique).")
 
-    @measure_async("websocket.new_token_creation", "solana_ws")
     async def _handle_creation(self, signature: str):
         """Récupère les détails parsés de la transaction et notifie le callback."""
-        parsed = await self._fetch_parsed_transaction(signature)
-        if not parsed:
-            return
+        with measure_execution("websocket.new_token_creation", "solana_ws") as metric:
+            parsed = await self._fetch_parsed_transaction(signature)
+            if not parsed:
+                metric["outcome"] = "failure"
+                return
 
-        token_mint, dev_address = self._extract_creation_info(parsed)
-        if not token_mint or not dev_address:
-            log.debug(f"Création détectée mais impossible d'extraire mint/dev pour {signature}")
-            return
+            token_mint, dev_address = self._extract_creation_info(parsed)
+            if not token_mint or not dev_address:
+                log.debug(f"Création détectée mais impossible d'extraire mint/dev pour {signature}")
+                metric["outcome"] = "skipped"
+                return
 
-        await self.on_new_token({
-            "token_mint": token_mint,
-            "dev_address": dev_address,
-            "signature": signature,
-            "creation_slot": parsed.get("slot"),  # pour la télémétrie de vitesse bloc+0/bloc+N
-            "raw": parsed,
-        })
+            with measure_execution("websocket.creation_callback", "internal"):
+                await self.on_new_token({
+                    "token_mint": token_mint,
+                    "dev_address": dev_address,
+                    "signature": signature,
+                    "creation_slot": parsed.get("slot"),  # pour la télémétrie de vitesse bloc+0/bloc+N
+                    "raw": parsed,
+                })
 
     async def _fetch_parsed_transaction(self, signature: str) -> dict:
         """
@@ -220,24 +280,43 @@ class NewTokenListener:
         dans rpc_client.py et doivent être appliqués partout où on parle à
         Helius, y compris ici dans la boucle de détection temps réel.
         """
-        if not config.HELIUS_API_KEY:
-            return {}
-        try:
-            await rpc_client._rate_limiter.wait_if_needed()
-            async with aiohttp.ClientSession(connector=rpc_client.get_http_connector(), connector_owner=False) as session:
-                async with session.post(
-                    config.HELIUS_PARSE_TX_URL,
-                    json={"transactions": [signature]},
-                    timeout=aiohttp.ClientTimeout(total=10),
-                ) as resp:
-                    if resp.status != 200:
-                        log.debug(f"Helius parse error {resp.status} pour {signature}")
+        with measure_execution("websocket.parse_transaction", "helius") as metric:
+            if not config.HELIUS_API_KEY:
+                metric["outcome"] = "skipped"
+                return {}
+            try:
+                with measure_execution("rpc.rate_limit_wait", "helius") as limit_metric:
+                    if not await rpc_client.wait_for_provider_slot(config.HELIUS_PARSE_TX_URL):
+                        limit_metric["outcome"] = "skipped"
+                        metric["outcome"] = "failure"
                         return {}
-                    data = await resp.json()
-                    return data[0] if data else {}
-        except Exception as e:
-            log.debug("External operation failed (%s)", type(e).__name__)
-            return {}
+                async with aiohttp.ClientSession(connector=rpc_client.get_http_connector(), connector_owner=False) as session:
+                    async with session.post(
+                        config.HELIUS_PARSE_TX_URL,
+                        json={"transactions": [signature]},
+                        timeout=aiohttp.ClientTimeout(total=10),
+                    ) as resp:
+                        if resp.status == 429:
+                            rpc_client.note_rate_limited_response(
+                                config.HELIUS_PARSE_TX_URL,
+                                resp.headers.get("Retry-After"),
+                            )
+                            log.debug("Helius parse returned HTTP 429")
+                            metric["outcome"] = "failure"
+                            return {}
+                        if resp.status != 200:
+                            log.debug("Helius parse returned HTTP %s", resp.status)
+                            metric["outcome"] = "failure"
+                            return {}
+                        data = await resp.json()
+                        parsed = data[0] if isinstance(data, list) and data else {}
+                        if not parsed:
+                            metric["outcome"] = "failure"
+                        return parsed
+            except Exception as e:
+                log.debug("External operation failed (%s)", type(e).__name__)
+                metric["outcome"] = "failure"
+                return {}
 
     def _extract_creation_info(self, parsed: dict) -> tuple:
         """

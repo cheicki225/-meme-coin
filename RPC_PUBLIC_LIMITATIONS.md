@@ -1,6 +1,6 @@
 # Limites de l'utilisation d'un RPC public
 
-État du code vérifié le 15 novembre 2026. Les valeurs de l'environnement déployé restent inconnues.
+État du code vérifié le 22 novembre 2026. Les valeurs de l'environnement déployé restent inconnues.
 
 ## Ce que sélectionne le code
 
@@ -21,11 +21,16 @@ Le bot peut alors démarrer en PAPER et affiche un avertissement de capacités d
 ## Limites et comportement de reprise
 
 - Solana indique que ses endpoints publics sont partagés, soumis à des quotas changeants et non destinés aux applications de production; ils peuvent répondre `429` ou `403`. Voir [Clusters et endpoints publics](https://solana.com/docs/references/clusters) et [Aperçu RPC](https://solana.com/docs/rpc).
-- Le client local applique une limite globale conservatrice de 5 appels/s. Cette valeur ne connaît pas le quota réel du fournisseur et n'est pas réglée par endpoint.
-- Les lectures RPC retentent les erreurs réseau, HTTP 429/5xx et certaines erreurs JSON-RPC transitoires, avec `Retry-After` et backoff avec jitter. Les erreurs permanentes ne sont pas répétées.
+- Le client applique par défaut un espacement de 3 appels/s par hôte non-Enhanced, réglable avec `SOLANA_RPC_REQUESTS_PER_SECOND`; la même valeur vaut pour chaque hôte RPC standard, elle doit donc rester sous le plus petit quota configuré. L'API Helius Enhanced (`api.helius.xyz`) a un réglage séparé `HELIUS_ENHANCED_REQUESTS_PER_SECOND`, par défaut 1 appel/s, soit une marge sous son [quota Free publié de 2 appels/s](https://www.helius.dev/docs/billing/rate-limits). Les valeurs doivent être adaptées au forfait réellement utilisé et ne prouvent pas le quota du déploiement. Un HTTP 429 partage un cooldown en mémoire avec les autres appels au même hôte.
+- Seules les méthodes de lecture explicitement allowlistées sont regroupées, retentées et admissibles au secours. Elles sont coalescées uniquement pendant leur requête en cours, si l'hôte et le délai d'attente sont les mêmes; aucun résultat n'est conservé après réponse. Les méthodes inconnues ou mutatrices ont un seul essai et aucun secours.
+- Les lectures RPC allowlistées retentent les erreurs réseau, HTTP 429/5xx et certaines erreurs JSON-RPC transitoires. Les réponses HTTP 429 et erreurs JSON-RPC signalant explicitement une limite appliquent `Retry-After` (secondes/date HTTP) ou un backoff avec jitter et un cooldown partagé. Après un cooldown HTTP `Retry-After` supérieur à 30 secondes, le même hôte n'est pas retenté dans l'appel courant; une lecture peut essayer le secours configuré.
+- Les méthodes de soumission (`sendTransaction`, `sendRawTransaction`, `sendBundle`) ont un seul essai côté client et n'utilisent pas le secours Alchemy. Un résultat ambigu doit rester pending jusqu'à réconciliation; aucune retransmission par le client n'est ajoutée par la politique RPC.
+- Le WebSocket demeure Helius seulement. Les reconnexions après exception ou fermeture normale suivent un délai exponentiel avec jitter, borné à 30 secondes; `stop()` ferme la socket et interrompt le délai. Les notifications ne forment pas un journal durable et les événements manqués doivent être réconciliés par HTTP après reconnexion.
+- Les métriques agrégées filtrées incluent les attentes de quota, lectures regroupées, délai de backoff avant reconnexion, envoi de souscriptions, parsing et callback de détection. Elles ne mesurent pas encore le handshake de reconnexion et ne corrèlent pas une détection particulière avec une décision, une soumission et sa confirmation.
+- Si le parsing Enhanced renvoie HTTP 429, le cooldown est appliqué mais la signature consommée du flux WebSocket n'est pas encore mise en file de reprise. Cet événement peut être perdu; une file bornée et un rattrapage HTTP restent à concevoir.
 - Le secours Alchemy est séquentiel et optionnel. La fraîcheur des slots/réponses n'est pas contrôlée de façon suffisante pour autoriser du LIVE.
-- La soumission d'une transaction avec résultat ambigu n'est jamais relancée automatiquement; la signature reste persistée et l'arrêt d'urgence empêche les swaps suivants jusqu'à la réconciliation.
+- Le nœud RPC peut traiter/retransmettre une transaction signée selon les options présentes dans la requête; cette mission ne valide pas le comportement interne du fournisseur. Aucun appel de soumission n'a été effectué.
 
 ## Vérification exigée au déploiement
 
-Confirmer dans l'environnement cible les méthodes, quotas, politique d'historique, WebSocket, fraîcheur, latence et secours; exécuter des tests de charge PAPER et vérifier les alertes. Solana recommande un endpoint dédié et un secours testé pour les applications de production : [guide de choix d'un fournisseur RPC](https://solana.com/docs/rpc/providers).
+Confirmer dans l'environnement cible les méthodes, quotas, politique d'historique, WebSocket, fraîcheur, latence et secours; exécuter des tests de charge PAPER et vérifier les alertes. Les mesures de la machine Codex sont consignées séparément dans [le rapport Mission 8](docs/MISSION_8_PERFORMANCE.md) et ne qualifient pas le déploiement. Solana recommande un endpoint dédié et un secours testé pour les applications de production : [guide de choix d'un fournisseur RPC](https://solana.com/docs/rpc/providers).
