@@ -359,6 +359,7 @@ async def fetch_parsed_transaction(signature: str) -> dict:
                 url,
                 json={"transactions": [signature]},
                 timeout=aiohttp.ClientTimeout(total=10),
+                allow_redirects=False,
             ) as resp:
                 if resp.status == 429:
                     note_rate_limited_response(url, resp.headers.get("Retry-After"))
@@ -460,6 +461,7 @@ async def _try_endpoint(
                         url,
                         json=payload,
                         timeout=aiohttp.ClientTimeout(total=timeout),
+                        allow_redirects=False,
                     ) as resp:
                         if resp.status == 429 or resp.status >= 500:
                             log.warning(

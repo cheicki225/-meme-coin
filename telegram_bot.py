@@ -3931,6 +3931,15 @@ class SniperTelegramBot:
                 await update.message.delete()
             except Exception as e:
                 log.warning(f"Impossible de supprimer le message contenant la clé privée : {type(e).__name__}")
+                user_states.pop(chat_id, None)
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=(
+                        "❌ Suppression du message impossible : la clé n'a pas été importée. "
+                        "Considérez-la comme exposée et remplacez-la hors de ce chat avant toute utilisation."
+                    ),
+                )
+                return
 
             try:
                 result = wm.import_wallet(label, text.strip())
