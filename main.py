@@ -29,7 +29,7 @@ from monitoring_list import DataStore
 from paper_trader import PaperTrader
 from live_trader import LiveTrader
 from protection_scanner import ProtectionScanner
-from rug_scanner import RugScanner
+from rug_scanner import CREATION_TIMESTAMP_SOURCE, RugScanner, provider_creation_timestamp
 from wallet_cleanup import WalletCleanup
 from notifier import Notifier
 from telegram_bot import SniperTelegramBot
@@ -199,7 +199,13 @@ class SniperBot:
         # CE token pour un suivi indépendant, peu importe s'il est déjà géré
         # ci-dessous par le pipeline d'évaluation existant. Ne fait rien si
         # RUG_SCAN_ENABLED=false (voir la garde dans register_candidate()).
-        self.rug_scanner.register_candidate(token_mint, dev_address, created_at=info.get("created_at"))
+        creation_timestamp = provider_creation_timestamp(info)
+        self.rug_scanner.register_candidate(
+            token_mint,
+            dev_address,
+            created_at=creation_timestamp,
+            created_at_source=CREATION_TIMESTAMP_SOURCE if creation_timestamp is not None else None,
+        )
 
         # Cas 1 : ce dev est déjà validé et surveillé.
         if self.data_store.is_dev_monitored(dev_address):
