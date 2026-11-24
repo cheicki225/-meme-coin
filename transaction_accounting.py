@@ -7,12 +7,11 @@ units until a caller explicitly converts them using the mint decimals.
 from __future__ import annotations
 
 import math
-from decimal import Decimal, InvalidOperation
 from typing import Any
 
 LAMPORTS_PER_SOL = 1_000_000_000
 ACCOUNTING_SCHEMA_VERSION = 1
-VALUATION_SCHEMA_VERSION = 1
+VALUATION_SCHEMA_VERSION = 2
 DEFAULT_MAX_SOL_USD_RATE_AGE_S = 300
 
 
@@ -71,16 +70,18 @@ def value_confirmed_sol_cashflow_usd(
     event_timestamp: Any = None,
     max_rate_age_s: Any = DEFAULT_MAX_SOL_USD_RATE_AGE_S,
 ) -> dict:
-    """Value confirmed SOL cash flow only from a verified, time-aligned rate.
+    """Keep USD valuation unknown until a provider-origin proof contract exists.
 
     Missing, stale, future-dated, unverified, or malformed rate evidence is
     represented explicitly as ``valuation_status='unknown'``. The returned
     SOL cash flow uses the confirmed wallet balance delta, which already
     includes the network fee and any rent reflected in those balances. The
-    network fee is also valued separately for fee reporting, so callers must
-    not subtract it from ``sol_cashflow_usd`` a second time. ``rate_verified``
-    is a caller attestation: this function checks the supplied source and
-    timestamp but cannot authenticate an external provider response.
+    network fee is also recorded separately for fee reporting, so callers must
+    not subtract it from ``sol_cashflow_usd`` a second time. A caller-provided
+    ``rate_verified`` flag, source string, timestamp, or digest does not prove
+    provider origin. Consequently this schema records those fields as claims
+    only and never emits USD amounts. A future adapter must provide verifiable
+    provider-origin and quote-freshness evidence before enabling valuation.
     """
     reason = None
     if not isinstance(accounting, dict):
@@ -112,15 +113,22 @@ def value_confirmed_sol_cashflow_usd(
             reason = "invalid_max_rate_age"
         elif max_age > DEFAULT_MAX_SOL_USD_RATE_AGE_S:
             reason = "invalid_max_rate_age"
-        elif rate_verified is not True:
-            reason = "rate_not_verified"
         elif not isinstance(rate_source, str) or not rate_source.strip():
             reason = "missing_rate_source"
+        elif rate_verified is not True:
+            reason = "rate_not_verified"
         elif rate_time > event_time:
             reason = "rate_after_accounting_event"
         elif event_time - rate_time > max_age:
             reason = "stale_rate"
+        else:
+            reason = "rate_origin_unverifiable"
 
+    rate_age = (
+        event_time - rate_time
+        if event_time is not None and rate_time is not None and rate_time <= event_time
+        else None
+    )
     base = {
         "accounting_schema_version": (
             accounting.get("accounting_schema_version") if isinstance(accounting, dict) else None
@@ -129,7 +137,7 @@ def value_confirmed_sol_cashflow_usd(
         "accounting_source": (
             accounting.get("accounting_source") if isinstance(accounting, dict) else None
         ),
-        "valuation_source": "timestamped_sol_usd_rate",
+        "valuation_source": "caller_supplied_rate_claim",
         "event_timestamp": event_time,
         "fee_currency": "SOL",
         "fee_status": "confirmed" if reason not in {
@@ -143,43 +151,13 @@ def value_confirmed_sol_cashflow_usd(
         "sol_usd_rate": rate,
         "sol_usd_rate_timestamp": rate_time,
         "sol_usd_rate_source": rate_source.strip() if isinstance(rate_source, str) and rate_source.strip() else None,
-        "sol_usd_rate_verified": rate_verified is True,
+        "sol_usd_rate_verified": False,
+        "sol_usd_rate_caller_attested": rate_verified is True,
+        "rate_origin_status": "unverifiable",
         "max_rate_age_s": max_age,
-        "rate_age_seconds": None,
+        "rate_age_seconds": rate_age,
         "fee_included_in_sol_cashflow": True,
     }
-    if reason is not None:
-        return base
-    # The status checks above narrow these values for both runtime and mypy.
-    assert rate is not None
-    assert rate_time is not None
-    assert event_time is not None
-
-    try:
-        rate_decimal = Decimal(str(sol_usd_rate))
-        native_delta_sol = Decimal(accounting["native_delta_lamports"]) / Decimal(LAMPORTS_PER_SOL)
-        fee_sol = Decimal(accounting["fee_lamports"]) / Decimal(LAMPORTS_PER_SOL)
-        cashflow_usd = float(native_delta_sol * rate_decimal)
-        fee_usd = float(fee_sol * rate_decimal)
-    except (InvalidOperation, OverflowError, ValueError):
-        base["valuation_reason"] = "invalid_rate_conversion"
-        return base
-    if not math.isfinite(cashflow_usd) or not math.isfinite(fee_usd):
-        base["valuation_reason"] = "invalid_rate_conversion"
-        return base
-
-    base.update({
-        "valuation_status": "valued",
-        "valuation_reason": None,
-        "sol_cashflow_usd": cashflow_usd,
-        "fee_usd": fee_usd,
-        "sol_usd_rate": rate,
-        "sol_usd_rate_timestamp": rate_time,
-        "sol_usd_rate_source": rate_source.strip(),
-        "sol_usd_rate_verified": True,
-        "max_rate_age_s": max_age,
-        "rate_age_seconds": event_time - rate_time,
-    })
     return base
 
 
