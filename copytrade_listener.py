@@ -36,35 +36,36 @@ d'agrégation) plutôt qu'un nativeTransfer direct sur le wallet lui-même.
 import asyncio
 import json
 import logging
-import time
 import websockets
 
 import config
 import rpc_client
 from execution_metrics import measure_async, measure_execution
+from helius_event_store import (
+    EventQueueFullError,
+    EventStoreError,
+    EventRecord,
+    HeliusEventStore,
+    RetryableEventError,
+    drain_stream,
+    get_default_event_store,
+    recover_required_streams,
+)
 import wallet
 
 log = logging.getLogger("copytrade")
 
-# CORRIGÉ suite à un vrai cas observé : deux alertes de retrait strictement
-# identiques (même wallet, même montant, même destination, même minute)
-# reçues pour ce qui était un seul et même retrait réel. Cause : aucune
-# déduplication par signature avant traitement — si Helius livre deux fois
-# la même notification logsSubscribe pour une même transaction (documenté,
-# arrive réellement au commitment "processed"), _process_transaction()
-# exécutait tout le pipeline une deuxième fois (alerte retrait, alerte
-# transfert dev, ET classification achat/vente copy trading). Risque le
-# plus grave : un signal d'achat copy trading dupliqué de la même façon
-# déclencherait un double achat réel en LIVE, pas juste une notification en
-# trop. Fix : cache borné des signatures déjà traitées récemment, purgé
-# automatiquement pour ne jamais grossir sans limite sur une longue durée
-# de fonctionnement.
-_SIGNATURE_CACHE_MAX_SIZE = 500
-_SIGNATURE_CACHE_TTL_S = 120  # largement suffisant pour absorber un doublon réseau/RPC
-
-
 class CopyTradeListener:
-    def __init__(self, data_store, on_buy, on_sell, on_large_sol_transfer=None, on_withdrawal=None):
+    def __init__(
+        self,
+        data_store,
+        on_buy,
+        on_sell,
+        on_large_sol_transfer=None,
+        on_withdrawal=None,
+        *,
+        event_store: HeliusEventStore | None = None,
+    ):
         """
         data_store: instance de monitoring_list.DataStore
         on_buy: async(wallet_address: str, token_mint: str, signature: str)
@@ -78,6 +79,7 @@ class CopyTradeListener:
             "asset"), optionnel (None = désactivé silencieusement).
         """
         self.data_store = data_store
+        self._event_store = event_store or get_default_event_store()
         self.on_buy = on_buy
         self.on_sell = on_sell
         self.on_large_sol_transfer = on_large_sol_transfer
@@ -86,9 +88,9 @@ class CopyTradeListener:
         self._ws = None
         self._subscribed_wallets = set()
         self._sub_id_to_wallet = {}
+        self._request_id_to_wallet = {}
+        self._next_request_id = 0
         self._creation_mode_wallets = set()  # sous-ensemble surveillé pour les transferts SOL (seuil %)
-        self._recent_signatures = {}  # signatures dont le RPC a fourni une transaction exploitable
-        self._processing_signatures = set()  # protège aussi contre les notifications simultanées
 
     def _get_tracked_wallets(self) -> set:
         """
@@ -119,28 +121,57 @@ class CopyTradeListener:
         while self._running:
             try:
                 await self._run_connection()
+            except EventStoreError:
+                self._running = False
+                log.critical("Copytrade event storage failed; listener stopped fail-closed")
             except Exception as e:
                 log.error("External operation failed (%s)", type(e).__name__)
                 await asyncio.sleep(5)
 
     async def stop(self):
         self._running = False
+        if self._ws is not None:
+            await self._ws.close()
 
     async def _run_connection(self):
         async with websockets.connect(config.HELIUS_WS_URL, ping_interval=20) as ws:
             self._ws = ws
             self._subscribed_wallets = set()
             self._sub_id_to_wallet = {}
+            self._request_id_to_wallet = {}
+            known_streams = set(self._event_store.stream_names("copytrade:"))
 
             await self._sync_subscriptions()
+            for stream in known_streams:
+                self._event_store.mark_recovery_required(stream, "connection_gap")
+            ready = await recover_required_streams(
+                self._event_store,
+                "copytrade:",
+                self._process_event_record,
+                self._address_for_stream,
+            )
+            if not ready:
+                log.error("Copytrade event recovery is incomplete; intake remains paused")
+                await ws.close()
+                await asyncio.sleep(5)
+                return
             log.info(f"✅ Copytrade listener connecté — synchronisation des wallets suivis toutes les {config.COPYTRADE_SYNC_INTERVAL_S}s.")
 
             sync_task = asyncio.create_task(self._periodic_sync())
+            retry_task = asyncio.create_task(self._retry_pending_events())
             try:
                 async for message in ws:
                     await self._handle_message(message)
             finally:
                 sync_task.cancel()
+                retry_task.cancel()
+                for task in (sync_task, retry_task):
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
+                for stream in self._event_store.stream_names("copytrade:"):
+                    self._event_store.mark_recovery_required(stream, "connection_gap")
 
     async def _periodic_sync(self):
         while True:
@@ -159,13 +190,17 @@ class CopyTradeListener:
         new_wallets = current - self._subscribed_wallets
 
         for wallet_addr in new_wallets:
+            self._next_request_id += 1
+            request_id = self._next_request_id
             sub_msg = {
                 "jsonrpc": "2.0",
-                "id": len(self._subscribed_wallets) + 1,
+                "id": request_id,
                 "method": "logsSubscribe",
                 "params": [{"mentions": [wallet_addr]}, {"commitment": "processed"}],
             }
             await self._ws.send(json.dumps(sub_msg))
+            self._event_store.ensure_stream(f"copytrade:{wallet_addr}")
+            self._request_id_to_wallet[request_id] = wallet_addr
             self._subscribed_wallets.add(wallet_addr)
 
         if new_wallets:
@@ -175,114 +210,189 @@ class CopyTradeListener:
         with measure_execution("websocket.copytrade_message", "helius") as metric:
             try:
                 await self._handle_message_impl(message)
+            except EventStoreError:
+                metric["outcome"] = "failure"
+                self._running = False
+                log.critical("Copytrade event storage failed; listener stopped fail-closed")
+                if self._ws is not None:
+                    await self._ws.close()
+                raise
             except Exception as e:
                 metric["outcome"] = "failure"
-                log.debug("External operation failed (%s)", type(e).__name__)
+                event_store = getattr(self, "_event_store", None)
+                for address in getattr(self, "_subscribed_wallets", set()):
+                    event_store.mark_recovery_required(
+                        f"copytrade:{address}", "invalid_notification"
+                    )
+                log.error(
+                    "Copytrade notification rejected (%s); reconnecting for replay",
+                    type(e).__name__,
+                )
+                ws = getattr(self, "_ws", None)
+                if ws is not None:
+                    await ws.close()
 
     async def _handle_message_impl(self, message: str):
-        try:
-            data = json.loads(message)
-
-            # Réponse à une souscription (contient le sub id -> pas de "params")
-            if "result" in data and "id" in data:
-                return
-
-            result = data.get("params", {}).get("result", {})
-            value = result.get("value", {})
-            signature = value.get("signature")
-            logs = value.get("logs", [])
-
-            if not signature:
-                return
-
-            # CORRIGÉ suite à l'ajout de la détection de transfert SOL : un
-            # simple transfert SOL natif (System Program) n'émet PAS les
-            # mots-clés "swap"/"Buy"/"Sell" dans ses logs — l'ancien filtre
-            # l'aurait ignoré silencieusement. Si des wallets en mode
-            # track_creation sont surveillés, on traite TOUT (pas de filtre
-            # par mots-clés), puisqu'on ne peut pas deviner à l'avance si
-            # c'est un transfert pertinent sans décoder la transaction.
-            is_swap_related = any(
-                "swap" in l.lower() or "Instruction: Buy" in l or "Instruction: Sell" in l for l in logs
-            )
-            # AJOUTÉ : l'alerte retrait concerne TOUS les wallets surveillés,
-            # pas seulement ceux en mode track_creation — donc on traite tout
-            # dès que la fonctionnalité est active et qu'on a des wallets
-            # souscrits, pas juste _creation_mode_wallets.
-            needs_full_scan = bool(self._creation_mode_wallets) or (
-                self.on_withdrawal and self._subscribed_wallets
-                and self.data_store.get_withdrawal_alert_settings().get("enabled", True)
-            )
-            if not is_swap_related and not needs_full_scan:
-                return
-
-            await self._process_transaction(signature, is_swap_related)
-        except Exception:
-            raise
-
-    def _already_processed(self, signature: str) -> bool:
-        """
-        Retourne True si cette signature a déjà été traitée récemment.
-        Purge occasionnelle des entrées trop anciennes pour ne jamais grossir
-        sans limite sur une longue durée de fonctionnement.
-        """
-        now = time.time()
-        if len(self._recent_signatures) > _SIGNATURE_CACHE_MAX_SIZE:
-            cutoff = now - _SIGNATURE_CACHE_TTL_S
-            self._recent_signatures = {s: t for s, t in self._recent_signatures.items() if t > cutoff}
-
-        if signature in self._recent_signatures:
-            return True
-        return False
-
-    def _remember_processed(self, signature: str) -> None:
-        """Mémorise uniquement les signatures dont le fetch RPC a réussi."""
-        self._recent_signatures[signature] = time.time()
-
-    @measure_async("copytrade.process_transaction", "helius")
-    async def _process_transaction(self, signature: str, is_swap_related: bool = False):
-        if signature in self._processing_signatures or self._already_processed(signature):
-            log.debug(f"Signature {signature[:8]}... déjà traitée récemment — doublon ignoré.")
+        data = json.loads(message)
+        if "error" in data and "id" in data:
+            raise ValueError("Copytrade subscription was rejected")
+        if "result" in data and "id" in data:
+            request_id = data.get("id")
+            subscription_id = data.get("result")
+            address = self._request_id_to_wallet.pop(request_id, None)
+            if not address or type(subscription_id) is not int:
+                raise ValueError("Copytrade subscription acknowledgement is invalid")
+            self._sub_id_to_wallet[subscription_id] = address
             return
 
-        self._processing_signatures.add(signature)
+        params = data.get("params", {})
+        result = params.get("result", {})
+        value = result.get("value", {})
+        signature = value.get("signature")
+        if not isinstance(signature, str) or not signature:
+            if "params" in data:
+                raise ValueError("Copytrade notification has no valid signature")
+            return
+
+        subscription_id = params.get("subscription")
+        address = self._sub_id_to_wallet.get(subscription_id)
+        if address is None and len(self._subscribed_wallets) == 1:
+            address = next(iter(self._subscribed_wallets))
+        if address is None:
+            for tracked_address in self._subscribed_wallets:
+                self._event_store.mark_recovery_required(
+                    f"copytrade:{tracked_address}", "subscription_mapping"
+                )
+            log.error("Copytrade event subscription mapping is unavailable; intake paused")
+            if self._ws is not None:
+                await self._ws.close()
+            return
+
+        logs = value.get("logs", [])
+        if not isinstance(logs, list):
+            raise ValueError("Copytrade notification has invalid logs")
+        is_swap_related = any(
+            isinstance(line, str)
+            and ("swap" in line.lower() or "Instruction: Buy" in line or "Instruction: Sell" in line)
+            for line in logs
+        )
+        needs_full_scan = bool(self._creation_mode_wallets) or (
+            self.on_withdrawal and self._subscribed_wallets
+            and self.data_store.get_withdrawal_alert_settings().get("enabled", True)
+        )
+        if not is_swap_related and not needs_full_scan:
+            return
+
+        context = result.get("context", {})
+        slot = context.get("slot") if isinstance(context, dict) else None
+        await self._process_transaction(
+            signature,
+            is_swap_related,
+            source=f"copytrade:{address}",
+            slot=slot if type(slot) is int else None,
+        )
+
+    @measure_async("copytrade.process_transaction", "helius")
+    async def _process_transaction(
+        self,
+        signature: str,
+        is_swap_related: bool = False,
+        *,
+        source: str | None = None,
+        slot: int | None = None,
+        is_replay: bool = False,
+    ):
+        if source is None:
+            if len(self._subscribed_wallets) == 1:
+                source = f"copytrade:{next(iter(self._subscribed_wallets))}"
+            else:
+                source = "copytrade:unmapped"
         try:
-            parsed = await self._fetch_parsed_transaction(signature)
-            if not parsed:
-                # Un échec transitoire RPC ne doit pas empoisonner le cache:
-                # une notification répétée pourra retenter le fetch.
+            self._event_store.enqueue(
+                source,
+                signature,
+                {"is_swap_related": bool(is_swap_related), "replayed": bool(is_replay)},
+                slot=slot,
+                is_replay=is_replay,
+            )
+        except EventQueueFullError:
+            log.error("Copytrade event inbox full; pausing WebSocket intake for history replay")
+            if self._ws is not None:
+                await self._ws.close()
+            return
+
+        result = await self._drain_event_stream(source)
+        if result == "unknown" and self._ws is not None:
+            await self._ws.close()
+
+    async def _drain_event_stream(self, stream: str) -> str:
+        result = await drain_stream(
+            self._event_store, stream, self._process_event_record
+        )
+        if result == "unknown":
+            log.error("Copytrade event stream is blocked pending manual review")
+        return result
+
+    async def _retry_pending_events(self):
+        while True:
+            try:
+                for stream in self._event_store.stream_names("copytrade:"):
+                    result = await self._drain_event_stream(stream)
+                    if result == "unknown" and self._ws is not None:
+                        await self._ws.close()
+                await asyncio.sleep(1)
+            except EventStoreError:
+                self._running = False
+                log.critical("Copytrade event storage failed; listener stopped fail-closed")
+                if self._ws is not None:
+                    await self._ws.close()
                 return
 
-            # Réserver pendant le fetch empêche les doublons concurrents; ne
-            # marquer terminé qu'après avoir reçu une transaction exploitable.
-            self._remember_processed(signature)
+    @staticmethod
+    def _address_for_stream(stream: str) -> str | None:
+        address = stream.removeprefix("copytrade:")
+        return address if address and address != "unmapped" else None
 
-            # AJOUTÉ : vérification du transfert SOL important, indépendante de
-            # la classification achat/vente ci-dessous — un dev peut très bien
-            # transférer son SOL SANS que ce soit un swap.
+    async def _process_event_record(self, event: EventRecord) -> None:
+        is_swap_related = event.payload.get("is_swap_related")
+        with measure_execution("event.parse", "helius"):
+            parsed = await self._fetch_parsed_transaction(event.signature)
+        if not parsed:
+            raise RetryableEventError("enhanced_fetch_unavailable")
+
+        if not isinstance(is_swap_related, bool):
+            event_details = parsed.get("events", {})
+            is_swap_related = str(parsed.get("type", "")).upper() == "SWAP"
+            if isinstance(event_details, dict):
+                is_swap_related = is_swap_related or bool(event_details.get("swap"))
+
+        self._event_store.mark_effect_started(event.event_id)
+        with measure_execution("event.decision", "internal"):
             if self._creation_mode_wallets:
-                await self._check_large_sol_transfer(parsed, signature, is_swap_related)
-
-            # AJOUTÉ suite à une demande explicite : alerte retrait SOL, TOUS
-            # wallets surveillés (pas juste track_creation), seuil en montant
-            # absolu plutôt qu'en % du solde.
+                await self._check_large_sol_transfer(
+                    parsed, event.signature, is_swap_related
+                )
             if self.on_withdrawal:
-                await self._check_withdrawal(parsed, signature, is_swap_related)
+                await self._check_withdrawal(
+                    parsed, event.signature, is_swap_related
+                )
 
             action_info = self._classify_transaction(parsed)
             if not action_info:
                 return
 
-            wallet = action_info["wallet"]
-            if wallet not in self._subscribed_wallets:
+            wallet_address = action_info["wallet"]
+            if wallet_address not in self._subscribed_wallets:
                 return
 
             if action_info["action"] == "buy" and self.on_buy:
-                await self.on_buy(wallet, action_info["token_mint"], signature)
+                await self.on_buy(
+                    wallet_address, action_info["token_mint"], event.signature
+                )
             elif action_info["action"] == "sell" and self.on_sell:
-                await self.on_sell(wallet, action_info["token_mint"], signature)
-        finally:
-            self._processing_signatures.discard(signature)
+                await self.on_sell(
+                    wallet_address, action_info["token_mint"], event.signature
+                )
 
     async def _check_large_sol_transfer(self, parsed: dict, signature: str, is_swap_related: bool = False):
         """

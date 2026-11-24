@@ -51,3 +51,17 @@ Voir [PROJECT_ROADMAP.md](PROJECT_ROADMAP.md), [TESTING.md](TESTING.md) et [LIVE
 - Résultats locaux et CI : **378 tests réussis**, compilation et `git diff --check` réussis. Couverture CI vérifiée : **31,89 % lignes**, **24,71 % branches**, **29,95 % combiné**; détails et lien dans [docs/MISSION_6_COVERAGE.md](docs/MISSION_6_COVERAGE.md).
 - Soak/benchmark : 10 000 cycles PAPER synthétiques vers localhost, 24h virtuelles en 71,928 s, 19 réouvertures SQLite; RPC loopback p50/p95/p99 = 6,473/10,236/18,825 ms; ce n'est pas une mesure mainnet ni un soak de 24h réel. Voir [docs/MISSION_6_BENCHMARK.md](docs/MISSION_6_BENCHMARK.md) et [JSON brut](docs/benchmarks/mission6-paper-soak.json).
 - Provenance OHLC, coûts historiques complets, audit sémantique des programmes CPI/DEX, soak sur endpoint PAPER cible et restauration de déploiement demeurent non vérifiés. LIVE reste bloqué.
+
+## Mission 7 — état vérifié avant Mission 8 — 22 novembre 2026
+
+- La PR #8 (`codex/mission-7-reliability-2026-11-22`) est ouverte, non fusionnée, empilée sur la PR #6 et pointe maintenant sur `b8438734b00c18a265f0907e83cb5e7bff25a43f`. Son run CI final `45074903163` est terminé avec succès : 468 tests, couverture combinée 31,08 %, pip-audit sans vulnérabilité connue et Gitleaks sans fuite détectée. Ces vérifications et tests offline ne ferment pas les gates d'exploitation.
+- Mission 7 reste `INCOMPLETE / MANUAL_VERIFICATION_REQUIRED` : le soak PAPER cible de 24 h, un exercice de restauration dans l'environnement cible, la validation du fournisseur/quota effectif et l'audit de la sémantique/hash des programmes DEX ne sont pas établis. LIVE reste bloqué.
+- Le dépôt courant n'inclut pas `web-research-problem-solver`. Le catalogue de la PR #7, non fusionnée et distincte de cette pile, précise que ce skill externe conditionnel n'est pas livré. État : `SKILL_UNAVAILABLE`; aucun blocage de code restant n'a nécessité son handoff.
+
+## Mission 8 — optimisation RPC/WebSocket — 22 novembre 2026
+
+- Branche dédiée `codex/mission-8-performance-2026-11-22`, empilée sur le head de la PR #8; la PR M8 cible cette branche tant que M7 reste ouverte. Changements limités aux quotas et au cooldown RPC, au regroupement de lectures simultanées, à la politique de retries des lectures, aux métriques et à la reconnexion WebSocket. Aucun réglage de risque ni opt-in LIVE n'est modifié.
+- Les mesures en lecture seule de la machine Codex sont décrites dans [le rapport M8](docs/MISSION_8_PERFORMANCE.md) et son [résumé JSON](docs/benchmarks/mission8-public-rpc-readonly.json). Elles ne représentent pas le fournisseur ou la région du déploiement et ne constituent pas un test de charge.
+- Validation locale M8 après rebase sur le head M7 courant : compilation réussie, **484 tests réussis**, couverture combinée affichée 31,88 %, sélection Ruff CI réussie. `pip-audit` local a échoué pendant la préparation de son environnement temporaire et Gitleaks n'est pas installé localement; aucun résultat propre de ces deux contrôles n'est revendiqué ici.
+- CI M8 : [run 45075437985](https://github.com/cheicki225/-meme-coin/actions/runs/45075437985) vert sur le head `e54dbe2fc4dcc3648785c966246f5879bb5befe0`; étapes compilation, défaut PAPER, tests, Ruff, pip-audit, Gitleaks et artefact de couverture réussies.
+- La progression pondérée reste inchangée : les modifications de performance n'ont fermé aucune validation d'exploitation de M7.

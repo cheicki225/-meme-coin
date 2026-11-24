@@ -43,6 +43,17 @@ def _positive_finite_float_env(name: str, default: str) -> float:
     return value
 
 
+def _positive_int_env(name: str, default: str) -> int:
+    """Parse a positive integer operational limit from the environment."""
+    try:
+        value = int(os.getenv(name, default))
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"{name} must be a positive integer") from exc
+    if value <= 0:
+        raise ValueError(f"{name} must be a positive integer")
+    return value
+
+
 TRADING_MODE = _normalize_trading_mode(os.getenv("TRADING_MODE", "PAPER"))
 # LIVE swaps and manual transfers require a second explicit opt-in.
 LIVE_EXECUTION_ENABLED = os.getenv("LIVE_EXECUTION_ENABLED", "false").lower() == "true"
@@ -55,6 +66,31 @@ HELIUS_RPC_URL = os.getenv("SOLANA_RPC_URL") or (f"https://mainnet.helius-rpc.co
 HELIUS_WS_URL = f"wss://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}" if HELIUS_API_KEY else None
 # API "Enhanced Transactions" de Helius : parse déjà les instructions Pump.fun
 HELIUS_PARSE_TX_URL = f"https://api.helius.xyz/v0/transactions/?api-key={HELIUS_API_KEY}"
+# Conservative per-provider default for shared/public RPC; set from the actual plan quota.
+SOLANA_RPC_REQUESTS_PER_SECOND = _positive_finite_float_env(
+    "SOLANA_RPC_REQUESTS_PER_SECOND", "3"
+)
+# Helius applies a separate quota to Enhanced APIs. The default leaves a 50%
+# margin under its currently documented Free-plan limit; set it below the
+# configured plan's actual quota when the account tier is known.
+HELIUS_ENHANCED_REQUESTS_PER_SECOND = _positive_finite_float_env(
+    "HELIUS_ENHANCED_REQUESTS_PER_SECOND", "1"
+)
+HELIUS_EVENT_QUEUE_PATH = os.getenv(
+    "HELIUS_EVENT_QUEUE_PATH", "data/helius_events.sqlite3"
+)
+HELIUS_EVENT_QUEUE_MAX_PENDING = _positive_int_env(
+    "HELIUS_EVENT_QUEUE_MAX_PENDING", "10000"
+)
+HELIUS_EVENT_QUEUE_MAX_BYTES = _positive_int_env(
+    "HELIUS_EVENT_QUEUE_MAX_BYTES", str(32 * 1024 * 1024)
+)
+HELIUS_EVENT_RETRY_BASE_S = _positive_finite_float_env(
+    "HELIUS_EVENT_RETRY_BASE_S", "1"
+)
+HELIUS_EVENT_RETRY_MAX_S = _positive_finite_float_env(
+    "HELIUS_EVENT_RETRY_MAX_S", "60"
+)
 
 # ── RPC de secours (Alchemy) — utilisé automatiquement par execution/rpc_client.py
 # si Helius échoue/timeout. Laisse ALCHEMY_API_KEY vide pour désactiver (Helius seul).

@@ -21,15 +21,30 @@ une latence et des limites de débit qui rendent le sniping peu fiable.
 import asyncio
 import json
 import logging
+import random
+import time
 import aiohttp
 import websockets
 
 import config
 import rpc_client
-from execution_metrics import measure_async
+from execution_metrics import measure_execution
+from helius_event_store import (
+    EventQueueFullError,
+    EventStoreError,
+    EventRecord,
+    HeliusEventStore,
+    RetryableEventError,
+    drain_stream,
+    get_default_event_store,
+    recover_required_streams,
+)
 import wallet
 
 log = logging.getLogger("detection")
+
+_RECONNECT_MAX_DELAY_S = 30.0
+_RECONNECT_STABLE_CONNECTION_S = 60.0
 
 
 class NewTokenListener:
@@ -59,7 +74,13 @@ class NewTokenListener:
     de redémarrer le bot.
     """
 
-    def __init__(self, on_new_token, data_store=None):
+    def __init__(
+        self,
+        on_new_token,
+        data_store=None,
+        *,
+        event_store: HeliusEventStore | None = None,
+    ):
         """
         on_new_token: fonction async(dict) appelée pour chaque nouveau token.
             Le dict contient : {
@@ -74,11 +95,16 @@ class NewTokenListener:
             (comportement d'origine), même si auto_add_new_devs est False.
         """
         self.on_new_token = on_new_token
+        self._event_store = event_store or get_default_event_store()
         self.data_store = data_store
         self._running = False
         self._ws = None
+        self._stop_event: asyncio.Event | None = None
         self._subscribed_wallets = set()
         self._per_wallet_mode = False
+        self._sub_id_to_stream: dict[int, str] = {}
+        self._request_id_to_stream: dict[int, str] = {}
+        self._next_request_id = 0
 
     async def start(self):
         if not config.HELIUS_WS_URL:
@@ -89,15 +115,60 @@ class NewTokenListener:
             return
 
         self._running = True
+        self._stop_event = asyncio.Event()
+        reconnect_attempt = 0
         while self._running:
+            started = time.monotonic()
             try:
                 await self._listen_once()
+                if self._running:
+                    log.warning("WebSocket stream closed; scheduling a reconnect")
+            except asyncio.CancelledError:
+                raise
+            except EventStoreError:
+                self._running = False
+                log.critical("New-token event storage failed; listener stopped fail-closed")
             except Exception as e:
                 log.error("External operation failed (%s)", type(e).__name__)
-                await asyncio.sleep(5)
+            finally:
+                self._ws = None
+
+            if not self._running:
+                break
+            if time.monotonic() - started >= _RECONNECT_STABLE_CONNECTION_S:
+                reconnect_attempt = 0
+            delay = self._reconnect_delay(reconnect_attempt)
+            reconnect_attempt = min(reconnect_attempt + 1, 16)
+            log.info("WebSocket reconnect scheduled in %.2f seconds", delay)
+            with measure_execution("websocket.reconnect_wait", "solana_ws") as metric:
+                completed = await self._wait_before_reconnect(delay)
+                metric["outcome"] = "success" if completed and self._running else "skipped"
 
     async def stop(self):
         self._running = False
+        if self._stop_event is not None:
+            self._stop_event.set()
+        ws = self._ws
+        if ws is not None:
+            await ws.close()
+
+    @staticmethod
+    def _reconnect_delay(attempt: int) -> float:
+        """Return bounded exponential backoff with positive jitter."""
+        base = min(0.5 * (2 ** max(attempt, 0)), 24.0)
+        jitter = random.uniform(0.0, min(base * 0.25, 6.0))
+        return min(base + jitter, _RECONNECT_MAX_DELAY_S)
+
+    async def _wait_before_reconnect(self, delay: float) -> bool:
+        """Wait for the backoff delay; return false when stop interrupts it."""
+        if self._stop_event is None:
+            await asyncio.sleep(delay)
+            return True
+        try:
+            await asyncio.wait_for(self._stop_event.wait(), timeout=delay)
+        except asyncio.TimeoutError:
+            return True
+        return False
 
     def _should_use_per_wallet_mode(self) -> bool:
         if not self.data_store:
@@ -117,6 +188,13 @@ class NewTokenListener:
 
         async with websockets.connect(config.HELIUS_WS_URL, ping_interval=20) as ws:
             self._ws = ws
+            self._sub_id_to_stream = {}
+            self._request_id_to_stream = {}
+            known_streams = set(self._event_store.stream_names("new-token:"))
+            sync_task = None
+            retry_task = None
+            if not self._running:
+                return
 
             if self._per_wallet_mode:
                 self._subscribed_wallets = set()
@@ -137,34 +215,126 @@ class NewTokenListener:
                         {"commitment": "processed"},
                     ],
                 }
-                await ws.send(json.dumps(subscribe_msg))
+                with measure_execution("websocket.subscription_send", "solana_ws"):
+                    await ws.send(json.dumps(subscribe_msg))
+                self._request_id_to_stream[1] = (
+                    f"new-token:{config.PUMP_FUN_PROGRAM_ID}"
+                )
+                self._event_store.ensure_stream(
+                    f"new-token:{config.PUMP_FUN_PROGRAM_ID}"
+                )
                 log.info("✅ Abonné aux logs Pump.fun — écoute en cours (toute la plateforme)...")
-                sync_task = None
 
             try:
+                for stream in known_streams:
+                    self._event_store.mark_recovery_required(stream, "connection_gap")
+                ready = await recover_required_streams(
+                    self._event_store,
+                    "new-token:",
+                    self._process_event_record,
+                    self._address_for_stream,
+                )
+                if not ready:
+                    log.error("New-token event recovery is incomplete; intake remains paused")
+                    await ws.close()
+                    return
+                retry_task = asyncio.create_task(self._retry_pending_events())
                 async for message in ws:
-                    try:
-                        data = json.loads(message)
-                        result = data.get("params", {}).get("result", {})
-                        value = result.get("value", {})
-                        signature = value.get("signature")
-                        logs = value.get("logs", [])
-
-                        if not signature:
-                            continue
-
-                        # On ne traite que les logs qui indiquent une INSTRUCTION de création.
-                        # Pump.fun log généralement "Instruction: Create" pour une création de token.
-                        if not any("Instruction: Create" in l for l in logs):
-                            continue
-
-                        await self._handle_creation(signature)
-
-                    except Exception as e:
-                        log.debug("External operation failed (%s)", type(e).__name__)
+                    await self._handle_notification(message)
             finally:
                 if sync_task:
                     sync_task.cancel()
+                    try:
+                        await sync_task
+                    except asyncio.CancelledError:
+                        pass
+                if retry_task:
+                    retry_task.cancel()
+                    try:
+                        await retry_task
+                    except asyncio.CancelledError:
+                        pass
+                for stream in self._event_store.stream_names("new-token:"):
+                    self._event_store.mark_recovery_required(stream, "connection_gap")
+                self._ws = None
+
+    def _active_streams(self) -> set[str]:
+        if self._per_wallet_mode:
+            return {f"new-token:{address}" for address in self._subscribed_wallets}
+        return {f"new-token:{config.PUMP_FUN_PROGRAM_ID}"}
+
+    @staticmethod
+    def _address_for_stream(stream: str) -> str | None:
+        address = stream.removeprefix("new-token:")
+        return address if address else None
+
+    async def _handle_notification(self, message: str) -> None:
+        try:
+            data = json.loads(message)
+            if "error" in data and "id" in data:
+                raise ValueError("New-token subscription was rejected")
+            if "result" in data and "id" in data:
+                request_id = data.get("id")
+                subscription_id = data.get("result")
+                stream = self._request_id_to_stream.pop(request_id, None)
+                if not stream or type(subscription_id) is not int:
+                    raise ValueError("New-token subscription acknowledgement is invalid")
+                self._sub_id_to_stream[subscription_id] = stream
+                return
+
+            params = data.get("params", {})
+            result = params.get("result", {})
+            value = result.get("value", {})
+            signature = value.get("signature")
+            logs = value.get("logs", [])
+            if not isinstance(signature, str) or not signature:
+                if "params" in data:
+                    raise ValueError("New-token notification has no valid signature")
+                return
+            if not isinstance(logs, list):
+                raise ValueError("New-token notification has invalid logs")
+            if not any(
+                isinstance(line, str) and "Instruction: Create" in line
+                for line in logs
+            ):
+                return
+
+            subscription_id = params.get("subscription")
+            stream = self._sub_id_to_stream.get(subscription_id)
+            if stream is None and len(self._active_streams()) == 1:
+                stream = next(iter(self._active_streams()))
+            if stream is None:
+                for active_stream in self._active_streams():
+                    self._event_store.mark_recovery_required(
+                        active_stream, "subscription_mapping"
+                    )
+                log.error("New-token subscription mapping is unavailable; intake paused")
+                if self._ws is not None:
+                    await self._ws.close()
+                return
+
+            context = result.get("context", {})
+            slot = context.get("slot") if isinstance(context, dict) else None
+            await self._handle_creation(
+                signature, stream=stream, slot=slot if type(slot) is int else None
+            )
+        except EventQueueFullError:
+            log.error("New-token event inbox full; pausing WebSocket intake for history replay")
+            if self._ws is not None:
+                await self._ws.close()
+        except EventStoreError:
+            self._running = False
+            log.critical("New-token event storage failed; listener stopped fail-closed")
+            if self._ws is not None:
+                await self._ws.close()
+        except Exception as exc:
+            for stream in self._active_streams():
+                self._event_store.mark_recovery_required(
+                    stream, "invalid_notification"
+                )
+            log.error("New-token notification rejected (%s); reconnecting for replay", type(exc).__name__)
+            if self._ws is not None:
+                await self._ws.close()
 
     async def _periodic_sync(self):
         while True:
@@ -179,37 +349,90 @@ class NewTokenListener:
         new_wallets = current - self._subscribed_wallets
 
         for wallet_addr in new_wallets:
+            self._next_request_id += 1
+            request_id = self._next_request_id
+            stream = f"new-token:{wallet_addr}"
             sub_msg = {
                 "jsonrpc": "2.0",
-                "id": len(self._subscribed_wallets) + 1,
+                "id": request_id,
                 "method": "logsSubscribe",
                 "params": [{"mentions": [wallet_addr]}, {"commitment": "processed"}],
             }
-            await self._ws.send(json.dumps(sub_msg))
+            with measure_execution("websocket.subscription_send", "solana_ws"):
+                await self._ws.send(json.dumps(sub_msg))
+            self._event_store.ensure_stream(stream)
+            self._request_id_to_stream[request_id] = stream
             self._subscribed_wallets.add(wallet_addr)
 
         if new_wallets:
             log.info(f"🔔 {len(new_wallets)} wallet(s) de plus souscrit(s) en détection (mode économique).")
 
-    @measure_async("websocket.new_token_creation", "solana_ws")
-    async def _handle_creation(self, signature: str):
-        """Récupère les détails parsés de la transaction et notifie le callback."""
-        parsed = await self._fetch_parsed_transaction(signature)
-        if not parsed:
+    async def _handle_creation(
+        self,
+        signature: str,
+        *,
+        stream: str | None = None,
+        slot: int | None = None,
+        is_replay: bool = False,
+    ):
+        """Persist a detected creation event before fetching its Enhanced transaction."""
+        stream = stream or f"new-token:{config.PUMP_FUN_PROGRAM_ID}"
+        try:
+            self._event_store.enqueue(
+                stream,
+                signature,
+                {"replayed": bool(is_replay)},
+                slot=slot,
+                is_replay=is_replay,
+            )
+        except EventQueueFullError:
+            log.error("New-token event inbox full; pausing WebSocket intake for history replay")
+            if self._ws is not None:
+                await self._ws.close()
             return
+
+        result = await drain_stream(
+            self._event_store, stream, self._process_event_record
+        )
+        if result == "unknown" and self._ws is not None:
+            await self._ws.close()
+
+    async def _retry_pending_events(self):
+        while True:
+            try:
+                for stream in self._event_store.stream_names("new-token:"):
+                    result = await drain_stream(
+                        self._event_store, stream, self._process_event_record
+                    )
+                    if result == "unknown" and self._ws is not None:
+                        await self._ws.close()
+                await asyncio.sleep(1)
+            except EventStoreError:
+                self._running = False
+                log.critical("New-token event storage failed; listener stopped fail-closed")
+                if self._ws is not None:
+                    await self._ws.close()
+                return
+
+    async def _process_event_record(self, event: EventRecord) -> None:
+        with measure_execution("event.parse", "helius"):
+            parsed = await self._fetch_parsed_transaction(event.signature)
+        if not parsed:
+            raise RetryableEventError("enhanced_fetch_unavailable")
 
         token_mint, dev_address = self._extract_creation_info(parsed)
         if not token_mint or not dev_address:
-            log.debug(f"Création détectée mais impossible d'extraire mint/dev pour {signature}")
             return
 
-        await self.on_new_token({
-            "token_mint": token_mint,
-            "dev_address": dev_address,
-            "signature": signature,
-            "creation_slot": parsed.get("slot"),  # pour la télémétrie de vitesse bloc+0/bloc+N
-            "raw": parsed,
-        })
+        self._event_store.mark_effect_started(event.event_id)
+        with measure_execution("event.decision", "internal"):
+            await self.on_new_token({
+                "token_mint": token_mint,
+                "dev_address": dev_address,
+                "signature": event.signature,
+                "creation_slot": parsed.get("slot"),
+                "raw": parsed,
+            })
 
     async def _fetch_parsed_transaction(self, signature: str) -> dict:
         """
@@ -220,24 +443,43 @@ class NewTokenListener:
         dans rpc_client.py et doivent être appliqués partout où on parle à
         Helius, y compris ici dans la boucle de détection temps réel.
         """
-        if not config.HELIUS_API_KEY:
-            return {}
-        try:
-            await rpc_client._rate_limiter.wait_if_needed()
-            async with aiohttp.ClientSession(connector=rpc_client.get_http_connector(), connector_owner=False) as session:
-                async with session.post(
-                    config.HELIUS_PARSE_TX_URL,
-                    json={"transactions": [signature]},
-                    timeout=aiohttp.ClientTimeout(total=10),
-                ) as resp:
-                    if resp.status != 200:
-                        log.debug(f"Helius parse error {resp.status} pour {signature}")
+        with measure_execution("websocket.parse_transaction", "helius") as metric:
+            if not config.HELIUS_API_KEY:
+                metric["outcome"] = "skipped"
+                return {}
+            try:
+                with measure_execution("rpc.rate_limit_wait", "helius") as limit_metric:
+                    if not await rpc_client.wait_for_provider_slot(config.HELIUS_PARSE_TX_URL):
+                        limit_metric["outcome"] = "skipped"
+                        metric["outcome"] = "failure"
                         return {}
-                    data = await resp.json()
-                    return data[0] if data else {}
-        except Exception as e:
-            log.debug("External operation failed (%s)", type(e).__name__)
-            return {}
+                async with aiohttp.ClientSession(connector=rpc_client.get_http_connector(), connector_owner=False) as session:
+                    async with session.post(
+                        config.HELIUS_PARSE_TX_URL,
+                        json={"transactions": [signature]},
+                        timeout=aiohttp.ClientTimeout(total=10),
+                    ) as resp:
+                        if resp.status == 429:
+                            rpc_client.note_rate_limited_response(
+                                config.HELIUS_PARSE_TX_URL,
+                                resp.headers.get("Retry-After"),
+                            )
+                            log.debug("Helius parse returned HTTP 429")
+                            metric["outcome"] = "failure"
+                            return {}
+                        if resp.status != 200:
+                            log.debug("Helius parse returned HTTP %s", resp.status)
+                            metric["outcome"] = "failure"
+                            return {}
+                        data = await resp.json()
+                        parsed = data[0] if isinstance(data, list) and data else {}
+                        if not parsed:
+                            metric["outcome"] = "failure"
+                        return parsed
+            except Exception as e:
+                log.debug("External operation failed (%s)", type(e).__name__)
+                metric["outcome"] = "failure"
+                return {}
 
     def _extract_creation_info(self, parsed: dict) -> tuple:
         """

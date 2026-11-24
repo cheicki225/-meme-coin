@@ -12,6 +12,8 @@ import os
 import re
 import threading
 import time
+import uuid
+from contextvars import ContextVar, Token
 from collections import defaultdict, deque
 from contextlib import contextmanager
 from functools import wraps
@@ -22,6 +24,9 @@ from typing import Iterator
 
 _LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,47}\Z")
 _ALLOWED_OUTCOMES = {"success", "failure", "unknown", "skipped"}
+_CORRELATION_ID: ContextVar[str | None] = ContextVar(
+    "execution_correlation_id", default=None
+)
 _ALLOWED_STAGES = frozenset({
     "websocket.copytrade_message", "copytrade.process_transaction",
     "jupiter.order", "jupiter.build", "jupiter.submit", "jupiter.accounting_fetch",
@@ -30,7 +35,11 @@ _ALLOWED_STAGES = frozenset({
     "decision.new_token_dispatch", "decision.copytrade_buy", "decision.copytrade_sell",
     "decision.evaluate_dev", "strategy.open_position", "strategy.partial_close",
     "strategy.close_position", "rpc.request", "rpc.endpoint_attempt",
-    "websocket.new_token_creation",
+    "rpc.rate_limit_wait", "rpc.read_coalesced", "websocket.new_token_creation",
+    "websocket.parse_transaction", "websocket.creation_callback",
+    "websocket.reconnect_wait", "websocket.subscription_send",
+    "event.inbox_enqueue", "event.parse", "event.decision", "event.processing",
+    "event.retry", "event.unknown", "event.end_to_end",
 })
 _ALLOWED_PROVIDERS = frozenset({
     "unknown", "helius", "jupiter", "solana_rpc", "local", "internal",
@@ -128,6 +137,9 @@ def record_execution_metric(
             "outcome": _label(outcome, "outcome"),
             "provider": _label(provider, "provider"),
         }
+        correlation_id = _CORRELATION_ID.get()
+        if correlation_id:
+            event["correlation_id"] = correlation_id
         if event["outcome"] not in _ALLOWED_OUTCOMES:
             raise ValueError("Invalid outcome")
         with _EVENT_LOCK:
@@ -177,6 +189,18 @@ def measure_async(stage: str, provider: str = "unknown"):
                 return await function(*args, **kwargs)
         return wrapped
     return decorate
+
+
+@contextmanager
+def correlate_event(correlation_id: str | None = None) -> Iterator[str]:
+    """Attach an opaque random ID to telemetry produced during one event flow."""
+    if not isinstance(correlation_id, str) or not re.fullmatch(r"[0-9a-f]{32}", correlation_id):
+        correlation_id = uuid.uuid4().hex
+    token: Token[str | None] = _CORRELATION_ID.set(correlation_id)
+    try:
+        yield correlation_id
+    finally:
+        _CORRELATION_ID.reset(token)
 
 
 def _percentile(values: list[float], percentile: float) -> float:
@@ -256,6 +280,23 @@ def format_metrics_report(max_rows: int = 8) -> str:
         reverse=True,
     )[:max_rows]
     lines = [f"Mesures : {summary['events']} | événements perdus : {summary['dropped_events']}"]
+    try:
+        from helius_event_store import get_default_event_store
+
+        event_counts = get_default_event_store().metrics()
+        lines.append(
+            "Helius inbox : "
+            f"reçus={event_counts['received']}, traités={event_counts['processed']}, "
+            f"en attente={event_counts['pending']}, inconnus={event_counts['unknown']}, "
+            f"doublons={event_counts['duplicates']}, rejoués={event_counts['replayed']}, "
+            f"reprises={event_counts['retried']}, refus non persistés="
+            f"{event_counts['queue_full']} "
+            f"(taux={event_counts['unpersisted_rejection_rate']:.2%}), "
+            f"taux doublon={event_counts['duplicate_observation_rate']:.2%}, "
+            f"taux replay={event_counts['replay_observation_rate']:.2%}"
+        )
+    except Exception:
+        lines.append("Helius inbox : métriques indisponibles")
     for key, item in rows:
         lines.append(
             f"{key} — n={item['count']}, p50={item['p50_ms']:.1f} ms, "

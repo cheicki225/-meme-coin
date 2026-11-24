@@ -95,3 +95,17 @@ def test_solana_websocket_detection_provider_is_allowed_and_measured(tmp_path):
 
     summary = summarize_metrics(path)
     assert summary["stages"]["websocket.new_token_creation:solana_ws"]["count"] == 1
+
+
+def test_mission8_rpc_and_reconnect_stages_use_fixed_labels(tmp_path):
+    path = tmp_path / "metrics.jsonl"
+    assert record_execution_metric("rpc.rate_limit_wait", 250, provider="rpc_primary", path=path)
+    assert record_execution_metric("rpc.read_coalesced", 4, provider="internal", path=path)
+    assert record_execution_metric("websocket.reconnect_wait", 500, "success", "solana_ws", path=path)
+    assert record_execution_metric("websocket.parse_transaction", 18, provider="helius", path=path)
+
+    summary = summarize_metrics(path)
+    assert summary["stages"]["rpc.rate_limit_wait:rpc_primary"]["p50_ms"] == 250
+    assert summary["stages"]["rpc.read_coalesced:internal"]["count"] == 1
+    assert summary["stages"]["websocket.reconnect_wait:solana_ws"]["failure_rate"] == 0
+    assert summary["stages"]["websocket.parse_transaction:helius"]["count"] == 1
