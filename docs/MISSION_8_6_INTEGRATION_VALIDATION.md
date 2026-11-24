@@ -41,9 +41,9 @@ PAPER est le défaut du code; LIVE est désactivé dans l’environnement de tes
 
 ## CI GitHub
 
-La PR d’intégration [#12](https://github.com/cheicki225/-meme-coin/pull/12) cible la branche #10 et reste ouverte/non fusionnée. Le run [45376701657](https://github.com/cheicki225/-meme-coin/actions/runs/45376701657), sur le code antérieur au changement d’activation du stop, est vert : compilation, PAPER, 506 tests, Ruff, pip-audit, Gitleaks et upload de couverture. La CI du head actualisé doit repasser avant de conclure les validations distantes.
+La PR d’intégration [#12](https://github.com/cheicki225/-meme-coin/pull/12) cible la branche #10 et reste ouverte/non fusionnée. Le run final du code [45379533708](https://github.com/cheicki225/-meme-coin/actions/runs/45379533708), sur le head `d0dd806fefb9962a12eb23e2123d8afea8ce5cd1`, est **vert** : compilation, défaut PAPER, **510 tests**, Ruff, pip-audit (« No known vulnerabilities found »), Gitleaks (« no leaks found ») et upload de l’artefact couverture ont réussi.
 
-La couverture CI est de **32,44 % combinée** (10 387 statements et 3 818 branches mesurés) selon `coverage report`; le JSON/XML sont dans l’[artefact `mission-coverage-45376701657`](https://github.com/cheicki225/-meme-coin/actions/runs/45376701657/artifacts/14911776499). Le workflow a émis un avertissement non bloquant : `actions/upload-artifact@v4` vise Node.js 20 et est forcée sur Node.js 24 par le runner.
+La couverture CI est de **32,44 % combinée** (10 387 statements et 3 818 branches mesurés) selon `coverage report`; le JSON/XML sont dans l’[artefact `mission-coverage-45379533708`](https://github.com/cheicki225/-meme-coin/actions/runs/45379533708/artifacts/14913565335). Le workflow a émis un avertissement non bloquant : `actions/upload-artifact@v4` vise Node.js 20 et est forcée sur Node.js 24 par le runner.
 
 ## Revue indépendante
 
@@ -59,4 +59,4 @@ Trois revues statiques indépendantes ont confirmé les invariants RPC, Telegram
 
 ## Suite
 
-La PR #12 est publiée. Après le changement fail-closed du stop par défaut, attendre sa CI actualisée avant toute conclusion de validation distante. Garder le risque de perte d’événement Helius 429 visible en revue; ne fusionner aucune PR et ne pas revendiquer de validation LIVE.
+La PR #12 est publiée et la CI du code final est verte. Le commit suivant ne met à jour que ce rapport. Garder le risque de perte d’événement Helius 429 visible en revue; ne fusionner aucune PR et ne pas revendiquer de validation LIVE.
