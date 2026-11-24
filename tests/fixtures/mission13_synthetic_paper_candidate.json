@@ -1,0 +1,58 @@
+{
+  "dataset_id": "mission13-synthetic-paper-candidate-v1",
+  "synthetic": true,
+  "description": "Hand-authored deterministic fixture for policy wiring tests; not collected from Solana or any market provider.",
+  "as_of": "2026-11-24T12:02:00+00:00",
+  "observations": [
+    {
+      "name": "liquidity_usd",
+      "value": 80.0,
+      "observed_at": "2026-11-24T12:02:00+00:00",
+      "source": "synthetic_fixture",
+      "provenance": "fixture field; no external source"
+    },
+    {
+      "name": "holder_concentration_pct",
+      "value": 20.0,
+      "observed_at": "2026-11-24T12:02:00+00:00",
+      "source": "synthetic_fixture",
+      "provenance": "fixture field; no external source"
+    },
+    {
+      "name": "mint_authority_active",
+      "value": false,
+      "observed_at": "2026-11-24T12:02:00+00:00",
+      "source": "synthetic_fixture",
+      "provenance": "fixture field; no external source"
+    }
+  ],
+  "market_observations": [
+    {"observed_at": "2026-11-24T12:00:00+00:00", "close": 100.0, "source": "synthetic_fixture"},
+    {"observed_at": "2026-11-24T12:01:00+00:00", "close": 103.0, "source": "synthetic_fixture"},
+    {"observed_at": "2026-11-24T12:02:00+00:00", "close": 106.0, "source": "synthetic_fixture"}
+  ],
+  "candidate": {
+    "signal_id": "synthetic-signal-0001",
+    "correlation_key": "synthetic-correlation-group-0001"
+  },
+  "strategy": {
+    "strategy_id": "synthetic-momentum-rule",
+    "kind": "rule",
+    "compatible_regimes": ["bullish_trend"],
+    "required_signals": ["liquidity_usd", "holder_concentration_pct", "mint_authority_active"],
+    "priority": 1
+  },
+  "risk_state": {"emergency_stop": false, "session_losses_usd": 0.0, "open_positions": []},
+  "limits": {
+    "proposed_exposure_usd": 10.0,
+    "configured_max_exposure_usd": 100.0,
+    "configured_max_open_positions": 2,
+    "configured_max_session_loss_usd": 50.0
+  },
+  "expected": {
+    "status": "eligible",
+    "score": 85.0,
+    "regime": "bullish_trend",
+    "strategy_id": "synthetic-momentum-rule"
+  }
+}
