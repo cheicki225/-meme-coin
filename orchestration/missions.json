@@ -35,7 +35,7 @@
       "manual_gates": [
         "independent_security_review"
       ],
-      "initial_status": "external_in_progress",
+      "initial_status": "blocked",
       "skills": [
         "solana-rpc-performance",
         "sqlite-recovery",
@@ -44,7 +44,7 @@
     },
     {
       "id": "mission_8_6_pr10_pr11_integration",
-      "title": "Integrate RPC performance and transaction/Telegram safeguards",
+      "title": "PR #12 integration complete; awaiting independent review and evidence",
       "priority": "P0",
       "depends_on": [],
       "scope_files": [
@@ -64,7 +64,7 @@
       "manual_gates": [
         "independent_security_review"
       ],
-      "initial_status": "external_in_progress",
+      "initial_status": "blocked",
       "skills": [
         "solana-rpc-performance",
         "jupiter-transaction-security",
@@ -74,12 +74,46 @@
       ]
     },
     {
-      "id": "mission_7_operational_gates",
-      "title": "Complete target PAPER soak, restore drill, provider quota check, and CPI/DEX review",
+      "id": "mission_8_5_8_6_reconciliation",
+      "title": "Compare PR #12 and #13 integration paths without duplicating Mission 8.5 work",
       "priority": "P0",
       "depends_on": [
         "mission_8_5_helius_reliability",
         "mission_8_6_pr10_pr11_integration"
+      ],
+      "scope_files": [
+        "rpc_client.py",
+        "websocket_listener.py",
+        "copytrade_listener.py",
+        "protection_scanner.py",
+        "execution_metrics.py",
+        "helius_event_store.py",
+        "tests/test_rpc_retry_policy.py",
+        "tests/test_helius_event_store.py"
+      ],
+      "budget_minutes": 180,
+      "max_attempts": 3,
+      "required_evidence": [
+        "offline_tests",
+        "ci_success"
+      ],
+      "manual_gates": [
+        "independent_security_review"
+      ],
+      "initial_status": "pending",
+      "skills": [
+        "solana-rpc-performance",
+        "sqlite-recovery",
+        "jupiter-transaction-security",
+        "python-testing-ci"
+      ]
+    },
+    {
+      "id": "mission_7_operational_gates",
+      "title": "Complete target PAPER soak, restore drill, provider quota check, and CPI/DEX review",
+      "priority": "P0",
+      "depends_on": [
+        "mission_8_5_8_6_reconciliation"
       ],
       "scope_files": [
         "docs/OPERATIONS.md",
@@ -98,7 +132,7 @@
         "rpc_quota_evidence",
         "independent_cpi_dex_review"
       ],
-      "initial_status": "pending",
+      "initial_status": "blocked",
       "skills": [
         "production-readiness-auditor",
         "python-testing-ci"
@@ -108,15 +142,14 @@
       "id": "wallet_intelligence_provenance",
       "title": "Make wallet history and developer-wallet intelligence source-provenanced",
       "priority": "P1",
-      "depends_on": [
-        "mission_8_5_helius_reliability",
-        "mission_7_operational_gates"
-      ],
+      "depends_on": [],
       "scope_files": [
         "wallet_collector_service.py",
         "wallet_history.py",
         "wallet_data_collector.py",
-        "tests/test_wallet_collector_service.py"
+        "tests/test_wallet_collector_service.py",
+        "tests/test_wallet_data_collector.py",
+        "WALLET_INTELLIGENCE.md"
       ],
       "budget_minutes": 180,
       "max_attempts": 3,
@@ -137,9 +170,7 @@
       "id": "risk_exit_controls_review",
       "title": "Review PAPER admission, emergency-stop, and exit behavior without changing limits",
       "priority": "P1",
-      "depends_on": [
-        "mission_7_operational_gates"
-      ],
+      "depends_on": [],
       "scope_files": [
         "risk_controls.py",
         "paper_trader.py",
@@ -168,7 +199,7 @@
       "depends_on": [
         "wallet_intelligence_provenance",
         "risk_exit_controls_review",
-        "mission_8_6_pr10_pr11_integration"
+        "mission_8_5_8_6_reconciliation"
       ],
       "scope_files": [
         "copytrade_listener.py",
@@ -196,13 +227,10 @@
       "id": "anti_rug_source_provenance",
       "title": "Verify anti-rug inputs, freshness, and unknown-state handling",
       "priority": "P1",
-      "depends_on": [
-        "wallet_intelligence_provenance",
-        "mission_7_operational_gates"
-      ],
+      "depends_on": [],
       "scope_files": [
+        "main.py",
         "rug_scanner.py",
-        "protection_scanner.py",
         "tests/test_rug_scanner.py"
       ],
       "budget_minutes": 180,
@@ -259,9 +287,7 @@
       "id": "pnl_sol_usd_fee_ledger",
       "title": "Reconcile SOL/USD valuation and all confirmed fees in PAPER accounting",
       "priority": "P1",
-      "depends_on": [
-        "mission_7_operational_gates"
-      ],
+      "depends_on": [],
       "scope_files": [
         "transaction_accounting.py",
         "monitoring_list.py",
@@ -283,12 +309,39 @@
       ]
     },
     {
+      "id": "backtest_valuation_metadata",
+      "title": "Document the limits of historical replay valuation and timestamp provenance",
+      "priority": "P2",
+      "depends_on": [],
+      "scope_files": [
+        "historical_backtest.py",
+        "tests/test_historical_backtest.py",
+        "BACKTESTING.md"
+      ],
+      "budget_minutes": 90,
+      "max_attempts": 2,
+      "required_evidence": [
+        "offline_tests",
+        "ci_success"
+      ],
+      "manual_gates": [
+        "independent_review"
+      ],
+      "initial_status": "pending",
+      "skills": [
+        "backtesting-validation",
+        "pnl-accounting",
+        "python-testing-ci"
+      ]
+    },
+    {
       "id": "backtest_strategy_provenance",
       "title": "Connect strategy replay to source-provenanced OHLC and conservative costs",
       "priority": "P2",
       "depends_on": [
         "risk_exit_controls_review",
-        "pnl_sol_usd_fee_ledger"
+        "pnl_sol_usd_fee_ledger",
+        "backtest_valuation_metadata"
       ],
       "scope_files": [
         "historical_backtest.py",
@@ -350,7 +403,7 @@
       "title": "Deliver PAPER Telegram status, recovery alerts, metrics, and reports",
       "priority": "P2",
       "depends_on": [
-        "mission_8_6_pr10_pr11_integration",
+        "mission_8_5_8_6_reconciliation",
         "pnl_sol_usd_fee_ledger",
         "risk_exit_controls_review"
       ],
@@ -382,9 +435,9 @@
       "title": "Audit multi-wallet ownership and accounting isolation in PAPER without transactions",
       "priority": "P2",
       "depends_on": [
-        "mission_7_operational_gates",
         "risk_exit_controls_review",
-        "pnl_sol_usd_fee_ledger"
+        "pnl_sol_usd_fee_ledger",
+        "mission_8_5_8_6_reconciliation"
       ],
       "scope_files": [
         "wallet_manager.py",
@@ -420,7 +473,7 @@
         "dashboard_telegram_observability",
         "pnl_sol_usd_fee_ledger",
         "risk_exit_controls_review",
-        "mission_8_6_pr10_pr11_integration"
+        "mission_8_5_8_6_reconciliation"
       ],
       "scope_files": [
         "dashboard/app.py",
@@ -483,7 +536,8 @@
         "backtest_strategy_provenance",
         "sniping_paper_admission",
         "paper_web_dashboard",
-        "multi_wallet_paper_isolation"
+        "multi_wallet_paper_isolation",
+        "mission_7_operational_gates"
       ],
       "scope_files": [
         "DEPLOYMENT.md",

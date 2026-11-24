@@ -370,7 +370,7 @@ def _scope_key(value: str) -> str:
 
 
 def readiness(plan: Plan, state: dict[str, Any], slots: int | None = None) -> Readiness:
-    """Select ready tasks by dependency, status, budget, gate, and file locks."""
+    """Select tasks that can start by dependency, status, budget, and file locks."""
     requested_slots = plan.max_parallel_agents if slots is None else slots
     if isinstance(requested_slots, bool) or not isinstance(requested_slots, int) or requested_slots < 1:
         raise OrchestratorError("available agent slots must be a positive integer")
@@ -414,8 +414,6 @@ def readiness(plan: Plan, state: dict[str, Any], slots: int | None = None) -> Re
         attempts = existing.get("attempts", 0)
         if attempts >= task.max_attempts:
             reasons.append("attempt_budget_exhausted")
-        for gate in task.manual_gates:
-            reasons.append("manual_gate_requires_reviewed_plan:" + gate)
         if len(active) + len(candidates) >= max_agents:
             reasons.append("agent_capacity")
         for scope in task.scope_files:
@@ -497,6 +495,18 @@ def _save_checkpoint(path: Path, state: dict[str, Any]) -> None:
             temporary.flush()
             os.fsync(temporary.fileno())
         os.replace(temporary_name, path)
+        if os.name == "posix":
+            try:
+                directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+                directory_descriptor = os.open(path.parent, directory_flags)
+                try:
+                    os.fsync(directory_descriptor)
+                finally:
+                    os.close(directory_descriptor)
+            except OSError:
+                # The file replacement is already complete. Directory fsync is
+                # best-effort and is not available through this path on Windows.
+                pass
     except OSError as exc:
         if temporary_name:
             Path(temporary_name).unlink(missing_ok=True)
@@ -672,7 +682,7 @@ def complete_task(plan: Plan, checkpoint_path: Path, task_id: str, commit_sha: s
 
 
 def fail_task(plan: Plan, checkpoint_path: Path, task_id: str, reason_code: str) -> None:
-    """Mark a run blocked using a fixed reason code; arbitrary text is not logged."""
+    """Retry eligible local failures within budget; escalate non-retryable failures."""
     allowed_reasons = {"validation_failed", "budget_exhausted", "manual_review_required", "external_blocker"}
     if task_id not in plan.by_id or reason_code not in allowed_reasons:
         raise OrchestratorError("unknown task or failure reason code")
@@ -681,13 +691,19 @@ def fail_task(plan: Plan, checkpoint_path: Path, task_id: str, reason_code: str)
         current = _entry(state, plan.by_id[task_id])
         if current["status"] not in {"in_progress", "external_in_progress"}:
             raise OrchestratorError("only an in-progress task can be marked blocked")
+        attempts = current.get("attempts", 0)
+        task = plan.by_id[task_id]
+        retryable = reason_code == "validation_failed" and attempts < task.max_attempts
+        next_status = "pending" if retryable else "blocked"
         state["tasks"][task_id] = {
-            "status": "blocked",
-            "attempts": current.get("attempts", 0),
+            "status": next_status,
+            "attempts": attempts,
             "reason_code": reason_code,
-            "blocked_at": utc_now(),
+            "last_failure_at": utc_now(),
+            "escalation_required": not retryable,
         }
-        _add_audit(state, "task_blocked", task_id, reason_code=reason_code)
+        event = "task_retry_scheduled" if retryable else "task_blocked_escalation_required"
+        _add_audit(state, event, task_id, reason_code=reason_code, attempt=attempts)
         _save_checkpoint(checkpoint_path, state)
 
 
@@ -756,6 +772,7 @@ def format_readiness(result: Readiness) -> dict[str, Any]:
                 "scope_files": list(task.scope_files),
                 "skills": list(task.skills),
                 "budget_minutes": task.budget_minutes,
+                "pending_manual_gates": list(task.manual_gates),
             }
             for task in result.ready
         ],
@@ -767,6 +784,7 @@ def format_readiness(result: Readiness) -> dict[str, Any]:
             "skills": list(proposal.skills),
             "runnable": proposal in result.ready,
             "blocked_by": list(result.blockers.get(proposal.task_id, ())),
+            "pending_manual_gates": list(proposal.manual_gates),
         },
         "dispatch": "not_configured",
     }
@@ -774,6 +792,14 @@ def format_readiness(result: Readiness) -> dict[str, Any]:
 
 def _checkpoint_for_cli(path: Path) -> dict[str, Any]:
     return load_checkpoint(path)
+
+
+def _require_canonical_mutation_plan(plan_path: Path) -> None:
+    """Prevent checkpoint mutations from using an alternate task manifest."""
+    if _confined_path(plan_path) != _confined_path(DEFAULT_PLAN):
+        raise OrchestratorError(
+            "checkpoint mutations require the canonical orchestration/missions.json plan; alternate plans are read-only"
+        )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -798,6 +824,8 @@ def main(argv: list[str] | None = None) -> int:
     validation_parser.add_argument("--timeout-seconds", type=int, default=300)
     args = parser.parse_args(argv)
     try:
+        if args.command in {"start", "complete", "fail"}:
+            _require_canonical_mutation_plan(args.plan)
         plan = load_plan(args.plan)
         if args.command == "plan":
             print(json.dumps(format_readiness(readiness(plan, _checkpoint_for_cli(args.checkpoint))), ensure_ascii=False, indent=2))

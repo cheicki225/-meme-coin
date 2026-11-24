@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -140,6 +141,32 @@ def test_plan_and_checkpoint_paths_cannot_escape_repository(tmp_path: Path) -> N
         orchestrator.load_checkpoint(tmp_path.parent / "outside-checkpoint.json")
 
 
+def test_mutating_cli_rejects_an_alternate_plan_within_repository(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path,
+) -> None:
+    root = tmp_path / "repo"
+    canonical = root / "orchestration" / "missions.json"
+    alternate = root / "tests" / "alternate_plan.json"
+    canonical.parent.mkdir(parents=True)
+    alternate.parent.mkdir(parents=True)
+    canonical.write_text("{}", encoding="utf-8")
+    alternate.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(orchestrator, "ROOT", root)
+    monkeypatch.setattr(orchestrator, "DEFAULT_PLAN", canonical)
+    monkeypatch.setattr(
+        orchestrator, "load_plan",
+        lambda _path: pytest.fail("alternate plan must be rejected before it is loaded"),
+    )
+
+    result = orchestrator.main([
+        "--plan", str(alternate), "--checkpoint", str(root / ".orchestrator" / "checkpoint.json"),
+        "start", "task_alpha",
+    ])
+
+    assert result == 2
+    assert "canonical orchestration/missions.json" in capsys.readouterr().err
+
+
 def test_complete_task_refuses_manual_gate_without_calling_github(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
@@ -237,6 +264,80 @@ def test_start_task_records_a_lease_and_excludes_overlapping_tasks(tmp_path: Pat
     assert state["audit"][-1]["event"] == "task_started"
 
 
+def test_validation_failure_retries_then_escalates_at_attempt_limit(tmp_path: Path) -> None:
+    plan_path = tmp_path / "plan.json"
+    checkpoint = tmp_path / "state" / "checkpoint.json"
+    _write_plan(plan_path, [_task("task_alpha")])
+    plan = orchestrator.load_plan(plan_path)
+
+    for attempt in (1, 2):
+        orchestrator.start_task(plan, checkpoint, "task_alpha")
+        orchestrator.fail_task(plan, checkpoint, "task_alpha", "validation_failed")
+        state = orchestrator.load_checkpoint(checkpoint)
+        assert state["tasks"]["task_alpha"]["status"] == "pending"
+        assert state["tasks"]["task_alpha"]["attempts"] == attempt
+        assert state["tasks"]["task_alpha"]["escalation_required"] is False
+
+    orchestrator.start_task(plan, checkpoint, "task_alpha")
+    orchestrator.fail_task(plan, checkpoint, "task_alpha", "validation_failed")
+    state = orchestrator.load_checkpoint(checkpoint)
+    assert state["tasks"]["task_alpha"]["status"] == "blocked"
+    assert state["tasks"]["task_alpha"]["attempts"] == 3
+    assert state["tasks"]["task_alpha"]["escalation_required"] is True
+    assert state["audit"][-1]["event"] == "task_blocked_escalation_required"
+
+
+def test_manual_review_and_external_failures_are_not_retried(tmp_path: Path) -> None:
+    plan_path = tmp_path / "plan.json"
+    checkpoint = tmp_path / "state" / "checkpoint.json"
+    _write_plan(plan_path, [_task("task_alpha")])
+    plan = orchestrator.load_plan(plan_path)
+    orchestrator.start_task(plan, checkpoint, "task_alpha")
+
+    orchestrator.fail_task(plan, checkpoint, "task_alpha", "external_blocker")
+
+    entry = orchestrator.load_checkpoint(checkpoint)["tasks"]["task_alpha"]
+    assert entry["status"] == "blocked"
+    assert entry["attempts"] == 1
+    assert entry["escalation_required"] is True
+
+
+def test_budget_exhaustion_blocks_without_automatic_retry(tmp_path: Path) -> None:
+    plan_path = tmp_path / "plan.json"
+    checkpoint = tmp_path / "state" / "checkpoint.json"
+    _write_plan(plan_path, [_task("task_alpha")])
+    plan = orchestrator.load_plan(plan_path)
+    orchestrator.start_task(plan, checkpoint, "task_alpha")
+
+    orchestrator.fail_task(plan, checkpoint, "task_alpha", "budget_exhausted")
+
+    entry = orchestrator.load_checkpoint(checkpoint)["tasks"]["task_alpha"]
+    assert entry["status"] == "blocked"
+    assert entry["attempts"] == 1
+    assert entry["escalation_required"] is True
+
+
+def test_checkpoint_replace_failure_preserves_previous_checkpoint(monkeypatch, tmp_path: Path) -> None:
+    checkpoint = tmp_path / ".orchestrator" / "checkpoint.json"
+    original = orchestrator.empty_checkpoint()
+    original["audit"].append({"event": "original"})
+    orchestrator._save_checkpoint(checkpoint, original)
+    original_bytes = checkpoint.read_bytes()
+
+    def fail_replace(*_args, **_kwargs):
+        raise OSError("injected replace failure")
+
+    monkeypatch.setattr(os, "replace", fail_replace)
+    changed = orchestrator.empty_checkpoint()
+    changed["audit"].append({"event": "changed"})
+
+    with pytest.raises(orchestrator.OrchestratorError, match="atomically"):
+        orchestrator._save_checkpoint(checkpoint, changed)
+
+    assert checkpoint.read_bytes() == original_bytes
+    assert list(checkpoint.parent.glob("tmp*")) == []
+
+
 def test_stale_lock_fails_closed_without_overwriting_checkpoint(tmp_path: Path) -> None:
     plan_path = tmp_path / "plan.json"
     checkpoint = tmp_path / "state" / "checkpoint.json"
@@ -251,25 +352,28 @@ def test_stale_lock_fails_closed_without_overwriting_checkpoint(tmp_path: Path) 
     assert not checkpoint.exists()
 
 
-def test_manual_gate_remains_blocked_until_a_reviewed_plan_change(tmp_path: Path) -> None:
+def test_manual_gate_allows_work_but_remains_pending_for_completion(tmp_path: Path) -> None:
     plan_path = tmp_path / "plan.json"
     _write_plan(plan_path, [_task("task_alpha", gates=["independent_review"])])
     plan = orchestrator.load_plan(plan_path)
 
     result = orchestrator.readiness(plan, orchestrator.empty_checkpoint())
 
-    assert result.ready == ()
-    assert "manual_gate_requires_reviewed_plan:independent_review" in result.blockers["task_alpha"]
+    assert [task.task_id for task in result.ready] == ["task_alpha"]
+    assert "task_alpha" not in result.blockers
     proposal = orchestrator.format_readiness(result)["next_task_proposal"]
     assert proposal["task_id"] == "task_alpha"
-    assert proposal["runnable"] is False
-    assert "manual_gate_requires_reviewed_plan:independent_review" in proposal["blocked_by"]
+    assert proposal["runnable"] is True
+    assert proposal["blocked_by"] == []
+    assert proposal["pending_manual_gates"] == ["independent_review"]
+    assert orchestrator.format_readiness(result)["ready"][0]["pending_manual_gates"] == ["independent_review"]
 
 
 def test_next_task_proposal_prefers_blocked_p0_over_runnable_p1(tmp_path: Path) -> None:
     plan_path = tmp_path / "plan.json"
     _write_plan(plan_path, [
-        _task("task_p0", priority="P0", gates=["independent_review"]),
+        _task("task_dependency", status="external_in_progress"),
+        _task("task_p0", priority="P0", depends_on=["task_dependency"], gates=["independent_review"]),
         _task("task_p1", priority="P1"),
     ])
     plan = orchestrator.load_plan(plan_path)
@@ -280,7 +384,8 @@ def test_next_task_proposal_prefers_blocked_p0_over_runnable_p1(tmp_path: Path) 
     assert [task.task_id for task in result.ready] == ["task_p1"]
     assert proposal["task_id"] == "task_p0"
     assert proposal["runnable"] is False
-    assert "manual_gate_requires_reviewed_plan:independent_review" in proposal["blocked_by"]
+    assert "dependencies:task_dependency" in proposal["blocked_by"]
+    assert proposal["pending_manual_gates"] == ["independent_review"]
 
 
 class _FakeResponse:
