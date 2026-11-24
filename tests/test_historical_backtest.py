@@ -23,6 +23,27 @@ def test_signals_fill_next_open_and_results_include_fees_and_slippage():
     assert result["fees_usd"] == trade["fees_usd"]
 
 
+def test_result_labels_unverified_price_and_fixed_cost_assumptions():
+    result = run_backtest(
+        [_candle(1, 100, 101, 99, 100), _candle(2, 100, 101, 99, 100)],
+        [],
+    )
+
+    assert result["valuation_scope"] == {
+        "quote_currency": "USD_assumed",
+        "price_source": "not_provided_to_replay_core",
+        "timestamp_unit_expected": "unix_seconds",
+        "timestamp_unit_validated": False,
+        "dataset_provenance": "not_authenticated_by_replay_core",
+        "cost_model": "fixed_basis_point_scenario",
+        "network_fees_included": False,
+        "priority_fees_included": False,
+        "rent_and_tips_included": False,
+        "provider_costs_included": False,
+        "realized_pnl": False,
+    }
+
+
 def test_ambiguous_candle_uses_stop_loss_first():
     candles = [
         _candle(1, 100, 101, 99, 100),

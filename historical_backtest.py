@@ -259,5 +259,18 @@ def run_backtest(
             "fee_bps_each_side": fee_bps,
             "drawdown_path": "conservative_mark_to_market_from_OHLC",
         },
+        "valuation_scope": {
+            "quote_currency": "USD_assumed",
+            "price_source": "not_provided_to_replay_core",
+            "timestamp_unit_expected": "unix_seconds",
+            "timestamp_unit_validated": False,
+            "dataset_provenance": "not_authenticated_by_replay_core",
+            "cost_model": "fixed_basis_point_scenario",
+            "network_fees_included": False,
+            "priority_fees_included": False,
+            "rent_and_tips_included": False,
+            "provider_costs_included": False,
+            "realized_pnl": False,
+        },
     }
 
