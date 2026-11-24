@@ -21,6 +21,7 @@ import copy
 import glob
 import json
 import logging
+import math
 import os
 import shutil
 import tempfile
@@ -32,6 +33,7 @@ from sqlite_state import SQLiteStateStore, StateStoreCorruptError, StateStoreErr
 BACKUP_DIR_NAME = "backups"
 BACKUP_INTERVAL_S = 300   # 5 minutes entre deux backups automatiques
 MAX_BACKUPS = 30          # rotation — garde les 30 dernières, supprime les plus vieilles
+MAX_CONFIRMED_ACCOUNTING_RECORDS = 1000
 
 log = logging.getLogger("monitoring_list")
 
@@ -279,6 +281,7 @@ class DataStore:
             "pending_transactions": [],
             "resolved_transactions": [],
             "unapplied_failed_transaction_fees_lamports": 0,
+            "confirmed_accounting_ledger": [],
             "referral": dict(config.DEFAULT_REFERRAL_STATE),
             "linked_wallet_groups": {},
             "pending_dev_sell_watch": {},
@@ -524,6 +527,132 @@ class DataStore:
                     self.state["unapplied_failed_transaction_fees_lamports"] = previous_fees
                 else:
                     self.state.pop("unapplied_failed_transaction_fees_lamports", None)
+            raise
+        return True
+
+    def record_confirmed_accounting(
+        self,
+        signature: str,
+        accounting: dict,
+        valuation: dict,
+    ) -> bool:
+        """Persist one confirmed accounting result without changing PAPER PnL.
+
+        The bounded ledger is an auditable source record for confirmed wallet
+        cash flows and fees. It is deliberately separate from simulated PAPER
+        positions, totals, and risk counters. Repeating an identical record is
+        idempotent; conflicting evidence for the same signature is rejected.
+        An unknown valuation may be reconciled once with a valued result when
+        the underlying confirmed accounting data is unchanged.
+        """
+        if not isinstance(signature, str) or not signature.strip():
+            raise ValueError("Confirmed accounting signature is required")
+        if len(signature) > 256:
+            raise ValueError("Confirmed accounting signature is too long")
+        if not isinstance(accounting, dict) or not isinstance(valuation, dict):
+            raise ValueError("Confirmed accounting and valuation must be objects")
+        from transaction_accounting import value_confirmed_sol_cashflow_usd
+
+        if accounting.get("accounting_source") != "confirmed_rpc_transaction_meta":
+            raise ValueError("Only confirmed RPC accounting can enter this ledger")
+        if type(accounting.get("accounting_schema_version")) is not int or accounting["accounting_schema_version"] != 1:
+            raise ValueError("Unsupported confirmed accounting schema version")
+        native_delta = accounting.get("native_delta_lamports")
+        fee = accounting.get("fee_lamports")
+        if type(native_delta) is not int or type(fee) is not int or fee < 0:
+            raise ValueError("Confirmed SOL delta and fee must be integer lamports")
+        if valuation.get("accounting_source") != "confirmed_rpc_transaction_meta":
+            raise ValueError("Valuation source does not match confirmed accounting")
+        if type(valuation.get("valuation_schema_version")) is not int or valuation["valuation_schema_version"] != 1:
+            raise ValueError("Unsupported confirmed valuation schema version")
+        expected_valuation = value_confirmed_sol_cashflow_usd(
+            accounting,
+            sol_usd_rate=valuation.get("sol_usd_rate"),
+            rate_timestamp=valuation.get("sol_usd_rate_timestamp"),
+            rate_source=valuation.get("sol_usd_rate_source"),
+            rate_verified=valuation.get("sol_usd_rate_verified"),
+            max_rate_age_s=valuation.get("max_rate_age_s"),
+        )
+        if valuation != expected_valuation:
+            raise ValueError("Valuation does not match confirmed deltas and rate evidence")
+        if valuation.get("fee_currency") != "SOL" or valuation.get("fee_included_in_sol_cashflow") is not True:
+            raise ValueError("Confirmed valuation is missing fee/cash-flow semantics")
+        status = valuation.get("valuation_status")
+        if status not in {"valued", "unknown"}:
+            raise ValueError("Confirmed valuation status must be valued or unknown")
+        if status == "valued":
+            for field in ("sol_cashflow_usd", "fee_usd", "sol_usd_rate", "sol_usd_rate_timestamp"):
+                value = valuation.get(field)
+                if isinstance(value, bool) or not isinstance(value, (int, float)):
+                    raise ValueError(f"Valued record requires numeric {field}")
+                try:
+                    finite_value = math.isfinite(float(value))
+                except (OverflowError, ValueError):
+                    finite_value = False
+                if not finite_value:
+                    raise ValueError(f"Valued record requires finite {field}")
+            if valuation.get("sol_usd_rate", 0) <= 0:
+                raise ValueError("Valued record requires a positive SOL/USD rate")
+            if not isinstance(valuation.get("sol_usd_rate_source"), str) or not valuation["sol_usd_rate_source"].strip():
+                raise ValueError("Valued record requires SOL/USD source provenance")
+        elif valuation.get("sol_cashflow_usd") is not None or valuation.get("fee_usd") is not None:
+            raise ValueError("Unknown valuation must not contain invented USD amounts")
+
+        record = {
+            "signature": signature,
+            "accounting_schema_version": accounting.get("accounting_schema_version"),
+            "valuation_schema_version": valuation.get("valuation_schema_version"),
+            "accounting_source": "confirmed_rpc_transaction_meta",
+            "native_delta_lamports": native_delta,
+            "fee_lamports": fee,
+            "fee_status": valuation.get("fee_status", "confirmed"),
+            "fee_currency": "SOL",
+            "fee_included_in_sol_cashflow": True,
+            "accounting_domain": "CONFIRMED_CHAIN",
+            "applied_to_paper_pnl": False,
+            "event_timestamp": valuation.get("event_timestamp"),
+            "valuation_status": status,
+            "valuation_reason": valuation.get("valuation_reason"),
+            "sol_cashflow_usd": valuation.get("sol_cashflow_usd"),
+            "fee_usd": valuation.get("fee_usd"),
+            "sol_usd_rate": valuation.get("sol_usd_rate"),
+            "sol_usd_rate_timestamp": valuation.get("sol_usd_rate_timestamp"),
+            "sol_usd_rate_source": valuation.get("sol_usd_rate_source"),
+            "sol_usd_rate_verified": valuation.get("sol_usd_rate_verified"),
+            "max_rate_age_s": valuation.get("max_rate_age_s"),
+            "rate_age_seconds": valuation.get("rate_age_seconds"),
+        }
+        ledger_existed = "confirmed_accounting_ledger" in self.state
+        ledger = self.state.get("confirmed_accounting_ledger", [])
+        if not isinstance(ledger, list) or any(not isinstance(item, dict) for item in ledger):
+            raise ValueError("Confirmed accounting ledger must be a list of objects")
+        previous_ledger = list(ledger)
+        index = next((i for i, item in enumerate(ledger) if item.get("signature") == signature), None)
+        if index is not None:
+            previous = ledger[index]
+            immutable_fields = (
+                "signature", "accounting_source", "native_delta_lamports", "fee_lamports",
+                "event_timestamp",
+            )
+            if any(previous.get(field) != record.get(field) for field in immutable_fields):
+                raise ValueError("Conflicting confirmed accounting for signature")
+            if previous == record:
+                return False
+            if previous.get("valuation_status") != "unknown" or status != "valued":
+                raise ValueError("Conflicting valuation for signature")
+            ledger[index] = record
+        else:
+            ledger = self.state.setdefault("confirmed_accounting_ledger", [])
+            ledger.append(record)
+            del ledger[:-MAX_CONFIRMED_ACCOUNTING_RECORDS]
+
+        try:
+            self.save()
+        except Exception:
+            if ledger_existed:
+                ledger[:] = previous_ledger
+            else:
+                self.state.pop("confirmed_accounting_ledger", None)
             raise
         return True
 

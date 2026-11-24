@@ -6,7 +6,14 @@ units until a caller explicitly converts them using the mint decimals.
 """
 from __future__ import annotations
 
+import math
+from decimal import Decimal, InvalidOperation
 from typing import Any
+
+LAMPORTS_PER_SOL = 1_000_000_000
+ACCOUNTING_SCHEMA_VERSION = 1
+VALUATION_SCHEMA_VERSION = 1
+DEFAULT_MAX_SOL_USD_RATE_AGE_S = 300
 
 
 class AccountingError(ValueError):
@@ -36,6 +43,144 @@ def _pubkey(value: Any) -> str | None:
         key = value.get("pubkey")
         return key if isinstance(key, str) else None
     return None
+
+
+def _finite_number(value: Any) -> float | None:
+    """Return a finite numeric value, rejecting bool and numeric strings."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        parsed = float(value)
+    except (OverflowError, ValueError):
+        return None
+    return parsed if math.isfinite(parsed) else None
+
+
+def _transaction_timestamp(transaction: dict) -> float | None:
+    """Read an optional RPC block timestamp without fabricating one."""
+    return _finite_number(transaction.get("blockTime"))
+
+
+def value_confirmed_sol_cashflow_usd(
+    accounting: dict,
+    *,
+    sol_usd_rate: Any = None,
+    rate_timestamp: Any = None,
+    rate_source: Any = None,
+    rate_verified: Any = False,
+    event_timestamp: Any = None,
+    max_rate_age_s: Any = DEFAULT_MAX_SOL_USD_RATE_AGE_S,
+) -> dict:
+    """Value confirmed SOL cash flow only from a verified, time-aligned rate.
+
+    Missing, stale, future-dated, unverified, or malformed rate evidence is
+    represented explicitly as ``valuation_status='unknown'``. The returned
+    SOL cash flow uses the confirmed wallet balance delta, which already
+    includes the network fee and any rent reflected in those balances. The
+    network fee is also valued separately for fee reporting, so callers must
+    not subtract it from ``sol_cashflow_usd`` a second time. ``rate_verified``
+    is a caller attestation: this function checks the supplied source and
+    timestamp but cannot authenticate an external provider response.
+    """
+    reason = None
+    if not isinstance(accounting, dict):
+        reason = "missing_accounting"
+    elif accounting.get("accounting_source") != "confirmed_rpc_transaction_meta":
+        reason = "unconfirmed_accounting_source"
+    elif type(accounting.get("accounting_schema_version")) is not int or accounting["accounting_schema_version"] != ACCOUNTING_SCHEMA_VERSION:
+        reason = "unsupported_accounting_schema"
+    elif type(accounting.get("native_delta_lamports")) is not int:
+        reason = "invalid_native_delta"
+    elif type(accounting.get("fee_lamports")) is not int or accounting["fee_lamports"] < 0:
+        reason = "invalid_confirmed_fee"
+
+    rate = _finite_number(sol_usd_rate)
+    rate_time = _finite_number(rate_timestamp)
+    event_time = _finite_number(
+        accounting.get("event_timestamp") if event_timestamp is None and isinstance(accounting, dict)
+        else event_timestamp
+    )
+    max_age = _finite_number(max_rate_age_s)
+    if reason is None:
+        if rate is None or rate <= 0:
+            reason = "missing_or_invalid_rate"
+        elif rate_time is None:
+            reason = "missing_rate_timestamp"
+        elif event_time is None:
+            reason = "missing_event_timestamp"
+        elif max_age is None or max_age < 0:
+            reason = "invalid_max_rate_age"
+        elif max_age > DEFAULT_MAX_SOL_USD_RATE_AGE_S:
+            reason = "invalid_max_rate_age"
+        elif rate_verified is not True:
+            reason = "rate_not_verified"
+        elif not isinstance(rate_source, str) or not rate_source.strip():
+            reason = "missing_rate_source"
+        elif rate_time > event_time:
+            reason = "rate_after_accounting_event"
+        elif event_time - rate_time > max_age:
+            reason = "stale_rate"
+
+    base = {
+        "accounting_schema_version": (
+            accounting.get("accounting_schema_version") if isinstance(accounting, dict) else None
+        ),
+        "valuation_schema_version": VALUATION_SCHEMA_VERSION,
+        "accounting_source": (
+            accounting.get("accounting_source") if isinstance(accounting, dict) else None
+        ),
+        "valuation_source": "timestamped_sol_usd_rate",
+        "event_timestamp": event_time,
+        "fee_currency": "SOL",
+        "fee_status": "confirmed" if reason not in {
+            "missing_accounting", "unconfirmed_accounting_source", "unsupported_accounting_schema",
+            "invalid_confirmed_fee",
+        } else "unknown",
+        "valuation_status": "unknown",
+        "valuation_reason": reason,
+        "sol_cashflow_usd": None,
+        "fee_usd": None,
+        "sol_usd_rate": rate,
+        "sol_usd_rate_timestamp": rate_time,
+        "sol_usd_rate_source": rate_source.strip() if isinstance(rate_source, str) and rate_source.strip() else None,
+        "sol_usd_rate_verified": rate_verified is True,
+        "max_rate_age_s": max_age,
+        "rate_age_seconds": None,
+        "fee_included_in_sol_cashflow": True,
+    }
+    if reason is not None:
+        return base
+    # The status checks above narrow these values for both runtime and mypy.
+    assert rate is not None
+    assert rate_time is not None
+    assert event_time is not None
+
+    try:
+        rate_decimal = Decimal(str(sol_usd_rate))
+        native_delta_sol = Decimal(accounting["native_delta_lamports"]) / Decimal(LAMPORTS_PER_SOL)
+        fee_sol = Decimal(accounting["fee_lamports"]) / Decimal(LAMPORTS_PER_SOL)
+        cashflow_usd = float(native_delta_sol * rate_decimal)
+        fee_usd = float(fee_sol * rate_decimal)
+    except (InvalidOperation, OverflowError, ValueError):
+        base["valuation_reason"] = "invalid_rate_conversion"
+        return base
+    if not math.isfinite(cashflow_usd) or not math.isfinite(fee_usd):
+        base["valuation_reason"] = "invalid_rate_conversion"
+        return base
+
+    base.update({
+        "valuation_status": "valued",
+        "valuation_reason": None,
+        "sol_cashflow_usd": cashflow_usd,
+        "fee_usd": fee_usd,
+        "sol_usd_rate": rate,
+        "sol_usd_rate_timestamp": rate_time,
+        "sol_usd_rate_source": rate_source.strip(),
+        "sol_usd_rate_verified": True,
+        "max_rate_age_s": max_age,
+        "rate_age_seconds": event_time - rate_time,
+    })
+    return base
 
 
 def _token_amounts(rows: Any, wallet: str) -> tuple[dict[str, int], dict[str, int]]:
@@ -131,6 +276,7 @@ def account_confirmed_swap(
         raise AccountingError("Transaction changed unrelated wallet token balances")
 
     return {
+        "accounting_schema_version": ACCOUNTING_SCHEMA_VERSION,
         "wallet": wallet,
         "input_mint": input_mint,
         "output_mint": output_mint,
@@ -141,6 +287,7 @@ def account_confirmed_swap(
         "input_delta_raw": deltas.get(input_mint),
         "output_delta_raw": deltas.get(output_mint),
         "accounting_source": "confirmed_rpc_transaction_meta",
+        "event_timestamp": _transaction_timestamp(transaction),
     }
 
 
@@ -188,6 +335,7 @@ def account_confirmed_sol_transfer(
         if before != after:
             raise AccountingError("Transfer also changed wallet token balances")
     return {
+        "accounting_schema_version": ACCOUNTING_SCHEMA_VERSION,
         "wallet": wallet,
         "destination": destination,
         "amount_lamports": amount_lamports,
@@ -195,5 +343,6 @@ def account_confirmed_sol_transfer(
         "destination_delta_lamports": destination_delta,
         "fee_lamports": fee,
         "accounting_source": "confirmed_rpc_transaction_meta",
+        "event_timestamp": _transaction_timestamp(transaction),
     }
 
