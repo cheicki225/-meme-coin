@@ -63,20 +63,20 @@ def test_disconnected_photo_notification_does_not_log_caption_or_photo_content(c
 
 
 def test_failed_photo_send_does_not_log_caption_exception_or_photo_content(caplog):
-    caption_secret = "CAPTION_SECRET_44de"
-    exception_secret = "EXCEPTION_SECRET_4f18"
-    photo_secret = b"PHOTO_BYTES_SECRET_22ac"
+    caption_marker = "CAPTION_MARKER_44de"
+    exception_marker = "EXCEPTION_MARKER_4f18"
+    photo_marker = b"PHOTO_BYTES_MARKER_22ac"
 
     class FailingPhotoBot:
         async def send_photo(self, **kwargs):
-            raise RuntimeError(f"request failed: {exception_secret}")
+            raise RuntimeError(f"request failed: {exception_marker}")
 
     caplog.set_level(logging.ERROR, logger="notifier")
     asyncio.run(Notifier(Store(), FailingPhotoBot()).notify_photo(
-        "risk_alert", photo_secret, caption=caption_secret
+        "risk_alert", photo_marker, caption=caption_marker
     ))
 
     assert "telegram_photo_send_failed" in caplog.text
-    assert caption_secret not in caplog.text
-    assert exception_secret not in caplog.text
-    assert photo_secret.decode("ascii") not in caplog.text
+    assert caption_marker not in caplog.text
+    assert exception_marker not in caplog.text
+    assert photo_marker.decode("ascii") not in caplog.text
