@@ -66,6 +66,20 @@ Trois revues de domaine read-only ont été réalisées (comptabilité/provenanc
 
 Le Skill `web-research-problem-solver` n’est pas présent dans l’arbre de skills de la tête #21 (`SKILL_UNAVAILABLE`). Aucun blocage technique non résolu nécessitant une source externe n’a rendu son workflow de recherche nécessaire dans cette session. Les PR source et GitHub ont été consultés pour vérifier les refs et runs, sans accès à un wallet, clé ou secret.
 
+### Périmètre des fichiers, commandes et accès
+
+Fichiers modifiés dans la PR (13) :
+
+- Code : `copytrade_listener.py`, `main.py`, `monitoring_list.py`, `paper_trader.py`, `telegram_bot.py`, `transaction_accounting.py`.
+- Tests : `tests/test_copytrade_age_guard.py`, `tests/test_paper_position_recovery.py`, `tests/test_paper_trader_cashflow.py`, `tests/test_telegram_command_privacy.py`, `tests/test_telegram_missing_exit_price.py`, `tests/test_transaction_accounting.py`.
+- Rapport : `docs/MISSION_11_INTEGRATION_REPORT.md`.
+
+Les fichiers audités incluent aussi `config.py`, `risk_controls.py`, `rpc_client.py`, `jupiter_executor.py`, les listeners/scanners et les commandes Telegram concernés, ainsi que `AGENTS.md`, `SECURITY.md`, `ACCEPTANCE_CRITERIA.md`, `ARCHITECTURE.md`, `TESTING.md` et les références de Mission 10. Les quatre fichiers de configuration/risque/exécution cités n’ont pas été modifiés.
+
+Les commandes de validation exécutées sont `python -m compileall -q .` et `python -m pytest -q`, avec `PYTHON_DOTENV_DISABLED=true` et, pour pytest, `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` dans l’environnement; `git diff --check` a aussi réussi. Les inspections Git ont utilisé `git status`, `git log` et `git diff --name-status`; les commits #19 et #20 ont été repris par `git cherry-pick -x`. Les commits et le push ont porté uniquement sur la branche dédiée `codex/mission-11-unified-paper-20261124`.
+
+Les accès GitHub utilisés ont permis de lire les PR/diffs/CI/artifacts, pousser cette branche, puis créer et mettre à jour la PR #22 en brouillon. Les branches #19–#21 et `main` n’ont pas été modifiées ni fusionnées. Aucune élévation locale, connexion MT5, lecture de secret, accès wallet ou soumission RPC n’a été utilisée.
+
 ### Validation effectivement exécutée
 
 Environnement local : Python 3.11.9 ; `PYTHON_DOTENV_DISABLED=true`; chargement automatique des plugins pytest désactivé selon `TESTING.md` pour cette machine.
