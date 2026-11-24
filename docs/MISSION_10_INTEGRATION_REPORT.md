@@ -80,6 +80,23 @@ Résultats locaux en Python 3.11.9, dotenv désactivé, `TRADING_MODE=PAPER`, `L
 - Mypy 1.7.1 sur neuf modules pertinents : **30 diagnostics restants**. Les nouveaux diagnostics introduits par les listeners Helius/CopyTrade et le collecteur ont été corrigés. Les diagnostics restants sont présents sur la base #12; la comparaison de référence #12 en comptait 31, dont une erreur anti-rug supprimée par #16. Mypy n’est pas un contrôle du workflow CI du dépôt.
 - Ruff, `pip-audit`, Gitleaks et Coverage ne sont pas installés dans l’environnement local. L’installation isolée a échoué sur la vérification TLS PyPI; la vérification TLS n’a pas été contournée. Le workflow GitHub exécute ces contrôles sur `pull_request`, et publie les rapports de couverture comme artefact. Le résultat de la tête Mission 10 doit être lu dans les checks GitHub de sa PR.
 
+Commandes pytest utilisées (avec l’environnement PAPER/LIVE ci-dessus) :
+
+```powershell
+python -m pytest -q tests/test_helius_event_store.py tests/test_helius_listener_replay.py tests/test_rpc_health_monitor.py tests/test_rpc_metrics.py tests/test_rpc_redirect_security.py tests/test_rpc_request_coalescing.py tests/test_rpc_retry_policy.py tests/test_telegram_callback_authorization.py tests/test_telegram_wallet_message_deletion.py tests/test_rug_scanner.py tests/test_wallet_data_collector.py tests/test_transaction_accounting.py tests/test_historical_backtest.py tests/test_historical_backtest_integration.py tests/test_backtest_dataset.py tests/test_backtest_ohlcv_replay.py tests/test_datastore_recovery.py tests/test_execution_recovery.py tests/test_mission7_recovery_regressions.py tests/test_websocket_reconnect.py
+python -m pytest -q
+python -m compileall -q .
+```
+
+Le premier appel couvre les 20 modules de la matrice ciblée; il a retourné **255 passed**. Le second a retourné **622 passed** après l’intégration des dernières mises à jour de #14.
+
+Mypy a été exécuté avec ces commandes; l’orchestrateur n’a aucun diagnostic, les neuf modules bot ont les erreurs de base décrites ci-dessus :
+
+```powershell
+python -m mypy --follow-imports=silent rpc_client.py helius_event_store.py copytrade_listener.py protection_scanner.py websocket_listener.py rug_scanner.py wallet_data_collector.py historical_backtest.py main.py
+python -m mypy --follow-imports=silent development_orchestrator.py
+```
+
 Les tests SQLite et réseau utilisent des doubles/chemins temporaires. Aucun secret, fichier `.env`, wallet, RPC externe, service Telegram, signature, ordre ou transaction n’a été lu/utilisé/envoyé.
 
 Les tests confirment aussi que le mode par défaut reste PAPER et que les états neufs ainsi que les états persistés legacy sans champ d’arrêt démarrent avec `emergency_stop=True`. Une valeur `False` explicitement persistée reste une action opérateur. Les callbacks Telegram restent fail-closed et la soumission RPC de transactions ne réessaie pas un résultat ambigu. `send_sol` demeure une capacité de transfert explicite protégée par le mode et l’activation LIVE; aucun chemin LIVE n’a été exécuté ici.
