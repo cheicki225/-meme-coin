@@ -56,4 +56,6 @@ Validation locale M8 effectuée hors ligne, avec `TRADING_MODE=PAPER`, `LIVE_EXE
 - `python -m ruff check --select E9,F63,F7,F82 .` — réussi.
 - `python -m pip_audit -r requirements-ci.txt` — **non validé localement** : l'outil a échoué lors de la mise à niveau de pip dans son environnement temporaire; aucun résultat propre d'audit n'est revendiqué. Gitleaks n'est pas installé localement. Les résultats CI M7 ci-dessus ne valent pas CI M8.
 
+- CI GitHub M8 : [run 45075437985](https://github.com/cheicki225/-meme-coin/actions/runs/45075437985) verte sur le commit `e54dbe2fc4dcc3648785c966246f5879bb5befe0`; compilation, défaut PAPER, tests, Ruff, pip-audit, Gitleaks et artefact de couverture ont tous réussi.
+
 Restent également nécessaires, avant toute décision opérationnelle : mesure depuis l'environnement cible, quota réel fourni par l'opérateur, soak PAPER, réconciliation après reconnexion, rattrapage d'événements après HTTP 429, exercice de restauration et contrôles de déploiement. LIVE demeure bloqué tant que les gates de sécurité et d'exploitation documentées ne sont pas fermées.
