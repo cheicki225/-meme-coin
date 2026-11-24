@@ -33,13 +33,19 @@ Interpréteur local : Python 3.11.9. `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` et `PYTH
 - Suite complète : `python -m pytest -q` — **506 tests réussis** en 3,53 s.
 - Compilation : `python -m compileall -q .` — réussie.
 - `git diff --check` et `git diff --cached --check` — réussis avant le merge commit.
-- `coverage` et `ruff` ne sont pas installés dans l’interpréteur local (`No module named coverage` / `No module named ruff`). Aucun pourcentage de couverture ni résultat Ruff local n’est revendiqué. `pip-audit` et Gitleaks doivent être vérifiés dans la CI GitHub avant de conclure sur ces contrôles.
+- `coverage` et `ruff` ne sont pas installés dans l’interpréteur local (`No module named coverage` / `No module named ruff`). Aucun pourcentage de couverture ni résultat Ruff local n’est revendiqué; les résultats CI sont consignés ci-dessous.
 
 PAPER est le défaut du code; LIVE est désactivé dans l’environnement de test. Les appels réseau des tests sont simulés. Aucune requête RPC externe, signature réelle, transaction signée ou envoyée, wallet ni secret n’a été utilisé.
 
+## CI GitHub
+
+La PR d’intégration [#12](https://github.com/cheicki225/-meme-coin/pull/12) cible la branche #10 et reste ouverte/non fusionnée. Son run CI [45376701657](https://github.com/cheicki225/-meme-coin/actions/runs/45376701657), sur le head `713c49a2b60d5eb99b5cc5e672cd1c41556348db`, est **vert** : compilation, défaut PAPER, **506 tests**, Ruff, pip-audit (« No known vulnerabilities found »), Gitleaks (« no leaks found ») et upload de l’artefact couverture ont réussi.
+
+La couverture CI est de **32,44 % combinée** (10 387 statements et 3 818 branches mesurés) selon `coverage report`; le JSON/XML sont dans l’[artefact `mission-coverage-45376701657`](https://github.com/cheicki225/-meme-coin/actions/runs/45376701657/artifacts/14911776499). Le workflow a émis un avertissement non bloquant : `actions/upload-artifact@v4` vise Node.js 20 et est forcée sur Node.js 24 par le runner.
+
 ## Revue indépendante
 
-Deux revues statiques indépendantes ont confirmé les invariants RPC et Telegram/logs. Une revue de merge a confirmé les SHAs, la résolution des deux conflits et l’absence de modifications aux branches sources. Ces revues n’ont pas utilisé de RPC externe ni modifié de fichiers.
+Trois revues statiques indépendantes ont confirmé les invariants RPC, Telegram/logs et la résolution du merge. Elles ont contrôlé les SHAs, les deux conflits et l’absence de modifications aux branches sources. Ces revues n’ont pas utilisé de RPC externe ni modifié de fichiers.
 
 ## Risques et limites encore ouverts
 
@@ -47,8 +53,8 @@ Deux revues statiques indépendantes ont confirmé les invariants RPC et Telegra
 - Un nouveau `DataStore` initialise `emergency_stop` à `False`; les chemins d’issue de soumission incertaine l’activent ensuite. Aucun bot ni base opérationnelle n’a été démarré, consulté ou modifié, donc un état d’arrêt d’urgence opérationnel actif n’a pas été vérifié.
 - Aucun soak PAPER de 24 h, audit sémantique des programmes DEX/CPI, test complet de chargement des Skills ou vérification Demo n’a été exécuté.
 - Le Skill de recherche web externe n’est pas livré dans le catalogue du dépôt (`SKILL_UNAVAILABLE`). Aucun blocage technique non résolu n’a requis une recherche sourcée; aucune recherche web de dépannage n’a été simulée.
-- Couverture, Ruff, pip-audit et Gitleaks restent en attente du run CI de la PR dédiée. Les résultats CI devront être rattachés au SHA exact avant de conclure.
+- Le run CI vert couvre le head indiqué ci-dessus; il n’exécute pas de vérification Demo ni de test d’exploitation.
 
-## Prochaine étape
+## Suite
 
-Publier la branche locale et ouvrir une PR d’intégration ciblant la branche #10 uniquement après vérification finale des changements. Attendre la CI complète et consigner ses résultats et sa couverture; ne fusionner aucune PR.
+La PR #12 est publiée et sa CI est verte. Garder le risque de perte d’événement Helius 429 et l’état initial `emergency_stop=False` visibles en revue; ne fusionner aucune PR et ne pas revendiquer de validation LIVE.
