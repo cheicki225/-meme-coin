@@ -80,3 +80,13 @@ Le vérificateur local a confirmé sur les deux heads que les runs ont testé le
 ## Actualisation Mission 9 — 24 novembre 2026, 12:15 UTC
 
 La [PR #14](https://github.com/cheicki225/-meme-coin/pull/14) est ouverte et prête pour revue, empilée sur #9 (`684cce1…`). Son head au moment de cet instantané est `74d16cc624ce89238825f39ab6416343c8305a81`. Le run [45391234670](https://github.com/cheicki225/-meme-coin/actions/runs/45391234670) a réussi compilation, vérification PAPER, tests, Ruff, pip-audit, Gitleaks et upload de couverture; le vérificateur local a confirmé le SHA et le blob du workflow de référence. GitHub indique `mergeable=true`, `mergeable_state=clean`; aucun merge n'a eu lieu. Cette note précède le commit documentaire qui l'ajoute; le nouveau run CI de ce head sera contrôlé séparément.
+
+## État final des PR de suivi — 24 novembre 2026, 12:21 UTC
+
+| PR | État courant | Base → head | CI du head courant |
+|---:|---|---|---|
+| [#12](https://github.com/cheicki225/-meme-coin/pull/12) — 8.6 | ouverte, prête pour revue, `mergeable=true` / `clean` | #10 `2007b661…` → `5b6b155919654182dab25ae14f98c5bf61df023a` | [45379967234](https://github.com/cheicki225/-meme-coin/actions/runs/45379967234) — success |
+| [#13](https://github.com/cheicki225/-meme-coin/pull/13) — 8.5 | ouverte, prête pour revue, `mergeable=true` / `clean` | #11 `2d0df1e…` → `6f9a02c26f6be2fe092a404579d57b8f66a95e2d` | [45386542036](https://github.com/cheicki225/-meme-coin/actions/runs/45386542036) — success |
+| [#14](https://github.com/cheicki225/-meme-coin/pull/14) — orchestrateur 9 | ouverte, prête pour revue, `mergeable=true` / `clean` | #9 `684cce1…` → `1140da5374493451241b75acb01d2a3303a1f77c` | [45392153025](https://github.com/cheicki225/-meme-coin/actions/runs/45392153025) — success |
+
+Les #12 et #13 restent des branches d'intégration opposées qui contiennent chacune les changements #10/#11; elles ne sont pas indépendantes et leur ordre doit être fixé avant toute fusion. Aucun head de #10/#11 ni `main` n'a été réécrit; aucune PR n'est fusionnée. Cette section est un instantané préalable à son commit documentaire; le CI de ce dernier head sera vérifié séparément.
