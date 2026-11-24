@@ -82,13 +82,14 @@ def test_rpc_metrics_record_each_primary_retry_separately(monkeypatch, tmp_path)
             return Response(responses.pop(0))
 
     async def no_wait():
-        return None
+        return True
 
     async def no_sleep(_delay):
         return None
 
     monkeypatch.setattr(rpc_client.aiohttp, "ClientSession", Session)
-    monkeypatch.setattr(rpc_client._rate_limiter, "wait_if_needed", no_wait)
+    limiter = rpc_client._limiter_for_url("https://rpc.invalid/credential-redacted")
+    monkeypatch.setattr(limiter, "wait_if_needed", no_wait)
     monkeypatch.setattr(rpc_client.asyncio, "sleep", no_sleep)
 
     result = asyncio.run(rpc_client._try_endpoint(
