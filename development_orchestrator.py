@@ -32,7 +32,7 @@ MAX_AGENT_SLOTS = 3  # Current Codex limit: four active agents including the coo
 MAX_ATTEMPTS = 3
 MAX_BUDGET_MINUTES = 24 * 60
 MAX_VALIDATION_SECONDS = 600
-CHECKPOINT_SCHEMA_VERSION = 1
+CHECKPOINT_SCHEMA_VERSION = 2
 
 TASK_ID_RE = re.compile(r"^[a-z][a-z0-9_]{2,63}$")
 SKILL_ID_RE = re.compile(r"^[a-z][a-z0-9-]{1,63}$")
@@ -353,6 +353,33 @@ def load_checkpoint(path: Path = DEFAULT_CHECKPOINT) -> dict[str, Any]:
         attempts = entry.get("attempts")
         if not isinstance(status, str) or status not in ALLOWED_TASK_STATUSES or isinstance(attempts, bool) or not isinstance(attempts, int) or attempts < 0:
             raise OrchestratorError("checkpoint task status or attempt count is malformed")
+        if status == "completed":
+            required_completion_fields = {
+                "commit_sha", "tested_commit_sha", "ci_run_id", "ci_run_url", "ci_workflow_blob_sha",
+                "ci_conclusion", "ci_verified_steps", "completed_at",
+            }
+            if not required_completion_fields.issubset(entry):
+                raise OrchestratorError("completed checkpoint task is missing required CI evidence")
+            run_id = entry["ci_run_id"]
+            verified_steps = entry["ci_verified_steps"]
+            try:
+                completed_at = datetime.fromisoformat(entry["completed_at"])
+            except (TypeError, ValueError) as exc:
+                raise OrchestratorError("completed checkpoint task has malformed CI evidence") from exc
+            if (
+                not isinstance(entry["commit_sha"], str) or not SHA_RE.fullmatch(entry["commit_sha"])
+                or not isinstance(entry["tested_commit_sha"], str) or not SHA_RE.fullmatch(entry["tested_commit_sha"])
+                or isinstance(run_id, bool) or not isinstance(run_id, int) or run_id < 1
+                or entry["ci_run_url"] != f"https://github.com/{GITHUB_REPOSITORY}/actions/runs/{run_id}"
+                or not isinstance(entry["ci_workflow_blob_sha"], str)
+                or not SHA_RE.fullmatch(entry["ci_workflow_blob_sha"])
+                or entry["ci_conclusion"] != "success"
+                or not isinstance(verified_steps, list)
+                or not all(isinstance(step, str) for step in verified_steps)
+                or not REQUIRED_CI_STEPS.issubset(set(verified_steps))
+                or completed_at.tzinfo is None
+            ):
+                raise OrchestratorError("completed checkpoint task has malformed CI evidence")
     return state
 
 
@@ -652,12 +679,35 @@ def complete_task(plan: Plan, checkpoint_path: Path, task_id: str, commit_sha: s
         raise OrchestratorError("unknown task id")
     if task.manual_gates:
         raise OrchestratorError("manual gates require a reviewed plan change; this CLI cannot approve them")
-    ci = verify_ci_run(ci_run_id, commit_sha)
     with _checkpoint_lock(checkpoint_path):
         state = load_checkpoint(checkpoint_path)
         current = _entry(state, task)
         if current["status"] not in {"in_progress", "external_in_progress"}:
             raise OrchestratorError("task must be in progress before it can be completed")
+        if _expired_active_task(task, current):
+            raise OrchestratorError("task budget expired; inspect the worker and recover the checkpoint manually")
+        original_run_id = current.get("run_id")
+        original_attempts = current.get("attempts", 0)
+    ci = verify_ci_run(ci_run_id, commit_sha)
+    ci_steps = ci.get("verified_steps", [])
+    if not isinstance(ci_steps, list) or not all(isinstance(step, str) for step in ci_steps):
+        raise OrchestratorError("CI evidence does not include a valid verified-step list")
+    provided_evidence = {
+        "ci_success": ci.get("conclusion") == "success",
+        "offline_tests": "Run unit tests" in ci_steps,
+    }
+    missing_evidence = [evidence for evidence in task.required_evidence if not provided_evidence.get(evidence, False)]
+    if missing_evidence:
+        raise OrchestratorError("required task evidence is missing: " + ",".join(missing_evidence))
+    with _checkpoint_lock(checkpoint_path):
+        state = load_checkpoint(checkpoint_path)
+        current = _entry(state, task)
+        if current["status"] not in {"in_progress", "external_in_progress"}:
+            raise OrchestratorError("task must be in progress before it can be completed")
+        if current.get("run_id") != original_run_id or current.get("attempts", 0) != original_attempts:
+            raise OrchestratorError("task run changed while CI evidence was checked")
+        if _expired_active_task(task, current):
+            raise OrchestratorError("task budget expired; inspect the worker and recover the checkpoint manually")
         attempts = current.get("attempts", 0)
         state["tasks"][task_id] = {
             "status": "completed",
@@ -668,6 +718,7 @@ def complete_task(plan: Plan, checkpoint_path: Path, task_id: str, commit_sha: s
             "ci_run_url": ci["url"],
             "ci_workflow_blob_sha": ci["workflow_blob_sha"],
             "ci_conclusion": ci["conclusion"],
+            "ci_verified_steps": list(ci_steps),
             "completed_at": utc_now(),
         }
         _add_audit(
@@ -693,6 +744,8 @@ def fail_task(plan: Plan, checkpoint_path: Path, task_id: str, reason_code: str)
             raise OrchestratorError("only an in-progress task can be marked blocked")
         attempts = current.get("attempts", 0)
         task = plan.by_id[task_id]
+        if _expired_active_task(task, current):
+            raise OrchestratorError("task budget expired; inspect the worker and recover the checkpoint manually")
         retryable = reason_code == "validation_failed" and attempts < task.max_attempts
         next_status = "pending" if retryable else "blocked"
         state["tasks"][task_id] = {

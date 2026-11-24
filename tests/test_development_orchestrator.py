@@ -141,6 +141,17 @@ def test_plan_and_checkpoint_paths_cannot_escape_repository(tmp_path: Path) -> N
         orchestrator.load_checkpoint(tmp_path.parent / "outside-checkpoint.json")
 
 
+def test_checkpoint_rejects_completed_task_without_ci_evidence(tmp_path: Path) -> None:
+    checkpoint = tmp_path / "state" / "checkpoint.json"
+    state = orchestrator.empty_checkpoint()
+    state["tasks"]["task_alpha"] = {"status": "completed", "attempts": 1}
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_text(json.dumps(state), encoding="utf-8")
+
+    with pytest.raises(orchestrator.OrchestratorError, match="missing required CI evidence"):
+        orchestrator.load_checkpoint(checkpoint)
+
+
 def test_mutating_cli_rejects_an_alternate_plan_within_repository(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path,
 ) -> None:
@@ -242,6 +253,54 @@ def test_expired_budget_keeps_file_lock_until_manual_recovery(tmp_path: Path) ->
     assert "budget_expired_manual_recovery_required" in result.blockers["task_alpha"]
     assert "file_locked:src/shared.py:task_alpha" in result.blockers["task_bravo"]
     assert result.ready == ()
+
+
+def test_fail_task_cannot_retry_an_expired_lease_or_release_its_file_lock(tmp_path: Path) -> None:
+    plan_path = tmp_path / "plan.json"
+    checkpoint = tmp_path / "state" / "checkpoint.json"
+    _write_plan(plan_path, [
+        _task("task_alpha", scope=["src/shared.py"]),
+        _task("task_bravo", scope=["src/shared.py"]),
+    ])
+    plan = orchestrator.load_plan(plan_path)
+    orchestrator.start_task(plan, checkpoint, "task_alpha")
+    state = orchestrator.load_checkpoint(checkpoint)
+    state["tasks"]["task_alpha"]["started_at"] = (
+        datetime.now(timezone.utc) - timedelta(minutes=31)
+    ).isoformat()
+    orchestrator._save_checkpoint(checkpoint, state)
+
+    with pytest.raises(orchestrator.OrchestratorError, match="budget expired"):
+        orchestrator.fail_task(plan, checkpoint, "task_alpha", "validation_failed")
+
+    saved = orchestrator.load_checkpoint(checkpoint)
+    result = orchestrator.readiness(plan, saved)
+    assert saved["tasks"]["task_alpha"]["status"] == "in_progress"
+    assert "file_locked:src/shared.py:task_alpha" in result.blockers["task_bravo"]
+
+
+def test_complete_task_refuses_expired_lease_before_ci_lookup(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    plan_path = tmp_path / "plan.json"
+    checkpoint = tmp_path / "state" / "checkpoint.json"
+    _write_plan(plan_path, [_task("task_alpha")])
+    plan = orchestrator.load_plan(plan_path)
+    orchestrator.start_task(plan, checkpoint, "task_alpha")
+    state = orchestrator.load_checkpoint(checkpoint)
+    state["tasks"]["task_alpha"]["started_at"] = (
+        datetime.now(timezone.utc) - timedelta(minutes=31)
+    ).isoformat()
+    orchestrator._save_checkpoint(checkpoint, state)
+    monkeypatch.setattr(
+        orchestrator, "verify_ci_run",
+        lambda *_args, **_kwargs: pytest.fail("expired task must not query CI"),
+    )
+
+    with pytest.raises(orchestrator.OrchestratorError, match="budget expired"):
+        orchestrator.complete_task(plan, checkpoint, "task_alpha", "a" * 40, 12345)
+
+    assert orchestrator.load_checkpoint(checkpoint)["tasks"]["task_alpha"]["status"] == "in_progress"
 
 
 def test_start_task_records_a_lease_and_excludes_overlapping_tasks(tmp_path: Path) -> None:
@@ -528,6 +587,64 @@ def test_complete_task_verifies_ci_before_checkpointing(monkeypatch: pytest.Monk
     assert state["tasks"]["task_alpha"]["tested_commit_sha"] == tested_sha
 
 
+def test_complete_task_rejects_ci_proof_after_a_new_attempt_starts(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    plan_path = tmp_path / "plan.json"
+    checkpoint = tmp_path / "state" / "checkpoint.json"
+    sha = "b" * 40
+    _write_plan(plan_path, [_task("task_alpha")])
+    plan = orchestrator.load_plan(plan_path)
+    original = orchestrator.start_task(plan, checkpoint, "task_alpha")
+
+    def verify_after_restarting(_run_id: int, commit_sha: str) -> dict[str, Any]:
+        orchestrator.fail_task(plan, checkpoint, "task_alpha", "validation_failed")
+        replacement = orchestrator.start_task(plan, checkpoint, "task_alpha")
+        assert replacement["run_id"] != original["run_id"]
+        return {
+            "run_id": 12345,
+            "commit_sha": commit_sha,
+            "tested_commit_sha": commit_sha,
+            "conclusion": "success",
+            "url": "https://github.com/cheicki225/-meme-coin/actions/runs/12345",
+            "workflow_blob_sha": orchestrator.TRUSTED_CI_WORKFLOW_BLOB_SHA,
+            "verified_steps": sorted(orchestrator.REQUIRED_CI_STEPS),
+        }
+
+    monkeypatch.setattr(orchestrator, "verify_ci_run", verify_after_restarting)
+
+    with pytest.raises(orchestrator.OrchestratorError, match="task run changed"):
+        orchestrator.complete_task(plan, checkpoint, "task_alpha", sha, 12345)
+
+    current = orchestrator.load_checkpoint(checkpoint)["tasks"]["task_alpha"]
+    assert current["status"] == "in_progress"
+    assert current["run_id"] != original["run_id"]
+    assert current["attempts"] == 2
+
+
+def test_complete_task_requires_its_declared_evidence(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    plan_path = tmp_path / "plan.json"
+    checkpoint = tmp_path / "state" / "checkpoint.json"
+    sha = "9" * 40
+    _write_plan(plan_path, [_task("task_alpha")])
+    plan = orchestrator.load_plan(plan_path)
+    orchestrator.start_task(plan, checkpoint, "task_alpha")
+    monkeypatch.setattr(orchestrator, "verify_ci_run", lambda *_args, **_kwargs: {
+        "run_id": 12345,
+        "commit_sha": sha,
+        "tested_commit_sha": sha,
+        "conclusion": "success",
+        "url": "https://github.com/cheicki225/-meme-coin/actions/runs/12345",
+        "workflow_blob_sha": orchestrator.TRUSTED_CI_WORKFLOW_BLOB_SHA,
+        "verified_steps": sorted(orchestrator.REQUIRED_CI_STEPS - {"Run unit tests"}),
+    })
+
+    with pytest.raises(orchestrator.OrchestratorError, match="offline_tests"):
+        orchestrator.complete_task(plan, checkpoint, "task_alpha", sha, 12345)
+
+    assert orchestrator.load_checkpoint(checkpoint)["tasks"]["task_alpha"]["status"] == "in_progress"
+
+
 def test_complete_task_rejects_failed_ci_without_changing_running_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     plan_path = tmp_path / "plan.json"
     checkpoint = tmp_path / "state" / "checkpoint.json"
@@ -575,3 +692,41 @@ def test_validation_rejects_arbitrary_commands_and_unbounded_timeouts(tmp_path: 
         orchestrator.run_validation("unit", tmp_path, timeout_seconds=3600)
     with pytest.raises(orchestrator.OrchestratorError, match="inside the repository"):
         orchestrator.run_validation("compile", tmp_path.parent)
+
+
+def test_mission_manifest_tracks_open_pr_work_and_respects_capacity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(orchestrator, "ROOT", orchestrator.DEFAULT_PLAN.parent.parent)
+    plan = orchestrator.load_plan()
+    mission_ids = {
+        "wallet_intelligence_provenance",
+        "anti_rug_source_provenance",
+        "backtest_valuation_metadata",
+    }
+    blocked_ids = {
+        "mission_8_5_helius_reliability",
+        "mission_8_6_pr10_pr11_integration",
+        "mission_7_operational_gates",
+    }
+
+    assert len(plan.tasks) == 18
+    assert {
+        task.task_id for task in plan.tasks
+        if task.initial_status == "external_in_progress"
+    } == mission_ids
+    assert {
+        task.task_id for task in plan.tasks
+        if task.initial_status == "blocked"
+    } == blocked_ids
+    assert plan.max_parallel_agents == 3
+
+    result = orchestrator.readiness(plan, orchestrator.empty_checkpoint())
+    assert result.ready == ()
+    for task_id in mission_ids:
+        assert result.blockers[task_id] == ("status:external_in_progress",)
+    assert result.next_task_proposal is not None
+    assert result.next_task_proposal.task_id == "mission_8_5_8_6_reconciliation"
+    assert "dependencies:mission_8_5_helius_reliability,mission_8_6_pr10_pr11_integration" in result.blockers[
+        "mission_8_5_8_6_reconciliation"
+    ]

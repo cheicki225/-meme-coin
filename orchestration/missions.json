@@ -160,7 +160,7 @@
       "manual_gates": [
         "source_provenance_review"
       ],
-      "initial_status": "pending",
+      "initial_status": "external_in_progress",
       "skills": [
         "wallet-intelligence-collector",
         "python-testing-ci"
@@ -242,7 +242,7 @@
       "manual_gates": [
         "source_provenance_review"
       ],
-      "initial_status": "pending",
+      "initial_status": "external_in_progress",
       "skills": [
         "token-risk-antirug",
         "trading-risk-manager",
@@ -327,7 +327,7 @@
       "manual_gates": [
         "independent_review"
       ],
-      "initial_status": "pending",
+      "initial_status": "external_in_progress",
       "skills": [
         "backtesting-validation",
         "pnl-accounting",
