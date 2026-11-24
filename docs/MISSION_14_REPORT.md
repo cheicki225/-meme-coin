@@ -5,6 +5,8 @@
 **Branche :** `codex/mission-14-pnl-backtesting-20261124`
 
 **Base vérifiée :** PR #22, head `9590196c40a64ef478a4d4e7c44ade5dee105f12`
+
+**PR Mission 14 :** [#25 — Mission 14: harden PnL ledger and chronological backtesting](https://github.com/cheicki225/-meme-coin/pull/25), brouillon ouvert, non fusionné.
 **PR Mission 14 :** à renseigner après publication de la branche.
 
 ## Périmètre et dépendances
@@ -54,15 +56,17 @@ Validation locale sur le contenu Mission 14, avec Python 3.11 et dotenv désacti
 - `mypy --follow-imports=silent transaction_accounting.py backtest_validation.py` : réussi, aucun diagnostic sur les deux modules.
 - `mypy --follow-imports=silent monitoring_list.py` : 10 diagnostics de typage sur des signatures et un agrégat existants hors du bloc comptable modifié; aucun diagnostic sur les nouvelles fonctions de ledger.
 - `git diff --check` : réussi.
-- Ruff, `pip-audit`, Gitleaks et coverage ne sont pas installés dans l'environnement local. L'installation locale des dépendances CI a échoué à la vérification TLS; aucun contournement TLS n'a été tenté. Leur validation reste à obtenir sur la CI GitHub exacte de la tête publiée.
+- Ruff, `pip-audit`, Gitleaks et coverage ne sont pas installés localement. Une installation des dépendances CI a échoué à la vérification TLS; aucun contournement TLS n'a été tenté. Ces contrôles ont ensuite réussi dans la CI GitHub.
+- CI GitHub [run 45509216983](https://github.com/cheicki225/-meme-coin/actions/runs/45509216983) réussie pour le head source `5022d4315461a3520e488e7259f10f624e270059` (base `9590196c40a64ef478a4d4e7c44ade5dee105f12`; commit de fusion temporaire CI `e6f313c32552bc62dad7b86904ae8fd79cd9cdd9`). Le run a réussi compile, mode PAPER, **704 tests**, Ruff critique, pip-audit (**aucune vulnérabilité connue**), Gitleaks (**aucune fuite**) et publication de coverage.
+- Coverage combinée lignes + branches : **40,72 %** pour le dépôt; `backtest_validation.py` **81,58 %**, `transaction_accounting.py` **83,46 %**, `monitoring_list.py` **50,09 %**. Artefact : [mission-coverage-45509216983](https://github.com/cheicki225/-meme-coin/actions/runs/45509216983/artifacts/14974172289).
 - Revue indépendante en lecture seule : les corrections sur embargo nul, tombstones legacy et métriques non finies sont confirmées. La revue a relevé que la concurrence entre instances/processus n'est pas garantie à cause des sauvegardes de snapshots complets; cette limite est déclarée ci-dessus et le test concurrent reste limité à une instance `DataStore`.
 
 L'autoload des plugins pytest doit rester désactivé dans cet environnement : sans ce réglage, un plugin Python global `web3` échoue avant la collecte en important `ContractName` depuis `eth_typing`. Avec l'autoload désactivé, les suites ci-dessus s'exécutent sans erreur.
 
 Tous les tests utilisent des fixtures synthétiques ou des chemins temporaires. Aucun portefeuille, clé, secret, endpoint RPC, fournisseur de marché, Telegram ou service LIVE n'a été consulté; aucune transaction, signature, opération de déploiement ou merge n'a eu lieu.
 
-Éléments non vérifiés : soak PAPER cible de 24 h, restauration de l'environnement de déploiement, audit sémantique CPI/DEX, authenticité d'un dataset externe, origine/fraîcheur du taux SOL/USD du runtime, equity/drawdown mark-to-market en PAPER, CI sur le head final publié.
+Éléments non vérifiés : soak PAPER cible de 24 h, restauration de l'environnement de déploiement, audit sémantique CPI/DEX, authenticité d'un dataset externe, origine/fraîcheur du taux SOL/USD du runtime et equity/drawdown mark-to-market en PAPER.
 
 ## Prochaine étape
 
-La CI sur le SHA exact de la tête publiée reste à enregistrer après l'envoi de la branche. Le head #22 est resté `9590196c40a64ef478a4d4e7c44ade5dee105f12` lors de la dernière vérification. Aucune PR ne sera fusionnée automatiquement.
+Une CI supplémentaire est déclenchée par cette mise à jour documentaire; son SHA et son résultat seront confirmés avant de conclure. Le head #22 est resté `9590196c40a64ef478a4d4e7c44ade5dee105f12` lors de la dernière vérification. Aucune PR ne sera fusionnée automatiquement.
