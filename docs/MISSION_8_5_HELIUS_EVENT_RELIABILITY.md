@@ -60,7 +60,9 @@ Les tests synthétiques valident uniquement les chemins exécutés. Les callback
 - Suite offline complète : `525 passed` avec `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`, `PYTHON_DOTENV_DISABLED=true`, PAPER forcé, LIVE désactivé, variables de clés/tokens vides et RPC configuré sur `127.0.0.1:9`.
 - `python -m compileall -q .` : réussi.
 - `git diff --check` : réussi; aucun fichier non fusionné n'était signalé.
-- Ruff, pip-audit et Gitleaks n'ont pas encore été exécutés sur cette copie locale. `ruff`, `coverage` et `pip-audit` ne sont pas installés; leur installation temporaire a échoué sur la validation TLS du flux PyPI, sans désactivation TLS. Le workflow CI du dépôt exécute Ruff, pip-audit, Gitleaks et la couverture; ses résultats doivent être rattachés au head final avant de déclarer la PR validée.
+- Revue indépendante finale : le premier passage a trouvé la reprise permissive d'un flux actif sans checkpoint; elle a été corrigée en `missing_checkpoint` fail-closed, couverte par un test, puis revue de nouveau sans autre défaut P0/P1 relevé.
+- CI GitHub [45385950171](https://github.com/cheicki225/-meme-coin/actions/runs/45385950171), sur le head code `5294d24f6a2d68ecf48f1921c804b4187fe0a949` : réussi. La CI a confirmé 525 tests, compilation, défaut PAPER, Ruff (`E9,F63,F7,F82`), pip-audit (`No known vulnerabilities found`) et Gitleaks (`no leaks found`). Couverture combinée ligne+branche : **34,31 %**; artefact [`mission-coverage-45385950171`](https://github.com/cheicki225/-meme-coin/actions/runs/45385950171/artifacts/14915798300). Gitleaks a aussi déposé le SARIF `14916681090` sans constat bloquant.
+- Ruff, pip-audit et Gitleaks n'ont pas été exécutés localement. `ruff`, `coverage` et `pip-audit` ne sont pas installés; l'installation temporaire locale a échoué sur la validation TLS de PyPI, sans désactivation TLS. La CI distante a exécuté et réussi ces contrôles.
 - Aucun RPC externe, WebSocket Helius, wallet, clé privée ou `.env` n'a été consulté; aucune signature ou soumission réelle, aucun ordre et aucune activation LIVE. Les marqueurs `signature-*` sont des chaînes synthétiques uniquement.
 
 ## Retour arrière
