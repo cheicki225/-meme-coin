@@ -1,0 +1,513 @@
+{
+  "schema_version": 1,
+  "max_parallel_agents": 3,
+  "safety_policy": {
+    "mode": "PAPER",
+    "allow_live": false,
+    "allow_secrets": false,
+    "allow_signing": false,
+    "allow_transactions": false,
+    "allow_rpc": false,
+    "allow_arbitrary_shell": false
+  },
+  "tasks": [
+    {
+      "id": "mission_8_5_helius_reliability",
+      "title": "Complete durable Helius event delivery, replay, and crash recovery",
+      "priority": "P0",
+      "depends_on": [],
+      "scope_files": [
+        "rpc_client.py",
+        "websocket_listener.py",
+        "copytrade_listener.py",
+        "protection_scanner.py",
+        "execution_metrics.py",
+        "helius_event_store.py",
+        "tests/test_helius_event_store.py",
+        "tests/test_rpc_retry_policy.py"
+      ],
+      "budget_minutes": 180,
+      "max_attempts": 3,
+      "required_evidence": [
+        "offline_tests",
+        "ci_success"
+      ],
+      "manual_gates": [
+        "independent_security_review"
+      ],
+      "initial_status": "external_in_progress",
+      "skills": [
+        "solana-rpc-performance",
+        "sqlite-recovery",
+        "python-testing-ci"
+      ]
+    },
+    {
+      "id": "mission_8_6_pr10_pr11_integration",
+      "title": "Integrate RPC performance and transaction/Telegram safeguards",
+      "priority": "P0",
+      "depends_on": [],
+      "scope_files": [
+        "rpc_client.py",
+        "tests/test_rpc_retry_policy.py",
+        "telegram_bot.py",
+        "notifier.py",
+        "wallet_manager.py",
+        "tests/test_telegram_callback_authorization.py"
+      ],
+      "budget_minutes": 180,
+      "max_attempts": 3,
+      "required_evidence": [
+        "offline_tests",
+        "ci_success"
+      ],
+      "manual_gates": [
+        "independent_security_review"
+      ],
+      "initial_status": "external_in_progress",
+      "skills": [
+        "solana-rpc-performance",
+        "jupiter-transaction-security",
+        "telegram-monitoring",
+        "python-testing-ci",
+        "project-master"
+      ]
+    },
+    {
+      "id": "mission_7_operational_gates",
+      "title": "Complete target PAPER soak, restore drill, provider quota check, and CPI/DEX review",
+      "priority": "P0",
+      "depends_on": [
+        "mission_8_5_helius_reliability",
+        "mission_8_6_pr10_pr11_integration"
+      ],
+      "scope_files": [
+        "docs/OPERATIONS.md",
+        "docs/LIVE_READINESS.md",
+        "docs/MISSION_7_VALIDATION.md"
+      ],
+      "budget_minutes": 1440,
+      "max_attempts": 2,
+      "required_evidence": [
+        "offline_tests",
+        "ci_success"
+      ],
+      "manual_gates": [
+        "target_paper_soak",
+        "target_restore_drill",
+        "rpc_quota_evidence",
+        "independent_cpi_dex_review"
+      ],
+      "initial_status": "pending",
+      "skills": [
+        "production-readiness-auditor",
+        "python-testing-ci"
+      ]
+    },
+    {
+      "id": "wallet_intelligence_provenance",
+      "title": "Make wallet history and developer-wallet intelligence source-provenanced",
+      "priority": "P1",
+      "depends_on": [
+        "mission_8_5_helius_reliability",
+        "mission_7_operational_gates"
+      ],
+      "scope_files": [
+        "wallet_collector_service.py",
+        "wallet_history.py",
+        "wallet_data_collector.py",
+        "tests/test_wallet_collector_service.py"
+      ],
+      "budget_minutes": 180,
+      "max_attempts": 3,
+      "required_evidence": [
+        "offline_tests",
+        "ci_success"
+      ],
+      "manual_gates": [
+        "source_provenance_review"
+      ],
+      "initial_status": "pending",
+      "skills": [
+        "wallet-intelligence-collector",
+        "python-testing-ci"
+      ]
+    },
+    {
+      "id": "risk_exit_controls_review",
+      "title": "Review PAPER admission, emergency-stop, and exit behavior without changing limits",
+      "priority": "P1",
+      "depends_on": [
+        "mission_7_operational_gates"
+      ],
+      "scope_files": [
+        "risk_controls.py",
+        "paper_trader.py",
+        "tests/test_risk_controls.py"
+      ],
+      "budget_minutes": 120,
+      "max_attempts": 2,
+      "required_evidence": [
+        "offline_tests",
+        "ci_success"
+      ],
+      "manual_gates": [
+        "independent_risk_review"
+      ],
+      "initial_status": "pending",
+      "skills": [
+        "trading-risk-manager",
+        "jupiter-transaction-security",
+        "python-testing-ci"
+      ]
+    },
+    {
+      "id": "copy_trading_paper_pipeline",
+      "title": "Validate source-event-to-copy-decision behavior in PAPER",
+      "priority": "P1",
+      "depends_on": [
+        "wallet_intelligence_provenance",
+        "risk_exit_controls_review",
+        "mission_8_6_pr10_pr11_integration"
+      ],
+      "scope_files": [
+        "copytrade_listener.py",
+        "paper_trader.py",
+        "tests/test_copytrade_listener.py"
+      ],
+      "budget_minutes": 180,
+      "max_attempts": 3,
+      "required_evidence": [
+        "offline_tests",
+        "ci_success"
+      ],
+      "manual_gates": [
+        "source_to_decision_replay_review"
+      ],
+      "initial_status": "pending",
+      "skills": [
+        "copy-trading",
+        "wallet-intelligence-collector",
+        "trading-risk-manager",
+        "python-testing-ci"
+      ]
+    },
+    {
+      "id": "anti_rug_source_provenance",
+      "title": "Verify anti-rug inputs, freshness, and unknown-state handling",
+      "priority": "P1",
+      "depends_on": [
+        "wallet_intelligence_provenance",
+        "mission_7_operational_gates"
+      ],
+      "scope_files": [
+        "rug_scanner.py",
+        "protection_scanner.py",
+        "tests/test_rug_scanner.py"
+      ],
+      "budget_minutes": 180,
+      "max_attempts": 3,
+      "required_evidence": [
+        "offline_tests",
+        "ci_success"
+      ],
+      "manual_gates": [
+        "source_provenance_review"
+      ],
+      "initial_status": "pending",
+      "skills": [
+        "token-risk-antirug",
+        "trading-risk-manager",
+        "python-testing-ci"
+      ]
+    },
+    {
+      "id": "ai_token_scoring_provenance",
+      "title": "Validate token AI scoring inputs, model versioning, failure handling, and PAPER-only influence",
+      "priority": "P1",
+      "depends_on": [
+        "wallet_intelligence_provenance",
+        "anti_rug_source_provenance",
+        "risk_exit_controls_review"
+      ],
+      "scope_files": [
+        "ai_advisor.py",
+        "security.py",
+        "main.py",
+        "tests/test_ai_scoring.py"
+      ],
+      "skills": [
+        "token-risk-antirug",
+        "wallet-intelligence-collector",
+        "trading-risk-manager",
+        "python-testing-ci"
+      ],
+      "budget_minutes": 180,
+      "max_attempts": 3,
+      "required_evidence": [
+        "offline_tests",
+        "ci_success"
+      ],
+      "manual_gates": [
+        "ai_score_provenance_review",
+        "ai_calibration_review",
+        "ai_failure_closed_review"
+      ],
+      "initial_status": "pending"
+    },
+    {
+      "id": "pnl_sol_usd_fee_ledger",
+      "title": "Reconcile SOL/USD valuation and all confirmed fees in PAPER accounting",
+      "priority": "P1",
+      "depends_on": [
+        "mission_7_operational_gates"
+      ],
+      "scope_files": [
+        "transaction_accounting.py",
+        "monitoring_list.py",
+        "tests/test_transaction_accounting.py"
+      ],
+      "budget_minutes": 180,
+      "max_attempts": 3,
+      "required_evidence": [
+        "offline_tests",
+        "ci_success"
+      ],
+      "manual_gates": [
+        "accounting_review"
+      ],
+      "initial_status": "pending",
+      "skills": [
+        "pnl-accounting",
+        "python-testing-ci"
+      ]
+    },
+    {
+      "id": "backtest_strategy_provenance",
+      "title": "Connect strategy replay to source-provenanced OHLC and conservative costs",
+      "priority": "P2",
+      "depends_on": [
+        "risk_exit_controls_review",
+        "pnl_sol_usd_fee_ledger"
+      ],
+      "scope_files": [
+        "historical_backtest.py",
+        "backtest_dataset.py",
+        "tests/test_backtest_ohlcv_replay.py"
+      ],
+      "budget_minutes": 240,
+      "max_attempts": 3,
+      "required_evidence": [
+        "offline_tests",
+        "ci_success"
+      ],
+      "manual_gates": [
+        "dataset_provenance_review",
+        "lookahead_review"
+      ],
+      "initial_status": "pending",
+      "skills": [
+        "backtesting-validation",
+        "pnl-accounting",
+        "python-testing-ci"
+      ]
+    },
+    {
+      "id": "sniping_paper_admission",
+      "title": "Add token-discovery admission in PAPER behind risk and anti-rug gates",
+      "priority": "P2",
+      "depends_on": [
+        "copy_trading_paper_pipeline",
+        "anti_rug_source_provenance",
+        "risk_exit_controls_review"
+      ],
+      "scope_files": [
+        "main.py",
+        "rug_scanner.py",
+        "paper_trader.py",
+        "tests/test_paper_sniping_admission.py"
+      ],
+      "budget_minutes": 240,
+      "max_attempts": 3,
+      "required_evidence": [
+        "offline_tests",
+        "ci_success"
+      ],
+      "manual_gates": [
+        "independent_risk_review",
+        "paper_replay_review"
+      ],
+      "initial_status": "pending",
+      "skills": [
+        "token-risk-antirug",
+        "trading-risk-manager",
+        "copy-trading",
+        "python-testing-ci"
+      ]
+    },
+    {
+      "id": "dashboard_telegram_observability",
+      "title": "Deliver PAPER Telegram status, recovery alerts, metrics, and reports",
+      "priority": "P2",
+      "depends_on": [
+        "mission_8_6_pr10_pr11_integration",
+        "pnl_sol_usd_fee_ledger",
+        "risk_exit_controls_review"
+      ],
+      "scope_files": [
+        "telegram_bot.py",
+        "notifier.py",
+        "execution_metrics.py",
+        "tests/test_telegram_ops_commands.py"
+      ],
+      "budget_minutes": 240,
+      "max_attempts": 3,
+      "required_evidence": [
+        "offline_tests",
+        "ci_success"
+      ],
+      "manual_gates": [
+        "privacy_review",
+        "operator_runbook_review"
+      ],
+      "initial_status": "pending",
+      "skills": [
+        "telegram-monitoring",
+        "trading-risk-manager",
+        "python-testing-ci"
+      ]
+    },
+    {
+      "id": "multi_wallet_paper_isolation",
+      "title": "Audit multi-wallet ownership and accounting isolation in PAPER without transactions",
+      "priority": "P2",
+      "depends_on": [
+        "mission_7_operational_gates",
+        "risk_exit_controls_review",
+        "pnl_sol_usd_fee_ledger"
+      ],
+      "scope_files": [
+        "wallet_manager.py",
+        "paper_trader.py",
+        "transaction_accounting.py",
+        "tests/test_multi_wallet_paper_isolation.py"
+      ],
+      "skills": [
+        "multi-wallet-execution",
+        "trading-risk-manager",
+        "pnl-accounting",
+        "jupiter-transaction-security",
+        "python-testing-ci"
+      ],
+      "budget_minutes": 180,
+      "max_attempts": 2,
+      "required_evidence": [
+        "offline_tests",
+        "ci_success"
+      ],
+      "manual_gates": [
+        "wallet_ownership_review",
+        "multi_wallet_accounting_review",
+        "paper_only_review"
+      ],
+      "initial_status": "pending"
+    },
+    {
+      "id": "paper_web_dashboard",
+      "title": "Build a read-only PAPER web dashboard with access control and privacy checks",
+      "priority": "P2",
+      "depends_on": [
+        "dashboard_telegram_observability",
+        "pnl_sol_usd_fee_ledger",
+        "risk_exit_controls_review",
+        "mission_8_6_pr10_pr11_integration"
+      ],
+      "scope_files": [
+        "dashboard/app.py",
+        "dashboard/api.py",
+        "dashboard/templates/index.html",
+        "tests/test_paper_dashboard.py"
+      ],
+      "skills": [
+        "telegram-monitoring",
+        "trading-risk-manager",
+        "production-readiness-auditor",
+        "python-testing-ci"
+      ],
+      "budget_minutes": 240,
+      "max_attempts": 3,
+      "required_evidence": [
+        "offline_tests",
+        "ci_success"
+      ],
+      "manual_gates": [
+        "paper_data_only_review",
+        "dashboard_access_control_review",
+        "privacy_review"
+      ],
+      "initial_status": "pending"
+    },
+    {
+      "id": "f_project_comparable_benchmark",
+      "title": "Compare F Project only when genuinely comparable data is available",
+      "priority": "P2",
+      "depends_on": [
+        "backtest_strategy_provenance"
+      ],
+      "scope_files": [
+        "docs/F_PROJECT_BENCHMARK.md"
+      ],
+      "skills": [
+        "f-project-benchmark",
+        "production-readiness-auditor",
+        "python-testing-ci"
+      ],
+      "budget_minutes": 120,
+      "max_attempts": 2,
+      "required_evidence": [
+        "offline_tests",
+        "ci_success"
+      ],
+      "manual_gates": [
+        "comparable_real_dataset_available",
+        "benchmark_method_review"
+      ],
+      "initial_status": "pending"
+    },
+    {
+      "id": "paper_deployment_readiness",
+      "title": "Prepare reversible PAPER deployment and recovery procedure",
+      "priority": "P2",
+      "depends_on": [
+        "dashboard_telegram_observability",
+        "backtest_strategy_provenance",
+        "sniping_paper_admission",
+        "paper_web_dashboard",
+        "multi_wallet_paper_isolation"
+      ],
+      "scope_files": [
+        "DEPLOYMENT.md",
+        "OPERATIONS.md",
+        "docs/PAPER_DEPLOYMENT_CHECKLIST.md"
+      ],
+      "budget_minutes": 180,
+      "max_attempts": 2,
+      "required_evidence": [
+        "offline_tests",
+        "ci_success"
+      ],
+      "manual_gates": [
+        "target_environment_approval",
+        "target_restore_drill",
+        "cost_check"
+      ],
+      "initial_status": "pending",
+      "skills": [
+        "production-readiness-auditor",
+        "sqlite-recovery",
+        "python-testing-ci",
+        "project-master"
+      ]
+    }
+  ]
+}
