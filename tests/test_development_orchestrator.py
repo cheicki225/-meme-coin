@@ -694,21 +694,24 @@ def test_validation_rejects_arbitrary_commands_and_unbounded_timeouts(tmp_path: 
         orchestrator.run_validation("compile", tmp_path.parent)
 
 
-def test_mission_manifest_tracks_open_pr_work_and_respects_capacity(
+def test_mission_manifest_tracks_review_pending_and_active_work(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(orchestrator, "ROOT", orchestrator.DEFAULT_PLAN.parent.parent)
     plan = orchestrator.load_plan()
-    mission_ids = {
+    review_pending_ids = {
         "wallet_intelligence_provenance",
         "anti_rug_source_provenance",
+        "risk_exit_controls_review",
         "backtest_valuation_metadata",
     }
     blocked_ids = {
         "mission_8_5_helius_reliability",
         "mission_8_6_pr10_pr11_integration",
         "mission_7_operational_gates",
+        *review_pending_ids,
     }
+    active_ids = {"pnl_sol_usd_fee_ledger"}
 
     assert len(plan.tasks) == 18
     reconciliation_scopes = set(
@@ -721,17 +724,19 @@ def test_mission_manifest_tracks_open_pr_work_and_respects_capacity(
     }.issubset(reconciliation_scopes)
     assert {
         task.task_id for task in plan.tasks
-        if task.initial_status == "external_in_progress"
-    } == mission_ids
-    assert {
-        task.task_id for task in plan.tasks
         if task.initial_status == "blocked"
     } == blocked_ids
+    assert {
+        task.task_id for task in plan.tasks
+        if task.initial_status == "external_in_progress"
+    } == active_ids
     assert plan.max_parallel_agents == 3
 
     result = orchestrator.readiness(plan, orchestrator.empty_checkpoint())
     assert result.ready == ()
-    for task_id in mission_ids:
+    for task_id in review_pending_ids:
+        assert result.blockers[task_id] == ("status:blocked",)
+    for task_id in active_ids:
         assert result.blockers[task_id] == ("status:external_in_progress",)
     assert result.next_task_proposal is not None
     assert result.next_task_proposal.task_id == "mission_8_5_8_6_reconciliation"

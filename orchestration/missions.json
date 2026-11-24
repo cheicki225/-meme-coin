@@ -163,7 +163,7 @@
       "manual_gates": [
         "source_provenance_review"
       ],
-      "initial_status": "external_in_progress",
+      "initial_status": "blocked",
       "skills": [
         "wallet-intelligence-collector",
         "python-testing-ci"
@@ -188,7 +188,7 @@
       "manual_gates": [
         "independent_risk_review"
       ],
-      "initial_status": "pending",
+      "initial_status": "blocked",
       "skills": [
         "trading-risk-manager",
         "jupiter-transaction-security",
@@ -245,7 +245,7 @@
       "manual_gates": [
         "source_provenance_review"
       ],
-      "initial_status": "external_in_progress",
+      "initial_status": "blocked",
       "skills": [
         "token-risk-antirug",
         "trading-risk-manager",
@@ -305,7 +305,7 @@
       "manual_gates": [
         "accounting_review"
       ],
-      "initial_status": "pending",
+      "initial_status": "external_in_progress",
       "skills": [
         "pnl-accounting",
         "python-testing-ci"
@@ -330,7 +330,7 @@
       "manual_gates": [
         "independent_review"
       ],
-      "initial_status": "external_in_progress",
+      "initial_status": "blocked",
       "skills": [
         "backtesting-validation",
         "pnl-accounting",
