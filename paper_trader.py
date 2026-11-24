@@ -231,23 +231,72 @@ class PaperTrader:
         self._risk_lock = asyncio.Lock()
         self._risk_reservations = {}
 
-    async def _reserve_entry_risk(self, reservation_id: str, settings: dict) -> tuple[bool, str | None]:
+    async def _reserve_entry_risk(
+        self,
+        reservation_id: str,
+        settings: dict,
+        *,
+        existing_position: dict | None = None,
+        sol_usd_rate: float | None = None,
+        simulated_fee_sol: float | None = None,
+    ) -> tuple[bool, str | None]:
         amount_sol = settings.get("buy_amount_sol", 0.1)
-        if not isinstance(amount_sol, (int, float)) or amount_sol <= 0:
+        if (not isinstance(amount_sol, (int, float)) or isinstance(amount_sol, bool)
+                or not math.isfinite(amount_sol) or amount_sol <= 0):
             return False, "invalid_buy_amount"
-        sol_usd = await get_sol_usd_rate()
+        sol_usd = sol_usd_rate
+        if sol_usd is None:
+            sol_usd = await get_sol_usd_rate()
         # Reserve a conservative fee/rent cushion until confirmed position
         # accounting replaces it with the actual cash cost.
-        cushion_sol = config.MAX_TRANSACTION_FEE_LAMPORTS / 1_000_000_000 + 0.005
+        fee_cushion_sol = config.MAX_TRANSACTION_FEE_LAMPORTS / 1_000_000_000
+        if simulated_fee_sol is not None:
+            if (not isinstance(simulated_fee_sol, (int, float))
+                    or isinstance(simulated_fee_sol, bool)
+                    or not math.isfinite(simulated_fee_sol)
+                    or simulated_fee_sol < 0):
+                return False, "invalid_simulated_fee"
+            fee_cushion_sol = max(fee_cushion_sol, simulated_fee_sol)
+        cushion_sol = fee_cushion_sol + 0.005
+        if (not isinstance(sol_usd, (int, float)) or isinstance(sol_usd, bool)
+                or not math.isfinite(sol_usd) or sol_usd <= 0):
+            return False, "invalid_sol_usd_rate"
         proposed_usd = (amount_sol + cushion_sol) * sol_usd
         async with self._risk_lock:
+            if reservation_id in self._risk_reservations:
+                return False, "entry_already_reserved"
             reserved = list(self._risk_reservations.values())
+            state = self.data_store.state
+            reserved_exposure_usd = sum(reserved)
+            risk_state = state
+            if existing_position is not None:
+                if not isinstance(existing_position, dict):
+                    return False, "invalid_position_state"
+                positions = state.get("open_positions") if isinstance(state, dict) else None
+                if not isinstance(positions, list):
+                    return False, "invalid_position_state"
+                if sum(position is existing_position for position in positions) != 1:
+                    return False, "invalid_position_state"
+                existing_cost_usd = existing_position.get("cost_basis_usd")
+                if (not isinstance(existing_cost_usd, (int, float))
+                        or isinstance(existing_cost_usd, bool)
+                        or not math.isfinite(existing_cost_usd)
+                        or existing_cost_usd < 0):
+                    return False, "invalid_position_exposure"
+                risk_state = dict(state)
+                risk_state["open_positions"] = [
+                    position for position in positions if position is not existing_position
+                ]
+                # An add-on keeps its existing position slot. Count its current
+                # cost toward exposure while the remaining positions continue
+                # to enforce MAX_OPEN_POSITIONS normally.
+                reserved_exposure_usd += existing_cost_usd
             allowed, reason = risk_controls.assess_new_position(
-                self.data_store.state,
+                risk_state,
                 proposed_usd,
                 max_exposure_usd=config.MAX_OPEN_EXPOSURE_USD,
                 max_open_positions=config.MAX_OPEN_POSITIONS,
-                reserved_exposure_usd=sum(reserved),
+                reserved_exposure_usd=reserved_exposure_usd,
                 reserved_positions=len(reserved),
             )
             if allowed:
@@ -1088,23 +1137,73 @@ class PaperTrader:
             if i in position["dip_levels_hit"]:
                 continue
             if drop_pct >= level["drop_pct"]:
-                # Keep the simulated token buy and its fee on the same SOL/USD
-                # snapshot so the position basis matches the modeled cash cost.
-                sol_usd = await get_sol_usd_rate()
-                dip_amount_usd = level["amount_sol"] * sol_usd
+                # Use one quote for both risk reservation and accounting, so
+                # the admitted USD exposure matches the amount actually added.
                 fee_sol = _simulated_paper_fee_sol(position.get("buy_mode", "simple"))
-                fee_usd = _paper_fee_usd_at_rate(fee_sol, sol_usd)
-                new_units = dip_amount_usd / price
-                position["units"] += new_units
-                position["cost_basis_usd"] += dip_amount_usd + fee_usd
-                position["total_sol_invested"] = (
-                    position.get("total_sol_invested", 0) + level["amount_sol"] + fee_sol
+                sol_usd = await get_sol_usd_rate()
+                if i in position["dip_levels_hit"]:
+                    continue
+                reservation_id = (
+                    f"dip:{position['token_mint']}:{id(position)}:{i}"
                 )
-                position["simulated_fees_sol"] = position.get("simulated_fees_sol", 0) + fee_sol
-                position["simulated_fees_usd"] = position.get("simulated_fees_usd", 0) + fee_usd
-                _record_fee_accounting_status(position)
-                position["dip_levels_hit"].append(i)
-                self.data_store.save()
+                allowed, risk_reason = await self._reserve_entry_risk(
+                    reservation_id,
+                    {"buy_amount_sol": level.get("amount_sol")},
+                    existing_position=position,
+                    sol_usd_rate=sol_usd,
+                    simulated_fee_sol=fee_sol,
+                )
+                if not allowed:
+                    log.warning(
+                        "PAPER buy-the-dip rejected by risk controls (%s): %s",
+                        risk_reason,
+                        position["token_mint"][:8],
+                    )
+                    continue
+                if i in position["dip_levels_hit"]:
+                    self._release_entry_risk(reservation_id)
+                    continue
+                accounting_fields = (
+                    "units",
+                    "cost_basis_usd",
+                    "total_sol_invested",
+                    "simulated_fees_sol",
+                    "simulated_fees_usd",
+                    "fee_accounting_version",
+                    "fee_accounting_complete",
+                    "fee_accounting_note",
+                )
+                original_fields = {
+                    name: (name in position, position.get(name))
+                    for name in accounting_fields
+                }
+                original_dip_levels_hit = list(position["dip_levels_hit"])
+                try:
+                    # Keep the simulated token buy and its fee on the same
+                    # SOL/USD snapshot so the basis matches modeled cash cost.
+                    dip_amount_usd = level["amount_sol"] * sol_usd
+                    fee_usd = _paper_fee_usd_at_rate(fee_sol, sol_usd)
+                    new_units = dip_amount_usd / price
+                    position["units"] += new_units
+                    position["cost_basis_usd"] += dip_amount_usd + fee_usd
+                    position["total_sol_invested"] = (
+                        position.get("total_sol_invested", 0) + level["amount_sol"] + fee_sol
+                    )
+                    position["simulated_fees_sol"] = position.get("simulated_fees_sol", 0) + fee_sol
+                    position["simulated_fees_usd"] = position.get("simulated_fees_usd", 0) + fee_usd
+                    _record_fee_accounting_status(position)
+                    position["dip_levels_hit"].append(i)
+                    self.data_store.save()
+                except Exception:
+                    for name, (was_present, value) in original_fields.items():
+                        if was_present:
+                            position[name] = value
+                        else:
+                            position.pop(name, None)
+                    position["dip_levels_hit"] = original_dip_levels_hit
+                    raise
+                finally:
+                    self._release_entry_risk(reservation_id)
 
                 log.info(
                     f"📉 [PAPER] Buy The Dip niveau {i} déclenché sur {position['token_mint'][:8]}... "
