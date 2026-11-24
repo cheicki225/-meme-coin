@@ -1,0 +1,49 @@
+# Orchestrateur local de développement
+
+## Portée
+
+Ce MVP prépare des tâches de développement dans un DAG et propose les tâches prêtes. Il contrôle les dépendances, les fichiers réservés, les budgets, les tentatives, les validations locales autorisées et les preuves CI associées au SHA exact. Il ne crée pas d'agents et n'exécute pas les travaux de code à leur place. Les transferts réels à Codex restent effectués par les outils de délégation disponibles dans la session. Le catalogue PR #7 décrit des Skills sous forme d'instructions; il ne fournit pas à lui seul un moteur d'agents.
+
+La capacité est limitée à trois tâches déléguées en parallèle, afin de laisser un slot à l'orchestrateur dans la limite de quatre agents actifs de cette session. Le manifeste refuse une valeur supérieure. Les Skills et les tâches ne changent pas les permissions natives.
+
+## Contrôles
+
+- `orchestration/missions.json` fixe le DAG de 18 tâches, les priorités P0/P1/P2, les chemins réservés, les 15 Skills du catalogue #7 suggérés aux tâches pertinentes, les budgets, les tentatives, les preuves et les gates manuelles. PR #12 et #13 sont deux routes d'intégration ouvertes; PR #13 contient déjà Mission 8.5 ainsi que les changements #10/#11, et PR #18 est une extension sécurité empilée sur #13. La tâche `mission_8_5_8_6_reconciliation` compare ces routes et inclut les fichiers RPC/Telegram de #18; elle évite de supposer qu'une nouvelle implémentation Helius est nécessaire. Les périmètres Wallet Intelligence, anti-rug et métadonnées de backtest sont représentés par les PR #17, #16 et #15 et marqués `external_in_progress` pour éviter une attribution en double. Le planificateur ne dispatch pas les agents et ne suit pas automatiquement les PR. Les missions 8.5/8.6 et les contrôles opérationnels restent bloqués jusqu'aux revues et preuves requises.
+- `development_orchestrator.py plan` n'écrit rien. Il indique les tâches prêtes, leurs Skills suggérés, les dépendances manquantes, les gates manuelles encore en attente, les collisions de fichiers et les slots disponibles, ainsi qu'une prochaine tâche proposée et ses blocages.
+- `start` crée un lease dans `.orchestrator/checkpoint.json`; le planificateur évite d'attribuer simultanément des tâches dont les chemins déclarés se chevauchent. Ce lease est un contrôle de coordination, pas une restriction des permissions de fichier du système d'exploitation. `budget_minutes` limite chaque tentative; `budget_exhausted` bloque la tâche et exige une reprise manuelle. Les erreurs `validation_failed` peuvent être retentées jusqu'à `max_attempts`, ce qui borne le temps d'exécution actif à `max_attempts × budget_minutes` au maximum. `complete` et `fail` refusent un lease expiré et laissent son statut/verrou en place jusqu'à récupération manuelle.
+- Le checkpoint version 2 écrit un fichier temporaire synchronisé, le remplace atomiquement, puis tente de synchroniser le dossier parent sur POSIX. Cette dernière étape est au mieux et n'est pas fournie par ce chemin Windows; aucune durabilité après perte électrique n'est revendiquée. Un journal JSON borné est inclus dans le même fichier. Un état `completed` doit contenir les SHA, l'identifiant/URL CI, le blob du workflow, les étapes vérifiées et l'heure de fin; la lecture refuse une entrée complétée incomplète, mais ne réinterroge pas GitHub et le fichier reste modifiable localement. Un ancien checkpoint version 1 n'est pas migré automatiquement; il doit être inspecté avant récupération. Un lock restant après arrêt inattendu provoque un blocage; vérifier son propriétaire et l'état du checkpoint avant toute récupération. Le fichier reste modifiable par l'utilisateur local et ne constitue ni une preuve cryptographique, ni une autorisation de sécurité, ni un registre inviolable.
+- Un identifiant de Skill est accepté uniquement si le Skill est listé dans `SKILLS_CATALOG.md` et si son dossier de projet contient un fichier `SKILL.md`; le planificateur ne charge ni n'exécute ces instructions. Une `manual_gate` n'empêche pas de démarrer le travail, mais apparaît comme preuve en attente et interdit `complete` tant qu'une modification du manifeste canonique revue indépendamment ne l'a pas retirée. Les commandes `start`, `complete` et `fail` refusent un `--plan` alternatif; les plans alternatifs sont réservés à la lecture (`plan`) ou à la validation hors ligne. Le programme ne certifie pas l'identité d'un reviewer et aucune gate ne peut autoriser LIVE.
+- `fail` reprogramme une tentative après `validation_failed` si le budget de tentatives n'est pas atteint. Pour `budget_exhausted`, `manual_review_required`, `external_blocker`, ou à la limite des tentatives, il bloque la tâche et marque l'escalade requise; il ne réessaie pas automatiquement une action externe.
+- `complete` n'accepte qu'un run `CI` de ce dépôt, terminé avec succès et associé au SHA source demandé; pour un événement `pull_request`, il conserve séparément le SHA du commit de merge réellement exécuté. Il lie la preuve au même `run_id` et au même numéro de tentative du lease avant/après l'appel API, vérifie que les preuves déclarées de la tâche sont présentes, puis vérifie le blob Git du workflow `.github/workflows/ci.yml` au SHA testé et les étapes compile, PAPER, tests, Ruff, audit des dépendances et secrets. L'empreinte de confiance est `TRUSTED_CI_WORKFLOW_BLOB_SHA` dans `development_orchestrator.py` et doit correspondre au changement revu du workflow. L'évidence `offline_tests` correspond au pas CI `Run unit tests`. Toute évolution légitime du workflow exige une mise à jour revue de cette référence. Les appels aux API GitHub Actions/Contents sont en lecture seule, sans token.
+- `validate` n'accepte que `compile`, `orchestrator_tests`, `unit`, `ruff` et `skills_structure`, depuis la racine de ce dépôt, avec commandes figées, `shell=False`, délai maximal de 600 secondes et sorties supprimées. L'environnement du sous-processus ne transmet pas les variables présentes dans l'allowlist de clés, URLs RPC ou tokens; il impose `TRADING_MODE=PAPER` et `LIVE_EXECUTION_ENABLED=false`.
+- Les profils de test sont destinés à être exécutés hors ligne et la suite du dépôt utilise des mocks; toutefois ce script ne crée pas de sandbox système et ne bloque pas lui-même le réseau. Il exécute du code de test avec les permissions de l'utilisateur Windows courant. Avant d'utiliser ces profils sur du code non fiable, un isolement OS distinct est requis. Aucun ordre n'est envoyé par les profils testés ici.
+
+## Utilisation
+
+Depuis la racine du dépôt :
+
+```powershell
+python development_orchestrator.py plan
+python development_orchestrator.py validate --profile compile
+python development_orchestrator.py validate --profile orchestrator_tests
+python development_orchestrator.py validate --profile unit
+python development_orchestrator.py start risk_exit_controls_review
+```
+
+Pour terminer une tâche, utiliser `complete <task_id> --commit-sha <40-hex> --ci-run-id <id>` après retrait revu de ses gates manuelles du manifeste canonique. Le CLI ne prouve pas l'identité du reviewer. Un rapport de Skills structurel ne prouve pas que Codex a chargé ou appliqué un Skill.
+
+## Limites connues
+
+- La sélection et les budgets sont des données de coordination enregistrées localement; il n'existe pas d'adaptateur autorisé vers une API d'exécution Codex dans ce dépôt; `dispatch` est donc `not_configured`. Aucun agent n'est inventé ni simulé.
+- La contrainte de manifeste canonique s'applique aux commandes CLI `start`, `complete` et `fail`. Les fonctions Python internes ne sont pas une frontière d'autorisation; le processus Windows de l'utilisateur peut aussi modifier le code ou le checkpoint local.
+- La durée du lease est contrôlée lors du prochain `plan`; le processus d'un agent externe n'est ni interrompu, ni isolé, ni empêché de modifier des fichiers hors de sa portée déclarée. L'appelant doit respecter la portée et le budget du ticket.
+- Le plan contient des tâches initialement bloquées pour revue GitHub et validation cible. Le redémarrage de ces tâches demande une révision explicite du manifeste après que les preuves attendues existent; la CLI ne retire pas elle-même ces blocages.
+- Le checkpoint et son journal peuvent être modifiés par un utilisateur ayant accès au dépôt; ils ne sont pas une preuve indépendante des travaux effectués.
+- L'API GitHub vérifie le dépôt, la définition de workflow épinglée, le SHA source du PR, le SHA du commit exécuté, le job et les étapes déclarées. L'orchestrateur est lui-même du code du dépôt et sa référence doit rester soumise à revue indépendante; ce contrôle ne constitue pas une attestation signée du code. Il ne vérifie pas les soak PAPER, restauration, quotas RPC, audit CPI/DEX ou disponibilité du déploiement.
+- Ruff, pip-audit et Gitleaks ne sont pas lancés par le profil d'exécution de tests. Ruff local est un profil séparé; pip-audit et Gitleaks restent couverts par la CI associée au SHA.
+
+## Sources techniques
+
+- La documentation Python 3.11 décrit `subprocess.run` avec arguments, `shell=False` par défaut et un timeout; le runner conserve ces contrôles et ajoute une allowlist stricte de profils : [subprocess — Python 3.11](https://docs.python.org/3.11/library/subprocess.html).
+- La REST API Actions expose le SHA de tête et le statut/conclusion d'un run, ce qui permet de vérifier une preuve sur commit exact : [GitHub Actions workflow runs](https://docs.github.com/en/rest/actions/workflow-runs).
+- Les Skills sont des dossiers d'instructions et de ressources pour des workflows répétables; elles ne remplacent pas un backend d'exécution d'agents : [Skills — OpenAI Developers](https://developers.openai.com/plugins/concepts/skills).

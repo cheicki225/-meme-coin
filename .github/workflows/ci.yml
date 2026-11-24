@@ -63,7 +63,7 @@ jobs:
 
       - name: Upload coverage report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: mission-coverage-${{ github.run_id }}
           path: |
