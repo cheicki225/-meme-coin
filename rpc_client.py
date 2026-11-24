@@ -99,6 +99,16 @@ class RpcUnavailableError(RuntimeError):
     pass
 
 
+class RpcSubmissionOutcomeUnknown(RuntimeError):
+    """A transaction submission may have reached the network and needs reconciliation."""
+
+    def __init__(self, signature: str):
+        self.signature = signature
+        super().__init__(
+            "sendTransaction outcome is unknown; read-only reconciliation is required"
+        )
+
+
 class _RateLimiter:
     """Apply a per-provider request spacing and shared 429 cooldown."""
 
@@ -218,6 +228,11 @@ def _remove_inflight_read(key: str, task: asyncio.Task) -> None:
 
 async def rpc_post(payload: dict, timeout: int = 12) -> dict:
     """Call RPC, coalescing only identical concurrent read requests."""
+    if payload.get("method") == "sendTransaction":
+        raise ValueError(
+            "sendTransaction requires submit_transaction and its transaction signature"
+        )
+
     key = _inflight_read_key(payload, timeout)
     if key is None:
         return await _rpc_post_uncached(payload, timeout)
@@ -273,6 +288,46 @@ async def _rpc_post_uncached(payload: dict, timeout: int) -> dict:
             "primary only" if not can_retry_read else "primary + fallback" if config.ALCHEMY_RPC_URL else "primary",
         )
         return {}
+
+
+async def submit_transaction(payload: dict, signature: str, timeout: int = 12) -> str:
+    """Submit a signed transaction once to the primary RPC, preserving its signature.
+
+    Submission outcomes are not retried or failed over. A missing, malformed, or
+    different response remains uncertain until the signature is reconciled with
+    read-only status queries by the operator.
+    """
+    if payload.get("method") != "sendTransaction":
+        raise ValueError("submit_transaction only accepts sendTransaction payloads")
+    if not isinstance(signature, str) or not signature.strip():
+        raise ValueError("A non-empty transaction signature is required for submission")
+
+    method = "sendTransaction"
+    started = time.monotonic()
+    with measure_execution("rpc.request", "solana_rpc") as metric:
+        result = await _try_endpoint(
+            config.HELIUS_RPC_URL,
+            payload,
+            timeout,
+            max_retries=1,
+            provider="rpc_primary",
+        )
+        ok = result == signature
+        _record_request(
+            method,
+            ok=ok,
+            elapsed_ms=(time.monotonic() - started) * 1000,
+            fallback=False,
+        )
+        metric["provider"] = "rpc_primary"
+        if ok:
+            return signature
+
+        metric["outcome"] = "failure"
+        log.warning(
+            "RPC sendTransaction outcome is unknown; read-only reconciliation is required"
+        )
+        raise RpcSubmissionOutcomeUnknown(signature)
 
 
 async def rpc_post_strict(payload: dict, timeout: int = 12):

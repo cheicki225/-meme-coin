@@ -368,15 +368,44 @@ class SniperTelegramBot:
         self.notifier.set_bot(self.app.bot)
         return self.app
 
+    def _is_authorized_update(self, update: Update) -> bool:
+        """Return whether an update comes from an allowlisted private user."""
+        user = getattr(update, "effective_user", None)
+        chat = getattr(update, "effective_chat", None)
+        allowed_ids = getattr(config, "TELEGRAM_ALLOWED_USER_IDS", None)
+        if (
+            user is None
+            or chat is None
+            or getattr(chat, "type", None) != "private"
+            or not isinstance(allowed_ids, (set, frozenset))
+            or not allowed_ids
+            or any(
+                not isinstance(user_id, int) or isinstance(user_id, bool)
+                for user_id in allowed_ids
+            )
+        ):
+            return False
+        user_id = getattr(user, "id", None)
+        return (
+            isinstance(user_id, int)
+            and not isinstance(user_id, bool)
+            and user_id in allowed_ids
+        )
+
     async def authorize_update(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        user = update.effective_user
-        is_private = bool(update.effective_chat and update.effective_chat.type == "private")
-        if user and is_private and user.id in config.TELEGRAM_ALLOWED_USER_IDS:
+        if self._is_authorized_update(update):
             return
-        if update.callback_query:
-            await update.callback_query.answer("Accès refusé. Configurez TELEGRAM_ALLOWED_USER_IDS.", show_alert=True)
-        elif update.effective_message:
-            await update.effective_message.reply_text("Accès refusé. Configurez l'allowlist TELEGRAM_ALLOWED_USER_IDS.")
+        callback_query = getattr(update, "callback_query", None)
+        effective_message = getattr(update, "effective_message", None)
+        if callback_query:
+            await callback_query.answer(
+                "Accès refusé. Configurez TELEGRAM_ALLOWED_USER_IDS.",
+                show_alert=True,
+            )
+        elif effective_message:
+            await effective_message.reply_text(
+                "Accès refusé. Configurez l'allowlist TELEGRAM_ALLOWED_USER_IDS."
+            )
         raise ApplicationHandlerStop
 
     async def run_polling(self):
@@ -2867,15 +2896,51 @@ class SniperTelegramBot:
         )
 
     async def on_button(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        query = update.callback_query
+        query = getattr(update, "callback_query", None)
+        if query is None:
+            return
+        if not self._is_authorized_update(update):
+            await query.answer(
+                "Accès refusé. Configurez TELEGRAM_ALLOWED_USER_IDS.",
+                show_alert=True,
+            )
+            return
+
+        data = getattr(query, "data", None)
+        if not isinstance(data, str) or not data or len(data) > 64:
+            await query.answer("Action invalide.", show_alert=True)
+            return
+        try:
+            data = self._expand_short_ids(data)
+        except (KeyError, TypeError, ValueError):
+            await query.answer("Action invalide.", show_alert=True)
+            return
+        if not isinstance(data, str) or not data:
+            await query.answer("Action invalide.", show_alert=True)
+            return
+
+        if data.startswith("confirmdisperse_"):
+            parts = data[len("confirmdisperse_"):].split("|")
+            try:
+                if len(parts) != 3 or not parts[0] or not parts[1]:
+                    raise ValueError("malformed transfer callback")
+                amount = float(parts[2])
+                if not math.isfinite(amount) or amount <= 0:
+                    raise ValueError("invalid transfer amount")
+            except (TypeError, ValueError, OverflowError):
+                await query.answer("Action invalide.", show_alert=True)
+                return
+
+        chat = getattr(update, "effective_chat", None)
+        chat_id = getattr(chat, "id", None)
+        if not isinstance(chat_id, int) or isinstance(chat_id, bool):
+            await query.answer("Action invalide.", show_alert=True)
+            return
+
         await query.answer()
-        data = query.data
         # Reconstruit l'adresse complète à partir de l'ID court AVANT tout
         # le reste du traitement — voir _expand_short_ids pour le contexte
         # complet (limite de 64 caractères des callback_data Telegram).
-        data = self._expand_short_ids(data)
-        chat_id = update.effective_chat.id
-
         if data == "menu_main":
             await self.show_main_menu(query, edit=True)
         elif data == "menu_ruggers":

@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 import config
-from execution_recovery import reconcile_pending_transactions_readonly
+from execution_recovery import inspect_signature_on_chain, reconcile_pending_transactions_readonly
 from monitoring_list import DataStore
 from sqlite_state import StateStoreError
 
@@ -107,6 +107,47 @@ def test_failed_sqlite_resolution_preserves_uncertain_transaction_after_restart(
     ]
     assert restarted.state["resolved_transactions"] == []
     assert restarted.state["unapplied_failed_transaction_fees_lamports"] == 200
+
+
+def test_unknown_submission_stays_durable_after_readonly_reconciliation(
+    tmp_path, monkeypatch
+):
+    _use_temp_sqlite(tmp_path, monkeypatch)
+    signature = "signature-after-ambiguous-send"
+    store = DataStore()
+    store.record_pending_transaction({
+        "signature": signature,
+        "kind": "manual_sol_transfer",
+        "status": "submitted",
+    })
+    assert store.mark_pending_transaction_unknown(signature) is True
+
+    reloaded = DataStore()
+    methods = []
+
+    async def read_only_rpc(payload, timeout):
+        methods.append(payload["method"])
+        assert payload["params"][0] == [signature]
+        return {"value": [None]}
+
+    async def inspect(pending_signature):
+        return await inspect_signature_on_chain(
+            pending_signature, rpc_post=read_only_rpc
+        )
+
+    result = asyncio.run(reconcile_pending_transactions_readonly(
+        reloaded, inspector=inspect, max_checks=1
+    ))
+
+    assert methods == ["getSignatureStatuses"]
+    assert all(method != "sendTransaction" for method in methods)
+    assert result["pending_or_unknown"] == 1
+    assert result["remaining"] == 1
+    assert reloaded.state["pending_transactions"] == [{
+        "signature": signature,
+        "kind": "manual_sol_transfer",
+        "status": "unknown",
+    }]
 
 
 def test_rpc_inspection_exception_keeps_transaction_unresolved():
