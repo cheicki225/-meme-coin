@@ -100,7 +100,7 @@ class NewTokenListener:
         self._running = False
         self._ws = None
         self._stop_event: asyncio.Event | None = None
-        self._subscribed_wallets = set()
+        self._subscribed_wallets: set[str] = set()
         self._per_wallet_mode = False
         self._sub_id_to_stream: dict[int, str] = {}
         self._request_id_to_stream: dict[int, str] = {}

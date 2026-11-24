@@ -79,18 +79,18 @@ class CopyTradeListener:
             "asset"), optionnel (None = désactivé silencieusement).
         """
         self.data_store = data_store
-        self._event_store = event_store or get_default_event_store()
+        self._event_store: HeliusEventStore = event_store or get_default_event_store()
         self.on_buy = on_buy
         self.on_sell = on_sell
         self.on_large_sol_transfer = on_large_sol_transfer
         self.on_withdrawal = on_withdrawal
         self._running = False
         self._ws = None
-        self._subscribed_wallets = set()
-        self._sub_id_to_wallet = {}
-        self._request_id_to_wallet = {}
+        self._subscribed_wallets: set[str] = set()
+        self._sub_id_to_wallet: dict[int, str] = {}
+        self._request_id_to_wallet: dict[int, str] = {}
         self._next_request_id = 0
-        self._creation_mode_wallets = set()  # sous-ensemble surveillé pour les transferts SOL (seuil %)
+        self._creation_mode_wallets: set[str] = set()  # sous-ensemble surveillé pour les transferts SOL (seuil %)
 
     def _get_tracked_wallets(self) -> set:
         """
@@ -219,11 +219,17 @@ class CopyTradeListener:
                 raise
             except Exception as e:
                 metric["outcome"] = "failure"
-                event_store = getattr(self, "_event_store", None)
-                for address in getattr(self, "_subscribed_wallets", set()):
-                    event_store.mark_recovery_required(
-                        f"copytrade:{address}", "invalid_notification"
-                    )
+                event_store: HeliusEventStore | None = getattr(
+                    self, "_event_store", None
+                )
+                subscribed_wallets: set[str] = getattr(
+                    self, "_subscribed_wallets", set()
+                )
+                if event_store is not None:
+                    for address in subscribed_wallets:
+                        event_store.mark_recovery_required(
+                            f"copytrade:{address}", "invalid_notification"
+                        )
                 log.error(
                     "Copytrade notification rejected (%s); reconnecting for replay",
                     type(e).__name__,

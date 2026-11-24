@@ -68,7 +68,7 @@ class ProtectionScanner:
         self._event_store = event_store or get_default_event_store()
         self._running = False
         self._ws = None
-        self._subscribed_addresses = set()
+        self._subscribed_addresses: set[str] = set()
         self._sub_id_to_address: dict[int, str] = {}
         self._request_id_to_address: dict[int, str] = {}
         self._next_request_id = 0

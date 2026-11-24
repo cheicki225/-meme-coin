@@ -303,6 +303,9 @@ class HeliusEventStore:
                         received_at,
                     ),
                 )
+                if cursor.lastrowid is None:
+                    raise EventStoreError("Helius event insert returned no event ID")
+                event_id = cursor.lastrowid
                 db.execute(
                     "UPDATE event_streams SET next_sequence=? WHERE stream=?",
                     (sequence, stream),
@@ -312,7 +315,7 @@ class HeliusEventStore:
                     self._counter(db, "replayed")
                 db.commit()
                 result = EnqueueResult(
-                    int(cursor.lastrowid), True, "pending", correlation_id
+                    event_id, True, "pending", correlation_id
                 )
                 with correlate_event(correlation_id):
                     record_execution_metric(

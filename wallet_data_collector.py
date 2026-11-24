@@ -424,6 +424,7 @@ async def collect_wallet(wallet: str, limit: int = 100, db_path: str | Path = DE
             "transactions_unavailable": failed,
         }
     incomplete = failed > 0 or invalid_signature_records > 0
+    reason: str | None = None
     if invalid_signature_records:
         reason = "invalid_signature_record"
     else:

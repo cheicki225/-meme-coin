@@ -87,3 +87,55 @@ def test_read_coalescing_key_includes_timeout():
         return rpc_client._inflight_read_key(payload, 3) != rpc_client._inflight_read_key(payload, 12)
 
     assert asyncio.run(keys_differ())
+
+
+def test_cancelling_one_coalesced_waiter_preserves_shared_read(monkeypatch, tmp_path):
+    monkeypatch.setenv("EXECUTION_METRICS_PATH", str(tmp_path / "metrics.jsonl"))
+    monkeypatch.setattr(rpc_client.config, "HELIUS_RPC_URL", "https://primary.example")
+    monkeypatch.setattr(rpc_client.config, "ALCHEMY_RPC_URL", None)
+    started = asyncio.Event()
+    release = asyncio.Event()
+    calls = 0
+
+    async def fake_try_endpoint(url, payload, timeout, **kwargs):
+        nonlocal calls
+        calls += 1
+        started.set()
+        await release.wait()
+        return {"slot": 456}
+
+    monkeypatch.setattr(rpc_client, "_try_endpoint", fake_try_endpoint)
+
+    async def run_requests():
+        payload = {
+            "jsonrpc": "2.0",
+            "method": "getSlot",
+            "params": [{"commitment": "confirmed"}],
+        }
+        before = rpc_client.get_metrics()["coalesced"]
+        waiters = [
+            asyncio.create_task(rpc_client.rpc_post({**payload, "id": request_id}))
+            for request_id in (1, 2)
+        ]
+        try:
+            await started.wait()
+            await asyncio.sleep(0)
+            assert rpc_client.get_metrics()["coalesced"] == before + 1
+
+            shared_key = rpc_client._inflight_read_key(payload, 12)
+            shared_task = rpc_client._INFLIGHT_READS[shared_key]
+            waiters[0].cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await waiters[0]
+
+            assert not shared_task.cancelled()
+            release.set()
+            assert await waiters[1] == {"slot": 456}
+            assert calls == 1
+            assert shared_task.done()
+            assert not shared_task.cancelled()
+        finally:
+            release.set()
+            await asyncio.gather(*waiters, return_exceptions=True)
+
+    asyncio.run(run_requests())
