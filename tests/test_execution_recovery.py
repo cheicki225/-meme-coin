@@ -204,3 +204,21 @@ def test_failed_transaction_resolution_rolls_back_if_persistence_fails(monkeypat
     assert store.state["resolved_transactions"] == []
     assert store.state["unapplied_failed_transaction_fees_lamports"] == 0
 
+
+def test_marking_unknown_transaction_rolls_back_if_persistence_fails(monkeypatch):
+    store = object.__new__(DataStore)
+    store.state = {
+        "pending_transactions": [{"signature": "ambiguous", "status": "submitted"}],
+    }
+
+    def fail_save():
+        raise OSError("disk unavailable")
+
+    monkeypatch.setattr(store, "save", fail_save)
+    with pytest.raises(OSError, match="disk unavailable"):
+        store.mark_pending_transaction_unknown("ambiguous")
+
+    assert store.state["pending_transactions"] == [
+        {"signature": "ambiguous", "status": "submitted"}
+    ]
+
