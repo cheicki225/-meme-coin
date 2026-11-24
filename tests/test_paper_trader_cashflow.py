@@ -139,11 +139,150 @@ def test_partial_close_subtracts_sell_fee_from_realized_pnl(monkeypatch):
 
 def test_buy_the_dip_adds_purchase_and_fee_to_position_basis(monkeypatch):
     class Store:
-        def __init__(self):
-            self.state = {}
+        def __init__(self, position):
+            self.state = {"open_positions": [position]}
+            self.save_calls = 0
 
         def save(self):
-            pass
+            self.save_calls += 1
+
+    async def pair_data(_mint):
+        return {"marketCap": 700}
+
+    rate_calls = []
+
+    async def sol_rate():
+        rate_calls.append(True)
+        return 200.0
+
+    monkeypatch.setattr(paper_trader, "_get_pair_data", pair_data)
+    monkeypatch.setattr(paper_trader, "get_sol_usd_rate", sol_rate)
+    position = {
+        "token_mint": "mint", "settings": {"buy_mode": "simple", "buy_the_dip_levels": [
+            {"drop_pct": 20, "amount_sol": 0.1},
+        ]},
+        "buy_mode": "simple", "ath_market_cap": 1000,
+        "dip_levels_hit": [], "units": 10.0, "cost_basis_usd": 20.0,
+        "total_sol_invested": 0.103, "simulated_fees_sol": 0.003,
+        "simulated_fees_usd": 0.6,
+    }
+    store = Store(position)
+    trader = paper_trader.PaperTrader(store)
+    monkeypatch.setattr(paper_trader.config, "MAX_OPEN_POSITIONS", 1)
+
+    asyncio.run(trader._check_buy_the_dip(position, 2.0))
+
+    assert position["units"] == pytest.approx(20.0)
+    assert position["cost_basis_usd"] == pytest.approx(40.6)
+    assert position["total_sol_invested"] == pytest.approx(0.206)
+    assert position["simulated_fees_sol"] == pytest.approx(0.006)
+    assert position["simulated_fees_usd"] == pytest.approx(1.2)
+    assert position["dip_levels_hit"] == [0]
+    assert position["fee_accounting_complete"] is False
+    assert "fee_accounting_version" not in position
+    assert store.save_calls == 1
+    assert trader._risk_reservations == {}
+    assert rate_calls == [True]
+
+
+@pytest.mark.parametrize(
+    ("state_updates", "limit_updates"),
+    [
+        ({"emergency_stop": True}, {}),
+        ({}, {"MAX_OPEN_EXPOSURE_USD": 40.0}),
+    ],
+)
+def test_buy_the_dip_refuses_active_stop_and_exposure_cap_without_mutation(
+    monkeypatch, state_updates, limit_updates
+):
+    class Store:
+        def __init__(self, position):
+            self.state = {"open_positions": [position], **state_updates}
+            self.save_calls = 0
+
+        def save(self):
+            self.save_calls += 1
+
+    async def pair_data(_mint):
+        return {"marketCap": 700}
+
+    async def sol_rate():
+        return 200.0
+
+    monkeypatch.setattr(paper_trader, "_get_pair_data", pair_data)
+    monkeypatch.setattr(paper_trader, "get_sol_usd_rate", sol_rate)
+    for name, value in limit_updates.items():
+        monkeypatch.setattr(paper_trader.config, name, value)
+
+    position = {
+        "token_mint": "mint", "settings": {"buy_mode": "simple", "buy_the_dip_levels": [
+            {"drop_pct": 20, "amount_sol": 0.1},
+        ]},
+        "buy_mode": "simple", "ath_market_cap": 1000,
+        "dip_levels_hit": [], "units": 10.0, "cost_basis_usd": 20.0,
+        "total_sol_invested": 0.103, "simulated_fees_sol": 0.003,
+        "simulated_fees_usd": 0.6,
+    }
+    store = Store(position)
+    trader = paper_trader.PaperTrader(store)
+
+    asyncio.run(trader._check_buy_the_dip(position, 2.0))
+
+    assert position["units"] == pytest.approx(10.0)
+    assert position["cost_basis_usd"] == pytest.approx(20.0)
+    assert position["total_sol_invested"] == pytest.approx(0.103)
+    assert position["simulated_fees_sol"] == pytest.approx(0.003)
+    assert position["simulated_fees_usd"] == pytest.approx(0.6)
+    assert position["dip_levels_hit"] == []
+    assert store.save_calls == 0
+    assert trader._risk_reservations == {}
+
+
+def test_buy_the_dip_refuses_malformed_position_exposure_without_mutation(monkeypatch):
+    class Store:
+        def __init__(self, position):
+            self.state = {"open_positions": [position]}
+            self.save_calls = 0
+
+        def save(self):
+            self.save_calls += 1
+
+    async def pair_data(_mint):
+        return {"marketCap": 700}
+
+    async def sol_rate():
+        return 200.0
+
+    monkeypatch.setattr(paper_trader, "_get_pair_data", pair_data)
+    monkeypatch.setattr(paper_trader, "get_sol_usd_rate", sol_rate)
+    position = {
+        "token_mint": "mint", "settings": {"buy_mode": "simple", "buy_the_dip_levels": [
+            {"drop_pct": 20, "amount_sol": 0.1},
+        ]},
+        "buy_mode": "simple", "ath_market_cap": 1000,
+        "dip_levels_hit": [], "units": 10.0, "cost_basis_usd": float("nan"),
+        "total_sol_invested": 0.103, "simulated_fees_sol": 0.003,
+        "simulated_fees_usd": 0.6,
+    }
+    store = Store(position)
+    trader = paper_trader.PaperTrader(store)
+
+    asyncio.run(trader._check_buy_the_dip(position, 2.0))
+
+    assert position["units"] == pytest.approx(10.0)
+    assert position["cost_basis_usd"] != position["cost_basis_usd"]
+    assert position["dip_levels_hit"] == []
+    assert store.save_calls == 0
+    assert trader._risk_reservations == {}
+
+
+def test_buy_the_dip_save_failure_rolls_back_position_and_releases_reservation(monkeypatch):
+    class Store:
+        def __init__(self, position):
+            self.state = {"open_positions": [position]}
+
+        def save(self):
+            raise OSError("simulated state persistence failure")
 
     async def pair_data(_mint):
         return {"marketCap": 700}
@@ -162,17 +301,144 @@ def test_buy_the_dip_adds_purchase_and_fee_to_position_basis(monkeypatch):
         "total_sol_invested": 0.103, "simulated_fees_sol": 0.003,
         "simulated_fees_usd": 0.6,
     }
+    store = Store(position)
+    trader = paper_trader.PaperTrader(store)
 
-    asyncio.run(paper_trader.PaperTrader(Store())._check_buy_the_dip(position, 2.0))
+    with pytest.raises(OSError, match="simulated state persistence failure"):
+        asyncio.run(trader._check_buy_the_dip(position, 2.0))
 
+    assert position["units"] == pytest.approx(10.0)
+    assert position["cost_basis_usd"] == pytest.approx(20.0)
+    assert position["total_sol_invested"] == pytest.approx(0.103)
+    assert position["simulated_fees_sol"] == pytest.approx(0.003)
+    assert position["simulated_fees_usd"] == pytest.approx(0.6)
+    assert position["dip_levels_hit"] == []
+    assert "fee_accounting_complete" not in position
+    assert trader._risk_reservations == {}
+
+
+def test_hardcore_buy_the_dip_reserves_the_actual_simulated_fee(monkeypatch):
+    class Store:
+        def __init__(self, position):
+            self.state = {"open_positions": [position]}
+            self.save_calls = 0
+
+        def save(self):
+            self.save_calls += 1
+
+    async def pair_data(_mint):
+        return {"marketCap": 700}
+
+    async def sol_rate():
+        return 200.0
+
+    monkeypatch.setattr(paper_trader, "_get_pair_data", pair_data)
+    monkeypatch.setattr(paper_trader, "get_sol_usd_rate", sol_rate)
+    monkeypatch.setattr(
+        paper_trader, "_simulated_paper_fee_sol",
+        lambda _buy_mode: paper_trader.HARDCORE_MAX_FEE_SOL,
+    )
+    monkeypatch.setattr(paper_trader.config, "MAX_OPEN_EXPOSURE_USD", 44.0)
+    position = {
+        "token_mint": "mint", "settings": {"buy_mode": "hardcore", "buy_the_dip_levels": [
+            {"drop_pct": 20, "amount_sol": 0.1},
+        ]},
+        "buy_mode": "hardcore", "ath_market_cap": 1000,
+        "dip_levels_hit": [], "units": 10.0, "cost_basis_usd": 20.0,
+        "total_sol_invested": 0.103, "simulated_fees_sol": 0.003,
+        "simulated_fees_usd": 0.6,
+    }
+    store = Store(position)
+    trader = paper_trader.PaperTrader(store)
+
+    asyncio.run(trader._check_buy_the_dip(position, 2.0))
+
+    # The old generic fee cushion would have reserved about $21.10 and allowed
+    # this add-on; the actual 0.027 SOL PAPER fee raises it to $26.40.
+    assert position["units"] == pytest.approx(10.0)
+    assert position["cost_basis_usd"] == pytest.approx(20.0)
+    assert position["dip_levels_hit"] == []
+    assert store.save_calls == 0
+    assert trader._risk_reservations == {}
+
+
+def test_concurrent_buy_the_dip_checks_apply_one_level_once(monkeypatch):
+    class Store:
+        def __init__(self, position):
+            self.state = {"open_positions": [position]}
+            self.save_calls = 0
+
+        def save(self):
+            self.save_calls += 1
+
+    async def pair_data(_mint):
+        return {"marketCap": 700}
+
+    position = {
+        "token_mint": "mint", "settings": {"buy_mode": "simple", "buy_the_dip_levels": [
+            {"drop_pct": 20, "amount_sol": 0.1},
+        ]},
+        "buy_mode": "simple", "ath_market_cap": 1000,
+        "dip_levels_hit": [], "units": 10.0, "cost_basis_usd": 20.0,
+        "total_sol_invested": 0.103, "simulated_fees_sol": 0.003,
+        "simulated_fees_usd": 0.6,
+    }
+    store = Store(position)
+    trader = paper_trader.PaperTrader(store)
+
+    async def run_concurrent_checks():
+        first_rate_started = asyncio.Event()
+        release_first_rate = asyncio.Event()
+        rate_calls = 0
+
+        async def sol_rate():
+            nonlocal rate_calls
+            rate_calls += 1
+            if rate_calls == 1:
+                first_rate_started.set()
+                await release_first_rate.wait()
+                return 300.0
+            return 200.0
+
+        monkeypatch.setattr(paper_trader, "_get_pair_data", pair_data)
+        monkeypatch.setattr(paper_trader, "get_sol_usd_rate", sol_rate)
+        first = asyncio.create_task(trader._check_buy_the_dip(position, 2.0))
+        await first_rate_started.wait()
+        second = asyncio.create_task(trader._check_buy_the_dip(position, 2.0))
+        await second
+        release_first_rate.set()
+        await first
+        return rate_calls
+
+    assert asyncio.run(run_concurrent_checks()) == 2
     assert position["units"] == pytest.approx(20.0)
     assert position["cost_basis_usd"] == pytest.approx(40.6)
     assert position["total_sol_invested"] == pytest.approx(0.206)
-    assert position["simulated_fees_sol"] == pytest.approx(0.006)
-    assert position["simulated_fees_usd"] == pytest.approx(1.2)
     assert position["dip_levels_hit"] == [0]
-    assert position["fee_accounting_complete"] is False
-    assert "fee_accounting_version" not in position
+    assert store.save_calls == 1
+    assert trader._risk_reservations == {}
+
+
+def test_entry_risk_refuses_duplicate_active_reservation_id(monkeypatch):
+    class Store:
+        state = {"open_positions": []}
+
+    async def sol_rate():
+        return 200.0
+
+    monkeypatch.setattr(paper_trader, "get_sol_usd_rate", sol_rate)
+    trader = paper_trader.PaperTrader(Store())
+    trader._risk_reservations["dip:mint:position:0"] = 10.0
+
+    result = asyncio.run(trader._reserve_entry_risk(
+        "dip:mint:position:0",
+        {"buy_amount_sol": 0.1},
+        sol_usd_rate=200.0,
+        simulated_fee_sol=0.003,
+    ))
+
+    assert result == (False, "entry_already_reserved")
+    assert trader._risk_reservations == {"dip:mint:position:0": 10.0}
 
 
 def test_sell_initials_books_fee_in_realized_pnl_and_net_sol_recovery(monkeypatch):
@@ -262,7 +528,7 @@ def test_new_position_creation_marks_fee_accounting_version(monkeypatch):
 
     store = Store()
     trader = paper_trader.PaperTrader(store)
-    async def allow_risk(_reservation, _settings):
+    async def allow_risk(_reservation, _settings, **_kwargs):
         return True, None
 
     monkeypatch.setattr(paper_trader.config, "TRADING_MODE", "PAPER")
