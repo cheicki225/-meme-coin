@@ -171,13 +171,14 @@
     },
     {
       "id": "risk_exit_controls_review",
-      "title": "Review PAPER admission, emergency-stop, and exit behavior without changing limits",
+      "title": "Close PAPER buy-the-dip admission bypass without changing limits",
       "priority": "P1",
       "depends_on": [],
       "scope_files": [
         "risk_controls.py",
         "paper_trader.py",
-        "tests/test_risk_controls.py"
+        "tests/test_risk_controls.py",
+        "tests/test_paper_trader_cashflow.py"
       ],
       "budget_minutes": 120,
       "max_attempts": 2,
@@ -188,7 +189,7 @@
       "manual_gates": [
         "independent_risk_review"
       ],
-      "initial_status": "blocked",
+      "initial_status": "external_in_progress",
       "skills": [
         "trading-risk-manager",
         "jupiter-transaction-security",
