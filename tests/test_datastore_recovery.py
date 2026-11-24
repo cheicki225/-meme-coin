@@ -18,6 +18,45 @@ def _use_temp_sqlite(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "SQLITE_DB_FILE", str(tmp_path / "state.sqlite3"), raising=False)
 
 
+def test_new_datastore_starts_with_emergency_stop_active(tmp_path, monkeypatch):
+    _use_temp_sqlite(tmp_path, monkeypatch)
+
+    store = DataStore()
+
+    assert store.state["emergency_stop"] is True
+    assert store.state["emergency_stop_reason"] == "startup safety default"
+
+
+def test_datastore_backfills_active_stop_when_persisted_state_has_no_stop_key(tmp_path, monkeypatch):
+    _use_temp_sqlite(tmp_path, monkeypatch)
+    store = DataStore()
+    store._sqlite_store.save({"pending_transactions": []})
+
+    restarted = DataStore()
+
+    assert restarted.state["emergency_stop"] is True
+
+
+def test_datastore_backfills_active_stop_from_legacy_json_import(tmp_path, monkeypatch):
+    _use_temp_sqlite(tmp_path, monkeypatch)
+    Path(config.DATA_FILE).write_text(json.dumps({"pending_transactions": []}), encoding="utf-8")
+
+    store = DataStore()
+
+    assert store.state["emergency_stop"] is True
+
+
+def test_datastore_preserves_explicitly_cleared_persisted_stop(tmp_path, monkeypatch):
+    _use_temp_sqlite(tmp_path, monkeypatch)
+    store = DataStore()
+    store.state["emergency_stop"] = False
+    store.save()
+
+    restarted = DataStore()
+
+    assert restarted.state["emergency_stop"] is False
+
+
 def test_datastore_recovers_corrupt_payload_from_latest_sqlite_backup(tmp_path, monkeypatch):
     _use_temp_sqlite(tmp_path, monkeypatch)
     store = DataStore()

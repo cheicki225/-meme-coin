@@ -46,3 +46,37 @@ def test_telegram_delivery_failure_returns_false_without_exception_text(caplog):
 
     assert delivered is False
     assert "bot token should not appear" not in caplog.text
+
+
+def test_disconnected_photo_notification_does_not_log_caption_or_photo_content(caplog):
+    secret = "PHOTO_CAPTION_SECRET_7f3c"
+    photo_secret = b"PHOTO_BYTES_SECRET_8b91"
+    caplog.set_level(logging.INFO, logger="notifier")
+
+    asyncio.run(Notifier(Store()).notify_photo(
+        "risk_alert", photo_secret, caption=secret
+    ))
+
+    assert "telegram_photo_not_sent" in caplog.text
+    assert secret not in caplog.text
+    assert photo_secret.decode("ascii") not in caplog.text
+
+
+def test_failed_photo_send_does_not_log_caption_exception_or_photo_content(caplog):
+    caption_marker = "CAPTION_MARKER_44de"
+    exception_marker = "EXCEPTION_MARKER_4f18"
+    photo_marker = b"PHOTO_BYTES_MARKER_22ac"
+
+    class FailingPhotoBot:
+        async def send_photo(self, **kwargs):
+            raise RuntimeError(f"request failed: {exception_marker}")
+
+    caplog.set_level(logging.ERROR, logger="notifier")
+    asyncio.run(Notifier(Store(), FailingPhotoBot()).notify_photo(
+        "risk_alert", photo_marker, caption=caption_marker
+    ))
+
+    assert "telegram_photo_send_failed" in caplog.text
+    assert caption_marker not in caplog.text
+    assert exception_marker not in caplog.text
+    assert photo_marker.decode("ascii") not in caplog.text

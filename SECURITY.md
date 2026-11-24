@@ -38,6 +38,9 @@ Avant toute décision LIVE, la CI de la branche doit rester verte (run [45059131
 
 ## Revue du 22 novembre 2026
 
+- Le transfert natif `sendTransaction` utilise une seule soumission HTTP au RPC primaire avec `maxRetries=0`. Les 429, timeouts ou réponses incohérentes ne déclenchent ni retry générique ni fallback vers un second fournisseur. La signature préalablement persistée reste en état `unknown`, le coupe-circuit est activé, et seul le chemin de réconciliation read-only peut éclairer une décision ultérieure.
+- Les callbacks Telegram passent par la même règle fail-closed que les commandes : utilisateur privé présent dans `TELEGRAM_ALLOWED_USER_IDS`, avant tout parsing ou effet de bord. Une allowlist absente ou mal formée refuse l'action.
+- `Notifier.notify_photo` ne journalise ni légende, ni octets de photo, ni message d'exception; il ne conserve que des codes d'événement et de type d'erreur non sensibles.
 - Les appels Jupiter `/swap/v2/order` et `/swap/v2/execute` refusent maintenant les redirections HTTP (`allow_redirects=False`) afin de ne pas transmettre `x-api-key` ou une transaction signée à une destination redirigée.
 - `/reconcile` active l'arrêt d'urgence si des signatures sont pendantes, puis utilise uniquement `getSignatureStatuses` et `getTransaction`. Il ne resoumet pas les transactions, ne traite pas une signature absente comme un échec, ne reconstruit pas une position depuis une cotation et ne lève pas automatiquement l'arrêt.
 - Les échecs finalisés avec frais récupérés sont archivés et leur coût en lamports est signalé séparément du PnL USD. Le rapprochement PnL historique reste nécessaire.

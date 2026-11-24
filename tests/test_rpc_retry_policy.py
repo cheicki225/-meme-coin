@@ -46,6 +46,7 @@ class _FakeResponse:
 class _FakeSession:
     def __init__(self, responses):
         self.responses = responses
+        self.post_calls = []
 
     async def __aenter__(self):
         return self
@@ -54,6 +55,7 @@ class _FakeSession:
         return False
 
     def post(self, *args, **kwargs):
+        self.post_calls.append((args, kwargs))
         return self.responses.pop(0)
 
 
@@ -139,17 +141,22 @@ def test_send_transaction_does_not_fail_over_to_secondary_rpc(monkeypatch):
     calls = []
 
     async def fail_endpoint(url, payload, timeout, **kwargs):
-        calls.append((url, payload["method"]))
+        calls.append((url, payload["method"], kwargs.get("max_retries")))
         return None
 
     monkeypatch.setattr(rpc_client.config, "HELIUS_RPC_URL", "https://primary.example")
     monkeypatch.setattr(rpc_client.config, "ALCHEMY_RPC_URL", "https://secondary.example")
     monkeypatch.setattr(rpc_client, "_try_endpoint", fail_endpoint)
 
-    result = asyncio.run(rpc_client.rpc_post({"method": "sendTransaction", "params": ["signed"]}))
+    signature = "synthetic-uncertain-signature"
+    with pytest.raises(rpc_client.RpcSubmissionOutcomeUnknown) as caught:
+        asyncio.run(rpc_client.submit_transaction(
+            {"method": "sendTransaction", "params": ["synthetic-bytes"]},
+            signature,
+        ))
 
-    assert result == {}
-    assert calls == [("https://primary.example", "sendTransaction")]
+    assert caught.value.signature == signature
+    assert calls == [("https://primary.example", "sendTransaction", 1)]
 
 
 def test_unknown_rpc_method_is_not_retried_or_failed_over(monkeypatch):
@@ -214,3 +221,102 @@ def test_json_rpc_rate_limit_activates_shared_cooldown(monkeypatch, tmp_path):
     assert result == 123
     assert limiter.delays == [0.5]
     assert rpc_client.get_metrics()["rate_limited"] == before + 1
+
+
+def test_rpc_post_rejects_transaction_submissions_without_signature(monkeypatch):
+    calls = []
+
+    async def unexpected_call(*args, **kwargs):
+        calls.append((args, kwargs))
+        return "should-not-run"
+
+    monkeypatch.setattr(rpc_client, "_try_endpoint", unexpected_call)
+    with pytest.raises(ValueError, match="submit_transaction"):
+        asyncio.run(rpc_client.rpc_post({"method": "sendTransaction"}))
+    assert calls == []
+
+
+def test_submit_transaction_429_is_one_primary_attempt_and_unknown(
+    monkeypatch, caplog
+):
+    signature = "synthetic-signature-for-test"
+    responses = [
+        _FakeResponse(429, headers={"Retry-After": "3"}),
+        _FakeResponse(200, payload={"jsonrpc": "2.0", "result": signature}),
+    ]
+    session = _FakeSession(responses)
+    limiter = _FakeLimiter()
+    monkeypatch.setattr(
+        rpc_client.aiohttp, "ClientSession", lambda **kwargs: session
+    )
+    monkeypatch.setattr(rpc_client, "get_http_connector", lambda: None)
+    monkeypatch.setattr(rpc_client.config, "HELIUS_RPC_URL", "https://primary.example/rpc")
+    monkeypatch.setattr(
+        rpc_client.config, "ALCHEMY_RPC_URL", "https://fallback.example/rpc"
+    )
+    monkeypatch.setattr(rpc_client, "_limiter_for_url", lambda _url: limiter)
+    caplog.set_level(logging.WARNING, logger="rpc_client")
+
+    payload = {"jsonrpc": "2.0", "method": "sendTransaction", "params": ["synthetic-bytes"]}
+    with pytest.raises(rpc_client.RpcSubmissionOutcomeUnknown) as caught:
+        asyncio.run(rpc_client.submit_transaction(payload, signature, timeout=3))
+
+    assert caught.value.signature == signature
+    assert len(session.post_calls) == 1
+    assert session.post_calls[0][0][0] == "https://primary.example/rpc"
+    assert session.post_calls[0][1]["json"] == payload
+    assert len(responses) == 1
+    assert signature not in caplog.text
+
+
+def test_submit_transaction_timeout_is_one_primary_attempt_and_unknown(monkeypatch):
+    class _TimeoutSession(_FakeSession):
+        def post(self, *args, **kwargs):
+            self.post_calls.append((args, kwargs))
+            raise asyncio.TimeoutError
+
+    session = _TimeoutSession([])
+    limiter = _FakeLimiter()
+    monkeypatch.setattr(
+        rpc_client.aiohttp, "ClientSession", lambda **kwargs: session
+    )
+    monkeypatch.setattr(rpc_client, "get_http_connector", lambda: None)
+    monkeypatch.setattr(rpc_client.config, "HELIUS_RPC_URL", "https://primary.example/rpc")
+    monkeypatch.setattr(
+        rpc_client.config, "ALCHEMY_RPC_URL", "https://fallback.example/rpc"
+    )
+    monkeypatch.setattr(rpc_client, "_limiter_for_url", lambda _url: limiter)
+
+    with pytest.raises(rpc_client.RpcSubmissionOutcomeUnknown) as caught:
+        asyncio.run(rpc_client.submit_transaction(
+            {"method": "sendTransaction", "params": ["synthetic-bytes"]},
+            "synthetic-timeout-signature",
+        ))
+
+    assert caught.value.signature == "synthetic-timeout-signature"
+    assert len(session.post_calls) == 1
+    assert session.post_calls[0][0][0] == "https://primary.example/rpc"
+
+
+def test_submit_transaction_success_returns_expected_signature(monkeypatch):
+    signature = "synthetic-expected-signature"
+    responses = [_FakeResponse(200, payload={"jsonrpc": "2.0", "result": signature})]
+    session = _FakeSession(responses)
+    limiter = _FakeLimiter()
+    monkeypatch.setattr(
+        rpc_client.aiohttp, "ClientSession", lambda **kwargs: session
+    )
+    monkeypatch.setattr(rpc_client, "get_http_connector", lambda: None)
+    monkeypatch.setattr(rpc_client.config, "HELIUS_RPC_URL", "https://primary.example/rpc")
+    monkeypatch.setattr(
+        rpc_client.config, "ALCHEMY_RPC_URL", "https://fallback.example/rpc"
+    )
+    monkeypatch.setattr(rpc_client, "_limiter_for_url", lambda _url: limiter)
+
+    result = asyncio.run(rpc_client.submit_transaction(
+        {"method": "sendTransaction", "params": ["synthetic-bytes"]}, signature
+    ))
+
+    assert result == signature
+    assert len(session.post_calls) == 1
+    assert len(responses) == 0

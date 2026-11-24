@@ -273,8 +273,8 @@ class DataStore:
             "global_ai_enabled": True,
             "notification_prefs": dict(config.DEFAULT_NOTIFICATION_PREFS),
             "telegram_chat_id": None,
-            "emergency_stop": False,
-            "emergency_stop_reason": None,
+            "emergency_stop": True,
+            "emergency_stop_reason": "startup safety default",
             "emergency_stop_at": None,
             "pending_transactions": [],
             "resolved_transactions": [],
@@ -452,6 +452,29 @@ class DataStore:
                         item.pop("accounting", None)
                     raise
                 return True
+        return False
+
+    def mark_pending_transaction_unknown(self, signature: str) -> bool:
+        """Persist an unresolved transaction as unknown for manual reconciliation."""
+        pending = self.state.get("pending_transactions", [])
+        if not isinstance(pending, list) or any(not isinstance(item, dict) for item in pending):
+            raise ValueError("pending_transactions must be a list of objects")
+
+        for item in pending:
+            if item.get("signature") != signature:
+                continue
+            missing = object()
+            previous_status = item.get("status", missing)
+            item["status"] = "unknown"
+            try:
+                self.save()
+            except Exception:
+                if previous_status is missing:
+                    item.pop("status", None)
+                else:
+                    item["status"] = previous_status
+                raise
+            return True
         return False
 
     def resolve_pending_transaction(self, signature: str, outcome: dict | None = None) -> bool:

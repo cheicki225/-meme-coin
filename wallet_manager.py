@@ -225,27 +225,40 @@ class WalletManager:
         })
         try:
             signed_b64 = base64.b64encode(bytes(tx)).decode("ascii")
-            result = await rpc_client.rpc_post({
+            await rpc_client.submit_transaction({
                 "jsonrpc": "2.0", "id": 1,
                 "method": "sendTransaction",
-                "params": [signed_b64, {"encoding": "base64", "skipPreflight": False, "maxRetries": 3}],
-            }, timeout=15)
-            if result != signature:
-                raise ValueError("RPC returned a different transfer signature.")
+                "params": [signed_b64, {"encoding": "base64", "skipPreflight": False, "maxRetries": 0}],
+            }, signature, timeout=15)
             await jupiter_executor._confirm_transaction(signature)
             confirmed = await jupiter_executor._get_confirmed_transaction(signature)
             accounting = account_confirmed_sol_transfer(
                 wallet_pubkey, str(destination_key), lamports, confirmed
             )
             self.data_store.resolve_pending_transaction(signature, accounting)
-        except Exception as exc:
-            if any(
-                item.get("signature") == signature
-                for item in self.data_store.state.get("pending_transactions", [])
-            ):
-                self.data_store.activate_emergency_stop(
-                    f"manual transfer outcome requires reconciliation: {str(exc)[:300]}"
-                )
+        except Exception:
+            pending_transactions = self.data_store.state.get("pending_transactions", [])
+            has_pending_signature = any(
+                isinstance(item, dict) and item.get("signature") == signature
+                for item in pending_transactions
+            ) if isinstance(pending_transactions, list) else True
+            if has_pending_signature:
+                try:
+                    self.data_store.mark_pending_transaction_unknown(signature)
+                except Exception as status_exc:
+                    log.critical(
+                        "Manual transfer UNKNOWN status could not be persisted (%s)",
+                        type(status_exc).__name__,
+                    )
+                try:
+                    self.data_store.activate_emergency_stop(
+                        "manual transfer outcome requires read-only reconciliation"
+                    )
+                except Exception as stop_exc:
+                    log.critical(
+                        "Manual transfer emergency stop persistence failed (%s)",
+                        type(stop_exc).__name__,
+                    )
             raise
 
         log.info(
