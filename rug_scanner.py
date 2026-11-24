@@ -37,7 +37,7 @@ import logging
 import math
 import time
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, TypeGuard
 
 import config
 import wallet_history
@@ -52,7 +52,7 @@ def _observed_at_utc() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def _is_finite_number(value) -> bool:
+def _is_finite_number(value: Any) -> TypeGuard[int | float]:
     """Validate JSON numeric values without accepting booleans or overflow."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return False
@@ -228,7 +228,7 @@ class RugScanner:
         helpers. A positive result is therefore only a heuristic filter pass.
         """
         observed_at = _observed_at_utc()
-        provenance = {
+        provenance: dict[str, dict[str, Any]] = {
             "developer_creations": {
                 "source": "wallet_history.get_created_tokens",
                 "status": "not_checked",
