@@ -4,9 +4,11 @@
 
 **Branche de travail :** `codex/mission-11-unified-paper-20261124`
 
-**Base de la future PR :** PR #21, `c2b982c44034e4f37dd887fdabc3a28ff486e2d0`
+**Base de la PR #22 :** branche PR #21, tête courante `0cc54f77312d6fbf89e0f99c191f840bbddaf985`
 
 **Tête locale validée :** `c17138c`
+
+**Tête de PR #22 au premier rapport :** `b61684d1746e0b22f9650a2eddb1168ae031e6de` (les corrections suivantes ne changent que ce rapport)
 
 **Date :** 24 novembre 2026
 
@@ -14,12 +16,13 @@ Mission 11 a été exécutée dans un clone neuf sous `%LOCALAPPDATA%`. Le check
 
 ## 11A — Graphe et intégration sélective
 
-Les refs actuelles vérifiées sont : PR #19 `26d19c552a2b6a3ed5e307fc256ed1466f5ae9c5`, PR #20 `9b024c11347e3c96436ec6d7a27630d866012ee7`, PR #21 `c2b982c44034e4f37dd887fdabc3a28ff486e2d0`, toutes trois basées sur le SHA #12 `5b6b155919654182dab25ae14f98c5bf61df023a`. #21 contient déjà la pile Mission 10 sélectionnée depuis #12.
+À la création du clone, #19 (`26d19c552a2b6a3ed5e307fc256ed1466f5ae9c5`), #20 (`9b024c11347e3c96436ec6d7a27630d866012ee7`) et #21 (`c2b982c44034e4f37dd887fdabc3a28ff486e2d0`) étaient toutes basées sur #12 `5b6b155919654182dab25ae14f98c5bf61df023a`. Après cette sélection, #21 a avancé à `0cc54f77312d6fbf89e0f99c191f840bbddaf985` avec un seul commit documentaire sur `docs/MISSION_10_INTEGRATION_REPORT.md` (+17 lignes). Le nouveau PR #22 cible bien la branche #21 actuelle. Sa tête reste basée sur le précédent #21 `c2b982c`; la comparaison GitHub indique quatre commits en avance, un commit documentaire en retard, aucun chevauchement de code et `mergeable=true`. La CI exacte de la tête #21 actuelle est verte : [run 45489737659](https://github.com/cheicki225/-meme-coin/actions/runs/45489737659).
 
 ```text
-                       ┌─ #19 source 26d19c5 ── cherry-pick 1472fd2 ─┐
-#12 shared base 5b6b155 ├─ #20 source 9b024c1  ── cherry-pick 07f27ee ─┼─ on #21
-                       └─ #21 Mission 10 c2b982c ─────────────────────┴─> c17138c
+#19 source 26d19c5 ── cherry-pick 1472fd2 ─┐
+#20 source 9b024c1  ── cherry-pick 07f27ee ─┼─┐
+#12 5b6b155 ── #21 at c2b982c ──────────────┘ ├─> c17138c ── report b61684d
+                         └─ #21 current 0cc54f7 (docs-only; PR #22 base)
 ```
 
 Les commits sources ont été repris avec `git cherry-pick -x` : #19 comme `1472fd2`, puis #20 comme `07f27ee`. Les deux reprises se sont appliquées sans conflit. #19 ajoute la comptabilité de flux confirmés, sa valorisation et son test ; #20 protège les ajouts PAPER « buy the dip » avec le même snapshot de taux et de frais que celui utilisé pour la mutation. Les chemins #10/#11 déjà contenus dans #21 n’ont pas été rejoués, et l’historique complet recouvrant de #13 n’a pas été fusionné.
@@ -29,7 +32,7 @@ Les commits sources ont été repris avec `git cherry-pick -x` : #19 comme `1472
 | #19 | `monitoring_list.py`, `transaction_accounting.py`, `tests/test_transaction_accounting.py` | Aucun de ces fichiers n’était modifié par le delta Mission 10 #21 ; reprise propre. |
 | #20 | `paper_trader.py`, `tests/test_paper_trader_cashflow.py` | Le delta #21 ne modifiait pas ces fichiers ; reprise propre. |
 
-La PR #19 conserve `accounting_domain=CONFIRMED_CHAIN` et `applied_to_paper_pnl=false`. Ses nouveaux champs sont séparés des positions, totaux et compteurs PAPER. Les runs exacts des têtes sources vérifiés sur GitHub sont verts : [CI #19, run 45447282273](https://github.com/cheicki225/-meme-coin/actions/runs/45447282273), [CI #20, run 45485900713](https://github.com/cheicki225/-meme-coin/actions/runs/45485900713) et [CI #21, run 45488806763](https://github.com/cheicki225/-meme-coin/actions/runs/45488806763).
+La PR #19 conserve `accounting_domain=CONFIRMED_CHAIN` et `applied_to_paper_pnl=false`. Ses nouveaux champs sont séparés des positions, totaux et compteurs PAPER. Les runs exacts des têtes sources vérifiés sur GitHub sont verts : [CI #19, run 45447282273](https://github.com/cheicki225/-meme-coin/actions/runs/45447282273), [CI #20, run 45485900713](https://github.com/cheicki225/-meme-coin/actions/runs/45485900713) et [CI #21 actuel, run 45489737659](https://github.com/cheicki225/-meme-coin/actions/runs/45489737659).
 
 **Limite d’idempotence à résoudre avant de considérer le ledger complet :** #19 ne conserve que 1 000 enregistrements. La déduplication recherche la signature dans cette fenêtre; une signature supprimée par la rétention peut être réinsérée lors d’un rejeu tardif. Les tests valident un doublon encore retenu, pas le rejeu après éviction. Le ledger n’a pas de callsite de production dans cette tête, donc il n’est pas raccordé à un traitement PAPER ou LIVE. La fenêtre est notée ici explicitement ; une clé de déduplication durable doit être décidée avant un raccord runtime.
 
@@ -70,7 +73,7 @@ Environnement local : Python 3.11.9 ; `PYTHON_DOTENV_DISABLED=true`; chargement 
 - `python -m compileall -q .` — réussi.
 - `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q` — **687 passed**.
 - `git diff --check` — réussi avant commit d’intégration ; les validations ci-dessus ont été exécutées sur la tête locale `c17138c`.
-- Ruff, `pip-audit`, Coverage.py et Gitleaks ne sont pas installés localement. Le workflow GitHub de la nouvelle PR doit encore exécuter Ruff, pip-audit, Gitleaks, pytest avec couverture lignes/branches et compilation sur la tête exacte de Mission 11.
+- Ruff, `pip-audit`, Coverage.py et Gitleaks n’étaient pas installés localement. Le workflow CI GitHub [PR #22, run 45494591702](https://github.com/cheicki225/-meme-coin/actions/runs/45494591702) a réussi sur la tête publiée `b61684d`: compilation, défaut PAPER, suite pytest, Ruff, pip-audit, Gitleaks et téléversement de l’artefact de couverture. Les ajustements documentaires de ce rapport sont postérieurs; aucun fichier de code ou de test n’a changé depuis cette exécution. L’artefact [mission-coverage-45494591702](https://github.com/cheicki225/-meme-coin/actions/runs/45494591702/artifacts/14968530296) est disponible; aucun taux n’est indiqué ici sans lecture de son rapport.
 
 ### Sécurité et éléments non vérifiés
 
@@ -78,8 +81,7 @@ Aucune clé, wallet, `.env`, secret ou URL RPC avec identifiant n’a été lu. 
 
 ## Prochaines étapes priorisées
 
-1. Obtenir les résultats CI complets sur la tête exacte de la PR Mission 11 et corriger les échecs dans cette branche uniquement.
-2. Choisir une déduplication durable pour les signatures comptables après la fenêtre de 1 000, avant d’ajouter un callsite runtime.
-3. Introduire une preuve de provenance SOL/USD produite par un adaptateur fournisseur (source, timestamp observé, âge et statut) et traiter explicitement les caches périmés ; ne pas réutiliser `rate_verified` caller-attested comme preuve.
-4. Ajouter une matrice d’intégration offline couvrant les interfaces qui restent séparées. Garder la collecte candidate hors du scoring tant qu’une règle de provenance/qualité et une interface n’existent pas.
-5. Les soak 24 h, restoration drill cible et audit DEX/CPI restent des gates d’environnement et d’expertise distinctes ; ils ne sont pas simulés ici.
+1. Choisir une déduplication durable pour les signatures comptables après la fenêtre de 1 000, avant d’ajouter un callsite runtime.
+2. Introduire une preuve de provenance SOL/USD produite par un adaptateur fournisseur (source, timestamp observé, âge et statut) et traiter explicitement les caches périmés ; ne pas réutiliser `rate_verified` caller-attested comme preuve.
+3. Ajouter une matrice d’intégration offline couvrant les interfaces qui restent séparées. Garder la collecte candidate hors du scoring tant qu’une règle de provenance/qualité et une interface n’existent pas.
+4. Les soak 24 h, restoration drill cible et audit DEX/CPI restent des gates d’environnement et d’expertise distinctes ; ils ne sont pas simulés ici.
