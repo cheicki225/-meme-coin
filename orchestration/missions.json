@@ -189,7 +189,7 @@
       "manual_gates": [
         "independent_risk_review"
       ],
-      "initial_status": "external_in_progress",
+      "initial_status": "blocked",
       "skills": [
         "trading-risk-manager",
         "jupiter-transaction-security",
@@ -306,7 +306,7 @@
       "manual_gates": [
         "accounting_review"
       ],
-      "initial_status": "external_in_progress",
+      "initial_status": "blocked",
       "skills": [
         "pnl-accounting",
         "python-testing-ci"
