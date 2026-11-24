@@ -702,6 +702,8 @@ def test_mission_manifest_tracks_review_pending_and_active_work(
     review_pending_ids = {
         "wallet_intelligence_provenance",
         "anti_rug_source_provenance",
+        "risk_exit_controls_review",
+        "pnl_sol_usd_fee_ledger",
         "backtest_valuation_metadata",
     }
     blocked_ids = {
@@ -710,7 +712,7 @@ def test_mission_manifest_tracks_review_pending_and_active_work(
         "mission_7_operational_gates",
         *review_pending_ids,
     }
-    active_ids = {"pnl_sol_usd_fee_ledger", "risk_exit_controls_review"}
+    active_ids: set[str] = set()
 
     assert len(plan.tasks) == 18
     reconciliation_scopes = set(
