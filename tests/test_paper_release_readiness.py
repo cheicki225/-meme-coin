@@ -127,7 +127,7 @@ def test_helius_readiness_blocks_processed_rows_without_migrated_canonical_index
     )
     event = store.claim_next(stream)
     assert event is not None
-    store.mark_processed(event.event_id)
+    store.mark_processed(event.event_id, claim_generation=event.claim_generation)
     with sqlite3.connect(event_path) as database:
         database.execute(
             "UPDATE event_inbox SET transaction_index=NULL WHERE signature=?",
@@ -232,7 +232,7 @@ def test_ready_report_needs_active_stop_and_clean_recorded_helius_history(tmp_pa
     )
     event = store.claim_next("new-token:program")
     assert event is not None
-    store.mark_processed(event.event_id)
+    store.mark_processed(event.event_id, claim_generation=event.claim_generation)
 
     report = paper_release_readiness.build_report(
         state_path,

@@ -73,12 +73,12 @@ def test_new_token_canonical_replay_retries_and_completes_correlated_replay(
     assert len(callbacks) == 1
     assert store.checkpoint("new-token:program") == (1, "synthetic-signature")
     assert store.metrics()["retried"] == 1
+    summary = summarize_metrics(tmp_path / "metrics.jsonl")
     metrics_text = (tmp_path / "metrics.jsonl").read_text(encoding="utf-8")
     assert "synthetic-signature" not in metrics_text
     assert '"stage":"event.end_to_end"' in metrics_text
     assert '"stage":"event.decision"' in metrics_text
     assert '"stage":"event.parse"' in metrics_text
-    summary = summarize_metrics(tmp_path / "metrics.jsonl")
     end_to_end = summary["stages"]["event.end_to_end:helius"]
     assert end_to_end["count"] == 1
     assert end_to_end["p50_ms"] == end_to_end["p95_ms"] == end_to_end["p99_ms"]
@@ -221,3 +221,28 @@ def test_malformed_ws_notifications_mark_active_streams_for_replay(tmp_path):
     assert token_store.recovery_required_streams("new-token:") == [
         "new-token:token-wallet"
     ]
+
+
+def test_protection_scanner_stop_closes_active_websocket(tmp_path):
+    scanner = ProtectionScanner(
+        SimpleNamespace(state={"protection_targets": {}}),
+        event_store=HeliusEventStore(tmp_path / "events.sqlite3"),
+    )
+    closed = []
+
+    class FakeWebSocket:
+        async def close(self):
+            closed.append(True)
+
+    async def scenario():
+        scanner._running = True
+        scanner._loop = asyncio.get_running_loop()
+        scanner._ws = FakeWebSocket()
+        scanner.stop()
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+    asyncio.run(scenario())
+
+    assert scanner._running is False
+    assert closed == [True]
