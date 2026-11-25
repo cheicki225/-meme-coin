@@ -65,7 +65,7 @@ Environnement : Windows, Python 3.11.9. Tests exécutés avec `PYTEST_DISABLE_PL
 
 Le chargement automatique de plugins pytest a été désactivé après une erreur de pré-collecte liée à une installation globale `web3` qui attend un symbole `ContractName` absent de `eth_typing`. Ce problème d'environnement n'a pas été corrigé ni masqué dans les dépendances du dépôt.
 
-La CI du dépôt utilise Python 3.11, compileall, une vérification du mode PAPER par défaut, pytest avec couverture, Ruff (erreurs critiques), pip-audit et Gitleaks. Aucun résultat de cette CI ne sera revendiqué avant son exécution sur le SHA Mission 18 exact.
+La CI du dépôt utilise Python 3.11, compileall, une vérification du mode PAPER par défaut, pytest avec couverture, Ruff (erreurs critiques), pip-audit et Gitleaks. Après le push de la PR #30, le run GitHub Actions `45700625492` a réussi sur le head exact `490615785d7f937ae04519d9f3977a1faadccbd7`. Les étapes compile, PAPER par défaut, tests, lint critique, audit des dépendances, Gitleaks et upload de couverture sont terminées avec succès. Ce résultat reste attaché à ce SHA; toute modification ultérieure doit avoir une CI propre sur son nouveau head.
 
 ## Revue indépendante
 
