@@ -189,7 +189,11 @@ def main() -> int:
             "network_access": False,
         }
     print(json.dumps(report, ensure_ascii=True, indent=2, sort_keys=True))
-    return 0 if report["record_validation"] == "VALID" else 2
+    if report["record_validation"] != "VALID":
+        return 2
+    if report["operational_evidence_verified"] is not True:
+        return 3
+    return 0
 
 
 if __name__ == "__main__":

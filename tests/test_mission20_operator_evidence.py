@@ -1,7 +1,9 @@
+import json
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
-from scripts.mission20_validate_operator_evidence import validate_evidence_record
+from scripts.mission20_validate_operator_evidence import main, validate_evidence_record
 
 
 def _record():
@@ -124,3 +126,25 @@ def test_under_24_hour_duration_is_invalid():
     report = validate_evidence_record(record)
 
     assert "RECORDED_DURATION_UNDER_24_HOURS" in report["issues"]
+
+
+def test_cli_returns_nonzero_for_structural_only_validity(tmp_path: Path, monkeypatch, capsys):
+    record_path = tmp_path / "evidence.json"
+    record_path.write_text(json.dumps(_record()), encoding="utf-8")
+    monkeypatch.setattr("sys.argv", ["mission20_validate_operator_evidence", str(record_path)])
+
+    assert main() == 3
+    report = json.loads(capsys.readouterr().out)
+    assert report["record_validation"] == "VALID"
+    assert report["release_readiness"] == "MANUAL_VERIFICATION_REQUIRED"
+    assert report["operational_evidence_verified"] is False
+
+
+def test_cli_returns_invalid_input_code_for_bad_json(tmp_path: Path, monkeypatch, capsys):
+    record_path = tmp_path / "evidence.json"
+    record_path.write_text("{bad json", encoding="utf-8")
+    monkeypatch.setattr("sys.argv", ["mission20_validate_operator_evidence", str(record_path)])
+
+    assert main() == 2
+    report = json.loads(capsys.readouterr().out)
+    assert report["record_validation"] == "INVALID"

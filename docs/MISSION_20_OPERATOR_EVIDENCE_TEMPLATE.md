@@ -67,6 +67,8 @@ For a sanitized JSON export of this record, run `python scripts/mission20_valida
 
 The checker validates field shape, reported flags, zero `UNKNOWN`/429 counts, maximum observation gaps, recorded duration and restore fields. It does not read a target database, verify reference contents, authenticate timestamps, prove wall-clock continuity, or prove that the Mission 19 gate was actually cleared. Its output always remains `MANUAL_VERIFICATION_REQUIRED`; a structurally valid synthetic fixture is not a soak or restore result. Keep raw logs, secrets, endpoints, wallets, signatures and account identifiers out of the JSON.
 
+The CLI returns `2` for unreadable or structurally invalid input and `3` when the shape is valid but operational evidence is still unverified. It returns `0` only if operational verification is ever implemented and explicitly true; the current checker always returns nonzero.
+
 ## Abort and stop record
 
 Stop immediately and preserve state if any of these occurs: PAPER/LIVE flags drift, emergency stop becomes inactive, an UNKNOWN or unverified effect appears, canonical event order is missing or contradicted, USD mapping/quote becomes unverified or stale, provider quota is exceeded, SQLite reports an error, a duplicate effect is possible, an external write path appears, or the process stops unexpectedly.
