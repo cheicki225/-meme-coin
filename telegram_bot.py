@@ -464,10 +464,16 @@ class SniperTelegramBot:
     async def cmd_resume(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         pending = self.data_store.state.get("pending_transactions", [])
         if pending:
-            signatures = "\n".join(f"• {item.get('signature', 'unknown')}" for item in pending[:5])
+            signatures = []
+            for item in pending[:5]:
+                signature = item.get("signature") if isinstance(item, dict) else None
+                if not isinstance(signature, str) or not signature:
+                    signatures.append("• unknown")
+                else:
+                    signatures.append(f"• {signature[:12]}…")
             await update.effective_message.reply_text(
                 "Reprise refusée : des signatures restent à réconcilier. "
-                "Vérifiez leur état sur Solana puis réconciliez-les avant la reprise.\n" + signatures
+                "Vérifiez leur état sur Solana puis réconciliez-les avant la reprise.\n" + "\n".join(signatures)
             )
             return
         if self.data_store.clear_emergency_stop():
@@ -1655,6 +1661,11 @@ class SniperTelegramBot:
                 t("position_line", lang, mint=pos["token_mint"][:8], price=pos["entry_price"],
                   units=pos["units"], cost=pos["cost_basis_usd"])
             )
+            if pos.get("exit_status") == "unknown":
+                if pos.get("exit_pending_reason") == "entry_time_unavailable":
+                    lines.append("  ⏳ Surveillance suspendue : date d'entrée inconnue; vérification manuelle requise.")
+                else:
+                    lines.append("  ⏳ Sortie non résolue : prix actuel indisponible; position conservée.")
             keyboard.append([
                 InlineKeyboardButton("25%", callback_data=f"sell_{i}_25"),
                 InlineKeyboardButton("50%", callback_data=f"sell_{i}_50"),
@@ -4187,20 +4198,27 @@ class SniperTelegramBot:
             await query.edit_message_text("Position introuvable.")
             return
         position = positions[index]
-        from backtest import _get_pair_data
-        data = await _get_pair_data(position["token_mint"])
-        price = float(data.get("priceUsd", position["entry_price"]) or position["entry_price"])
+        from backtest import get_live_price_and_market_cap
+        live = await get_live_price_and_market_cap(position["token_mint"])
+        price = live.get("price") if isinstance(live, dict) else None
+        ratio = min(pct / 100, 1.0)
+        if not self.trader._is_valid_market_price(price):
+            await self.trader._partial_close(position, None, 0.0, ratio, tp_index=None)
+            await query.answer("Prix indisponible; position conservée, aucun PnL réalisé.", show_alert=True)
+            return
         change_pct = self.trader._pnl_pct(position, price)
 
-        ratio = min(pct / 100, 1.0)
         await self.trader._partial_close(position, price, change_pct, ratio, tp_index=None)
         await self.show_positions(query)
 
     async def _sell_all(self, query):
-        from backtest import _get_pair_data
+        from backtest import get_live_price_and_market_cap
         for position in list(self.data_store.state.get("open_positions", [])):
-            data = await _get_pair_data(position["token_mint"])
-            price = float(data.get("priceUsd", position["entry_price"]) or position["entry_price"])
+            live = await get_live_price_and_market_cap(position["token_mint"])
+            price = live.get("price") if isinstance(live, dict) else None
+            if not self.trader._is_valid_market_price(price):
+                await self.trader._close_remaining(position, None, 0.0, "MANUAL_SELL_ALL")
+                continue
             change_pct = self.trader._pnl_pct(position, price)
             await self.trader._close_remaining(position, price, change_pct, "MANUAL_SELL_ALL")
         await self.show_positions(query)
@@ -4225,7 +4243,13 @@ class SniperTelegramBot:
         # docstring de get_live_price_and_market_cap.
         from backtest import get_live_price_and_market_cap
         live = await get_live_price_and_market_cap(token_mint)
-        price = live["price"] or position["entry_price"]
+        price = live.get("price") if isinstance(live, dict) else None
+        if not self.trader._is_valid_market_price(price):
+            await self.trader._partial_close(
+                position, None, 0.0, min(pct / 100, 1.0), tp_index=None
+            )
+            await query.answer("Prix indisponible; position conservée, aucun PnL réalisé.", show_alert=True)
+            return
         change_pct = self.trader._pnl_pct(position, price)
 
         ratio = min(pct / 100, 1.0)
@@ -4246,7 +4270,10 @@ class SniperTelegramBot:
         # get_live_price_and_market_cap.
         from backtest import get_live_price_and_market_cap
         live = await get_live_price_and_market_cap(token_mint)
-        price = live["price"] or position["entry_price"]
+        price = live.get("price") if isinstance(live, dict) else None
+        if not self.trader._is_valid_market_price(price):
+            await query.answer("Prix indisponible; PnL inconnu pour le moment.", show_alert=True)
+            return
         change_pct = self.trader._pnl_pct(position, price)
         value_usd = position["units"] * price
 
@@ -4278,9 +4305,13 @@ class SniperTelegramBot:
             await query.edit_message_text("Position introuvable.")
             return
         position = positions[index]
-        from backtest import _get_pair_data
-        data = await _get_pair_data(position["token_mint"])
-        price = float(data.get("priceUsd", position["entry_price"]) or position["entry_price"])
+        from backtest import get_live_price_and_market_cap
+        live = await get_live_price_and_market_cap(position["token_mint"])
+        price = live.get("price") if isinstance(live, dict) else None
+        if not self.trader._is_valid_market_price(price):
+            await self.trader.sell_initials(position, None)
+            await query.answer("Prix indisponible; position conservée, aucun PnL réalisé.", show_alert=True)
+            return
 
         done = await self.trader.sell_initials(position, price)
         if not done:

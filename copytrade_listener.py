@@ -36,6 +36,7 @@ d'agrégation) plutôt qu'un nativeTransfer direct sur le wallet lui-même.
 import asyncio
 import json
 import logging
+import math
 import websockets
 
 import config
@@ -54,6 +55,27 @@ from helius_event_store import (
 import wallet
 
 log = logging.getLogger("copytrade")
+
+
+def _finite_number(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        parsed = float(value)
+    except (OverflowError, TypeError, ValueError):
+        return None
+    return parsed if math.isfinite(parsed) else None
+
+
+def is_token_age_within_limit(age_minutes: object, max_age_minutes: object) -> bool:
+    """Fail closed for an enabled age limit when the observed age is unknown."""
+    limit = _finite_number(max_age_minutes)
+    if limit is None or limit < 0:
+        return False
+    if limit == 0:
+        return True
+    age = _finite_number(age_minutes)
+    return age is not None and 0 <= age <= limit
 
 class CopyTradeListener:
     def __init__(

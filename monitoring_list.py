@@ -18,20 +18,45 @@ Ajoute également :
 """
 
 import copy
+import hashlib
 import glob
 import json
 import logging
+import math
 import os
 import shutil
 import tempfile
+import threading
 import time
 
 import config
-from sqlite_state import SQLiteStateStore, StateStoreCorruptError, StateStoreError
+from sqlite_state import (
+    SQLiteStateStore,
+    StateStoreConflictError,
+    StateStoreCorruptError,
+    StateStoreError,
+)
 
 BACKUP_DIR_NAME = "backups"
 BACKUP_INTERVAL_S = 300   # 5 minutes entre deux backups automatiques
 MAX_BACKUPS = 30          # rotation — garde les 30 dernières, supprime les plus vieilles
+MAX_CONFIRMED_ACCOUNTING_RECORDS = 1000
+
+
+def _accounting_fingerprint(accounting: dict) -> str:
+    """Return a stable digest for the complete accounting evidence object."""
+    try:
+        canonical = json.dumps(
+            accounting, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Confirmed accounting evidence must be finite JSON data") from exc
+    return hashlib.sha256(canonical.encode("utf-8", errors="strict")).hexdigest()
+
+
+def _accounting_signature_key(signature: str) -> str:
+    """Hash signatures in the all-time idempotency index."""
+    return hashlib.sha256(signature.encode("utf-8", errors="strict")).hexdigest()
 
 log = logging.getLogger("monitoring_list")
 
@@ -39,13 +64,15 @@ log = logging.getLogger("monitoring_list")
 class DataStore:
     """Charge/sauvegarde l'état complet du bot dans un fichier JSON."""
 
-    def __init__(self, path: str = None):
+    def __init__(self, path: str | None = None):
         self.path = path or config.DATA_FILE
         self._use_sqlite = path is None and getattr(config, "DATA_BACKEND", "json") == "sqlite"
         db_path = config.SQLITE_DB_FILE if self._use_sqlite else self.path
         self._backup_dir = os.path.join(os.path.dirname(os.path.abspath(db_path)) or ".", BACKUP_DIR_NAME)
         self._last_backup_time = 0
+        self._confirmed_accounting_lock = threading.RLock()
         self._sqlite_store = None
+        self._state_revision: int | None = None
         if self._use_sqlite:
             try:
                 self._sqlite_store = SQLiteStateStore(config.SQLITE_DB_FILE)
@@ -81,6 +108,7 @@ class DataStore:
         if self._sqlite_store:
             try:
                 loaded = self._sqlite_store.load(self._default_state, legacy_json_path=self.path)
+                self._state_revision = self._sqlite_store.last_loaded_revision
             except StateStoreError as exc:
                 if (not isinstance(exc, StateStoreCorruptError)
                         and self._sqlite_store.has_committed_state()):
@@ -93,7 +121,14 @@ class DataStore:
                             if not backup_store.has_committed_state():
                                 continue
                             restored = backup_store.load(self._default_state)
-                            self._sqlite_store.save(restored)
+                            expected_revision = self._sqlite_store.last_loaded_revision
+                            if expected_revision is None:
+                                raise StateStoreConflictError(
+                                    "Cannot restore SQLite state without a verified revision"
+                                )
+                            self._state_revision = self._sqlite_store.save(
+                                restored, expected_revision=expected_revision
+                            )
                             loaded = restored
                             log.warning("State restored from SQLite backup %s after load failure: %s", candidate, exc)
                             break
@@ -113,7 +148,14 @@ class DataStore:
                                 restored = json.load(source)
                             if isinstance(restored, dict):
                                 loaded = restored
-                                self._sqlite_store.save(loaded)
+                                expected_revision = self._sqlite_store.last_loaded_revision
+                                if expected_revision is None:
+                                    raise StateStoreConflictError(
+                                        "Cannot import JSON backup without a verified SQLite revision"
+                                    )
+                                self._state_revision = self._sqlite_store.save(
+                                    loaded, expected_revision=expected_revision
+                                )
                                 log.warning("State imported from JSON backup %s after load failure: %s", candidate, exc)
                                 break
                         except (OSError, json.JSONDecodeError, StateStoreError) as backup_error:
@@ -279,6 +321,10 @@ class DataStore:
             "pending_transactions": [],
             "resolved_transactions": [],
             "unapplied_failed_transaction_fees_lamports": 0,
+            "confirmed_accounting_ledger": [],
+            # Compact SHA-256 tombstones preserve idempotency after ledger-row
+            # eviction. The index shares the same atomic state save as the rows.
+            "confirmed_accounting_idempotency": {},
             "referral": dict(config.DEFAULT_REFERRAL_STATE),
             "linked_wallet_groups": {},
             "pending_dev_sell_watch": {},
@@ -294,7 +340,9 @@ class DataStore:
     def save(self):
         try:
             if self._sqlite_store:
-                self._sqlite_store.save(self.state)
+                self._state_revision = self._sqlite_store.save(
+                    self.state, expected_revision=self._state_revision
+                )
             else:
                 parent_dir = os.path.dirname(os.path.abspath(self.path))
                 os.makedirs(parent_dir, exist_ok=True)
@@ -526,6 +574,278 @@ class DataStore:
                     self.state.pop("unapplied_failed_transaction_fees_lamports", None)
             raise
         return True
+
+    def record_confirmed_accounting(
+        self,
+        signature: str,
+        accounting: dict,
+        valuation: dict,
+    ) -> bool:
+        """Persist one confirmed accounting result without changing PAPER PnL.
+
+        The bounded ledger is an auditable source record for confirmed wallet
+        cash flows and fees. It is deliberately separate from simulated PAPER
+        positions, totals, and risk counters. Repeating an identical record is
+        idempotent; conflicting evidence for the same signature is rejected.
+        An unknown valuation may be reconciled once with a valued result when
+        the underlying confirmed accounting data is unchanged. A compact,
+        all-time digest index is saved atomically beside the bounded detail rows.
+        """
+        lock = getattr(self, "_confirmed_accounting_lock", None)
+        if lock is None:
+            # The normal constructor creates this lock. This fallback supports
+            # isolated test doubles that construct DataStore without __init__.
+            lock = threading.RLock()
+            self._confirmed_accounting_lock = lock
+        with lock:
+            for attempt in range(3):
+                try:
+                    return self._record_confirmed_accounting_locked(
+                        signature, accounting, valuation
+                    )
+                except StateStoreConflictError:
+                    if self._sqlite_store is None or attempt == 2:
+                        raise
+                    # A different process committed since this snapshot was
+                    # loaded. Reapply this ledger event to the latest state;
+                    # never overwrite that process with a stale document.
+                    self.state = self._load()
+            raise StateStoreConflictError(
+                "Confirmed accounting could not be committed after reload retries"
+            )
+
+    def _record_confirmed_accounting_locked(
+        self,
+        signature: str,
+        accounting: dict,
+        valuation: dict,
+    ) -> bool:
+        """Validate, deduplicate, and atomically persist one accounting event."""
+        if not isinstance(signature, str) or not signature.strip():
+            raise ValueError("Confirmed accounting signature is required")
+        if len(signature) > 256:
+            raise ValueError("Confirmed accounting signature is too long")
+        if not isinstance(accounting, dict) or not isinstance(valuation, dict):
+            raise ValueError("Confirmed accounting and valuation must be objects")
+        fingerprint = _accounting_fingerprint(accounting)
+        signature_key = _accounting_signature_key(signature)
+        from transaction_accounting import VALUATION_SCHEMA_VERSION, value_confirmed_sol_cashflow_usd
+
+        if accounting.get("accounting_source") != "confirmed_rpc_transaction_meta":
+            raise ValueError("Only confirmed RPC accounting can enter this ledger")
+        if type(accounting.get("accounting_schema_version")) is not int or accounting["accounting_schema_version"] != 1:
+            raise ValueError("Unsupported confirmed accounting schema version")
+        native_delta = accounting.get("native_delta_lamports")
+        fee = accounting.get("fee_lamports")
+        if type(native_delta) is not int or type(fee) is not int or fee < 0:
+            raise ValueError("Confirmed SOL delta and fee must be integer lamports")
+        if valuation.get("accounting_source") != "confirmed_rpc_transaction_meta":
+            raise ValueError("Valuation source does not match confirmed accounting")
+        if (
+            type(valuation.get("valuation_schema_version")) is not int
+            or valuation["valuation_schema_version"] != VALUATION_SCHEMA_VERSION
+        ):
+            raise ValueError("Unsupported confirmed valuation schema version")
+        expected_valuation = value_confirmed_sol_cashflow_usd(
+            accounting,
+            sol_usd_rate=valuation.get("sol_usd_rate"),
+            rate_timestamp=valuation.get("sol_usd_rate_timestamp"),
+            rate_source=valuation.get("sol_usd_rate_source"),
+            rate_verified=valuation.get(
+                "sol_usd_rate_caller_attested", valuation.get("sol_usd_rate_verified")
+            ),
+            max_rate_age_s=valuation.get("max_rate_age_s"),
+        )
+        if valuation != expected_valuation:
+            raise ValueError("Valuation does not match confirmed deltas and rate evidence")
+        if valuation.get("fee_currency") != "SOL" or valuation.get("fee_included_in_sol_cashflow") is not True:
+            raise ValueError("Confirmed valuation is missing fee/cash-flow semantics")
+        status = valuation.get("valuation_status")
+        if status not in {"valued", "unknown"}:
+            raise ValueError("Confirmed valuation status must be valued or unknown")
+        if status == "valued":
+            for field in ("sol_cashflow_usd", "fee_usd", "sol_usd_rate", "sol_usd_rate_timestamp"):
+                value = valuation.get(field)
+                if isinstance(value, bool) or not isinstance(value, (int, float)):
+                    raise ValueError(f"Valued record requires numeric {field}")
+                try:
+                    finite_value = math.isfinite(float(value))
+                except (OverflowError, ValueError):
+                    finite_value = False
+                if not finite_value:
+                    raise ValueError(f"Valued record requires finite {field}")
+            if valuation.get("sol_usd_rate", 0) <= 0:
+                raise ValueError("Valued record requires a positive SOL/USD rate")
+            if not isinstance(valuation.get("sol_usd_rate_source"), str) or not valuation["sol_usd_rate_source"].strip():
+                raise ValueError("Valued record requires SOL/USD source provenance")
+        elif valuation.get("sol_cashflow_usd") is not None or valuation.get("fee_usd") is not None:
+            raise ValueError("Unknown valuation must not contain invented USD amounts")
+
+        record = {
+            "signature": signature,
+            "accounting_fingerprint": fingerprint,
+            "accounting_schema_version": accounting.get("accounting_schema_version"),
+            "valuation_schema_version": valuation.get("valuation_schema_version"),
+            "accounting_source": "confirmed_rpc_transaction_meta",
+            "native_delta_lamports": native_delta,
+            "fee_lamports": fee,
+            "fee_status": valuation.get("fee_status", "confirmed"),
+            "fee_currency": "SOL",
+            "fee_included_in_sol_cashflow": True,
+            "accounting_domain": "CONFIRMED_CHAIN",
+            "applied_to_paper_pnl": False,
+            "event_timestamp": valuation.get("event_timestamp"),
+            "valuation_status": status,
+            "valuation_reason": valuation.get("valuation_reason"),
+            "sol_cashflow_usd": valuation.get("sol_cashflow_usd"),
+            "fee_usd": valuation.get("fee_usd"),
+            "sol_usd_rate": valuation.get("sol_usd_rate"),
+            "sol_usd_rate_timestamp": valuation.get("sol_usd_rate_timestamp"),
+            "sol_usd_rate_source": valuation.get("sol_usd_rate_source"),
+            "sol_usd_rate_verified": valuation.get("sol_usd_rate_verified"),
+            "sol_usd_rate_caller_attested": valuation.get("sol_usd_rate_caller_attested"),
+            "rate_origin_status": valuation.get("rate_origin_status"),
+            "max_rate_age_s": valuation.get("max_rate_age_s"),
+            "rate_age_seconds": valuation.get("rate_age_seconds"),
+        }
+        ledger_existed = "confirmed_accounting_ledger" in self.state
+        original_ledger = self.state.get("confirmed_accounting_ledger", [])
+        if not isinstance(original_ledger, list) or any(not isinstance(item, dict) for item in original_ledger):
+            raise ValueError("Confirmed accounting ledger must be a list of objects")
+        working_ledger = list(original_ledger)
+        index = next((i for i, item in enumerate(working_ledger) if item.get("signature") == signature), None)
+
+        idempotency_existed = "confirmed_accounting_idempotency" in self.state
+        original_idempotency = self.state.get("confirmed_accounting_idempotency", {})
+        if not isinstance(original_idempotency, dict):
+            raise ValueError("Confirmed accounting idempotency index must be an object")
+        working_idempotency = dict(original_idempotency)
+        for key, value in working_idempotency.items():
+            if (
+                not isinstance(key, str)
+                or len(key) != 64
+                or any(character not in "0123456789abcdef" for character in key)
+                or (value is not None and (
+                    not isinstance(value, str)
+                    or len(value) != 64
+                    or any(character not in "0123456789abcdef" for character in value)
+                ))
+            ):
+                raise ValueError("Confirmed accounting idempotency index is malformed")
+        idempotency_changed = False
+
+        # Backfill tombstones for all rows retained by older versions before a
+        # future append can evict them. Legacy rows without a complete evidence
+        # fingerprint receive an identity-only tombstone until replayed while
+        # their detailed row is still retained.
+        for item in working_ledger:
+            old_signature = item.get("signature")
+            if not isinstance(old_signature, str) or not old_signature.strip():
+                raise ValueError("Confirmed accounting ledger contains a malformed signature")
+            old_key = _accounting_signature_key(old_signature)
+            old_fingerprint = item.get("accounting_fingerprint")
+            if old_fingerprint is not None and (
+                not isinstance(old_fingerprint, str)
+                or len(old_fingerprint) != 64
+                or any(character not in "0123456789abcdef" for character in old_fingerprint)
+            ):
+                raise ValueError("Confirmed accounting ledger contains a malformed fingerprint")
+            if old_key not in working_idempotency:
+                working_idempotency[old_key] = old_fingerprint
+                idempotency_changed = True
+            elif old_fingerprint is not None:
+                indexed_fingerprint = working_idempotency[old_key]
+                if indexed_fingerprint not in (None, old_fingerprint):
+                    raise ValueError("Confirmed accounting ledger conflicts with its idempotency index")
+                if indexed_fingerprint is None:
+                    working_idempotency[old_key] = old_fingerprint
+                    idempotency_changed = True
+            elif working_idempotency[old_key] is not None:
+                raise ValueError("Legacy confirmed accounting row conflicts with a full fingerprint")
+
+        indexed_fingerprint = working_idempotency.get(signature_key, "__missing__")
+        if indexed_fingerprint not in ("__missing__", None, fingerprint):
+            raise ValueError("Conflicting confirmed accounting for signature")
+        if index is None and indexed_fingerprint != "__missing__":
+            # The detailed row may have been evicted already. Its permanent
+            # tombstone still blocks a replay from adding it a second time.
+            if idempotency_changed:
+                self.state["confirmed_accounting_idempotency"] = working_idempotency
+                try:
+                    self.save()
+                except Exception:
+                    if idempotency_existed:
+                        self.state["confirmed_accounting_idempotency"] = original_idempotency
+                    else:
+                        self.state.pop("confirmed_accounting_idempotency", None)
+                    raise
+            return False
+
+        if indexed_fingerprint == "__missing__":
+            working_idempotency[signature_key] = fingerprint
+            idempotency_changed = True
+
+        ledger_changed = False
+        if index is not None:
+            previous = working_ledger[index]
+            immutable_fields = (
+                "signature", "accounting_source", "native_delta_lamports", "fee_lamports",
+                "event_timestamp",
+            )
+            if any(previous.get(field) != record.get(field) for field in immutable_fields):
+                raise ValueError("Conflicting confirmed accounting for signature")
+            previous_fingerprint = previous.get("accounting_fingerprint")
+            if previous_fingerprint is None:
+                # Historical rows did not retain all fields needed to prove
+                # that a replay has the same wallet, mints, and token deltas.
+                # Keep an identity-only tombstone and prohibit reconciliation.
+                if idempotency_changed:
+                    self.state["confirmed_accounting_idempotency"] = working_idempotency
+                    try:
+                        self.save()
+                    except Exception:
+                        if idempotency_existed:
+                            self.state["confirmed_accounting_idempotency"] = original_idempotency
+                        else:
+                            self.state.pop("confirmed_accounting_idempotency", None)
+                        raise
+                return False
+            if previous_fingerprint != fingerprint:
+                raise ValueError("Conflicting confirmed accounting for signature")
+            if previous == record:
+                pass
+            elif previous.get("valuation_status") == "unknown" and status == "unknown":
+                # Additional caller claims cannot upgrade or rewrite an
+                # unresolved valuation; retain the original UNKNOWN evidence.
+                pass
+            elif previous.get("valuation_status") != "unknown" or status != "valued":
+                raise ValueError("Conflicting valuation for signature")
+            else:
+                working_ledger[index] = record
+                ledger_changed = True
+        else:
+            working_ledger.append(record)
+            del working_ledger[:-MAX_CONFIRMED_ACCOUNTING_RECORDS]
+            ledger_changed = True
+
+        if not ledger_changed and not idempotency_changed:
+            return False
+
+        self.state["confirmed_accounting_ledger"] = working_ledger
+        self.state["confirmed_accounting_idempotency"] = working_idempotency
+        try:
+            self.save()
+        except Exception:
+            if ledger_existed:
+                self.state["confirmed_accounting_ledger"] = original_ledger
+            else:
+                self.state.pop("confirmed_accounting_ledger", None)
+            if idempotency_existed:
+                self.state["confirmed_accounting_idempotency"] = original_idempotency
+            else:
+                self.state.pop("confirmed_accounting_idempotency", None)
+            raise
+        return ledger_changed
 
     # ── Gestion des wallets dev surveillés ──────────────────────
     def add_dev_wallet(self, address: str, label: str, scheme: str, backtest_ratio: float,

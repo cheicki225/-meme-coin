@@ -10,8 +10,9 @@ La bonding curve Pump.fun ne garantit pas qu'un token soit sûr. GoPlus
 peut aussi ne pas avoir de données DEX pour les tokens très récents; ces
 réponses sont traitées comme inconnues et bloquées lorsque le filtre est activé.
 
-Désactivé par défaut par wallet (security_check_enabled=False dans
-config.DEFAULT_WALLET_SETTINGS) — à activer explicitement si voulu.
+Activé par défaut pour les nouveaux wallets. Une réponse absente, invalide ou
+incomplète reste UNKNOWN et bloque l'achat; un réglage explicitement conservé
+sur un wallet existant n'est pas réécrit automatiquement.
 """
 
 import logging

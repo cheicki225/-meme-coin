@@ -38,6 +38,10 @@ class EventQueueFullError(EventStoreError):
     """Raised when a notification cannot be durably added within configured bounds."""
 
 
+class EventIntakePausedError(EventStoreError):
+    """Raised when new live events arrive before a stream's history is recovered."""
+
+
 class EventRecoveryError(EventStoreError):
     """Raised when history replay cannot prove the gap was completely recovered."""
 
@@ -256,6 +260,29 @@ class HeliusEventStore:
                             "helius",
                         )
                     return result
+
+                stream_state = db.execute(
+                    "SELECT recovery_required, intake_paused FROM event_streams "
+                    "WHERE stream=?",
+                    (stream,),
+                ).fetchone()
+                if (
+                    not is_replay
+                    and stream_state
+                    and (bool(stream_state[0]) or bool(stream_state[1]))
+                ):
+                    self._counter(db, "paused_intake_rejections")
+                    db.commit()
+                    with correlate_event(correlation_id):
+                        record_execution_metric(
+                            "event.inbox_enqueue",
+                            (time.perf_counter() - started) * 1000,
+                            "failure",
+                            "helius",
+                        )
+                    raise EventIntakePausedError(
+                        "Helius event intake is paused until history recovery completes"
+                    )
 
                 pending_count, pending_bytes = db.execute(
                     """
@@ -697,6 +724,9 @@ class HeliusEventStore:
             "replayed": replayed,
             "retried": int(counters.get("retried", 0)),
             "queue_full": queue_full,
+            "paused_intake_rejections": int(
+                counters.get("paused_intake_rejections", 0)
+            ),
             "unpersisted_rejection_rate": round(
                 queue_full / max(received + queue_full, 1), 6
             ),
@@ -837,11 +867,13 @@ async def replay_stream_history(
     address: str,
     fetch_page: FetchSignaturePage,
 ) -> int:
-    """Replay a bounded address-history gap before allowing stream intake again.
+    """Replay an address-history gap only with a verifiable transaction order.
 
     The RPC provider returns newest-first pages. The checkpoint must be found
     before any replay is enqueued. If it is outside retained provider history or
     the gap exceeds inbox capacity, the stream remains paused for manual review.
+    A slot and transaction index are required so page order can be checked
+    across slots and within each slot before intake resumes.
     """
     if not isinstance(address, str) or not address.strip():
         raise EventRecoveryError("History replay requires a known monitored address")
@@ -852,11 +884,20 @@ async def replay_stream_history(
     newest_first: list[dict] = []
     before: str | None = None
     found_checkpoint = False
+    previous_order: tuple[int, int] | None = None
     page_limit = _PAGE_LIMIT
     max_items = store.max_pending_events
     max_pages = (max_items // page_limit) + 2
     for _ in range(max_pages):
-        page = await fetch_page(address, before, page_limit)
+        try:
+            page = await fetch_page(address, before, page_limit)
+        except Exception:
+            # Keep provider details, URLs, and exception text out of logs and
+            # persisted event state. The stream remains paused and can retry
+            # recovery on its next connection.
+            raise EventRecoveryError(
+                "History replay source is temporarily unavailable"
+            ) from None
         if not isinstance(page, list):
             raise EventRecoveryError("History replay returned an invalid page")
         if not page:
@@ -867,6 +908,18 @@ async def replay_stream_history(
             signature = item.get("signature")
             if not isinstance(signature, str) or not signature:
                 raise EventRecoveryError("History replay entry has no signature")
+            slot = item.get("slot")
+            transaction_index = item.get("transactionIndex")
+            if type(slot) is not int or slot < 0 or type(transaction_index) is not int or transaction_index < 0:
+                raise EventRecoveryError(
+                    "History replay is missing canonical slot and transaction index"
+                )
+            order = (slot, transaction_index)
+            if previous_order is not None and order >= previous_order:
+                raise EventRecoveryError(
+                    "History replay transaction ordering is not canonical"
+                )
+            previous_order = order
             if signature == checkpoint_signature:
                 found_checkpoint = True
                 break
@@ -891,7 +944,7 @@ async def replay_stream_history(
             stream,
             item["signature"],
             {"replayed": True},
-            slot=item.get("slot") if type(item.get("slot")) is int else None,
+            slot=item["slot"],
             is_replay=True,
         )
         inserted += int(result.inserted)

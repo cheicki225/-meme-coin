@@ -20,7 +20,7 @@ import sys
 
 import config
 from websocket_listener import NewTokenListener
-from copytrade_listener import CopyTradeListener
+from copytrade_listener import CopyTradeListener, is_token_age_within_limit
 import fund_tracer
 import wallet_history
 import backtest
@@ -119,7 +119,7 @@ class SniperBot:
             signatures = []
             for item in unresolved[:5]:
                 signature = item.get("signature") if isinstance(item, dict) else None
-                signatures.append(signature if isinstance(signature, str) and signature else "unknown")
+                signatures.append(f"{signature[:12]}…" if isinstance(signature, str) and signature else "unknown")
             self.data_store.activate_emergency_stop(
                 "pending transaction signatures require manual reconciliation"
             )
@@ -179,6 +179,11 @@ class SniperBot:
             await self.telegram_bot.run_polling()
         else:
             log.warning("⚠️  Aucun BOT_TOKEN configuré — le bot Telegram ne démarre pas (notifications désactivées).")
+
+        if config.TRADING_MODE == "PAPER":
+            resumed = self.trader.resume_open_positions()
+            if resumed:
+                log.info("Resumed %s persisted PAPER position monitor(s)", resumed)
 
         # Le scanner de protection tourne en parallèle du listener WebSocket :
         # il ajoute proactivement les wallets financés par les adresses mère/exchange
@@ -308,10 +313,16 @@ class SniperBot:
 
         # Max Token Age : ignore les tokens trop vieux au moment où le wallet achète
         max_age = settings.get("max_token_age_min", 0)
-        if max_age:
+        if not is_token_age_within_limit(None, max_age):
+            log.warning("Copy trade ignoré (%s) — limite d'âge invalide.", label)
+            return
+        if max_age > 0:
             age = await backtest.get_token_age_minutes(token_mint)
-            if age is not None and age > max_age:
-                log.info(f"⏭️  Copy trade ignoré ({label}) — token âgé de {age:.1f}min > max {max_age}min.")
+            if not is_token_age_within_limit(age, max_age):
+                log.info(
+                    "Copy trade ignoré (%s) — âge du token inconnu, invalide ou supérieur à la limite.",
+                    label,
+                )
                 return
 
         # CORRIGÉ (demande explicite, 19 août — latence) : ces deux vérifications
@@ -638,8 +649,11 @@ class SniperBot:
             for position in list(self.data_store.state.get("open_positions", [])):
                 if position["source_wallet"] == wallet_address and position["token_mint"] == token_mint:
                     log.info(f"📋 Copy sell détecté : {label} a vendu {token_mint[:8]}... — clôture miroir.")
-                    data = await backtest._get_pair_data(token_mint)
-                    price = float(data.get("priceUsd", position["entry_price"]) or position["entry_price"])
+                    live = await backtest.get_live_price_and_market_cap(token_mint)
+                    price = live.get("price") if isinstance(live, dict) else None
+                    if not self.trader._is_valid_market_price(price):
+                        await self.trader._close_remaining(position, None, 0.0, "COPY_SELL")
+                        continue
                     change_pct = self.trader._pnl_pct(position, price)
                     await self.trader._close_remaining(position, price, change_pct, "COPY_SELL")
             return

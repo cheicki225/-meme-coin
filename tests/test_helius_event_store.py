@@ -1,4 +1,6 @@
 import asyncio
+import multiprocessing
+import sqlite3
 import time
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
@@ -19,6 +21,15 @@ from execution_metrics import summarize_metrics
 
 def _store(path, **kwargs):
     return HeliusEventStore(path, **kwargs)
+
+
+def _enqueue_synthetic_event_in_process(path, barrier, result_queue, signature):
+    store = HeliusEventStore(path)
+    barrier.wait(timeout=20)
+    result = store.enqueue(
+        "fixture-stream", signature, {"synthetic": True}, slot=123
+    )
+    result_queue.put((result.inserted, result.status))
 
 
 @pytest.fixture(autouse=True)
@@ -153,6 +164,36 @@ def test_concurrent_claimants_cannot_claim_same_event(tmp_path):
     assert sum(result is not None for result in results) == 1
 
 
+def test_multiprocess_duplicate_enqueue_is_persisted_once(tmp_path):
+    path = tmp_path / "events.sqlite3"
+    _store(path)
+    context = multiprocessing.get_context("spawn")
+    barrier = context.Barrier(2)
+    results = context.Queue()
+    workers = [
+        context.Process(
+            target=_enqueue_synthetic_event_in_process,
+            args=(path, barrier, results, "synthetic-shared-signature"),
+        )
+        for _ in range(2)
+    ]
+    for worker in workers:
+        worker.start()
+
+    outcomes = sorted(results.get(timeout=30) for _ in workers)
+    for worker in workers:
+        worker.join(timeout=30)
+        assert worker.exitcode == 0
+
+    assert outcomes == [(False, "pending"), (True, "pending")]
+    with sqlite3.connect(path) as db:
+        count = db.execute(
+            "SELECT COUNT(*) FROM event_inbox WHERE signature=?",
+            ("synthetic-shared-signature",),
+        ).fetchone()[0]
+    assert count == 1
+
+
 def test_queue_full_pauses_intake_and_marks_replay_required(tmp_path):
     store = _store(tmp_path / "events.sqlite3", max_pending_events=1)
     store.enqueue("copytrade:wallet-a", "signature-a", {})
@@ -205,9 +246,9 @@ def test_history_replay_restores_missing_notifications_in_oldest_first_order(tmp
         assert before is None
         assert limit == 1000
         return [
-            {"signature": "signature-c", "slot": 13},
-            {"signature": "signature-b", "slot": 12},
-            {"signature": "checkpoint-signature", "slot": 10},
+            {"signature": "signature-c", "slot": 13, "transactionIndex": 4},
+            {"signature": "signature-b", "slot": 12, "transactionIndex": 2},
+            {"signature": "checkpoint-signature", "slot": 10, "transactionIndex": 1},
         ]
 
     inserted = asyncio.run(
@@ -224,6 +265,77 @@ def test_history_replay_restores_missing_notifications_in_oldest_first_order(tmp
     assert second is not None and second.signature == "signature-c"
 
 
+def test_history_replay_rejects_noncanonical_transaction_order(tmp_path):
+    store = _store(tmp_path / "events.sqlite3")
+    stream = "new-token:program"
+    store.enqueue(stream, "checkpoint-signature", {}, slot=10)
+    checkpoint = store.claim_next(stream)
+    assert checkpoint is not None
+    store.mark_processed(checkpoint.event_id)
+    store.mark_recovery_required(stream, "connection_gap")
+
+    async def fetch_page(_address, _before, _limit):
+        return [
+            {"signature": "newer", "slot": 12, "transactionIndex": 1},
+            {"signature": "older", "slot": 13, "transactionIndex": 0},
+            {"signature": "checkpoint-signature", "slot": 10, "transactionIndex": 0},
+        ]
+
+    with pytest.raises(EventRecoveryError, match="ordering is not canonical"):
+        asyncio.run(replay_stream_history(store, stream, "program-address", fetch_page))
+    assert store.intake_paused(stream)
+    assert store.checkpoint(stream) == (1, "checkpoint-signature")
+
+
+def test_history_replay_checks_order_across_page_boundaries(tmp_path, monkeypatch):
+    monkeypatch.setattr("helius_event_store._PAGE_LIMIT", 2)
+    store = _store(tmp_path / "events.sqlite3")
+    stream = "new-token:program"
+    store.enqueue(stream, "checkpoint-signature", {}, slot=10)
+    checkpoint = store.claim_next(stream)
+    assert checkpoint is not None
+    store.mark_processed(checkpoint.event_id)
+    store.mark_recovery_required(stream, "connection_gap")
+
+    async def fetch_page(_address, before, _limit):
+        if before is None:
+            return [
+                {"signature": "page-one-newer", "slot": 13, "transactionIndex": 2},
+                {"signature": "page-one-older", "slot": 13, "transactionIndex": 1},
+            ]
+        assert before == "page-one-older"
+        return [
+            {"signature": "page-two-out-of-order", "slot": 13, "transactionIndex": 3},
+            {"signature": "checkpoint-signature", "slot": 10, "transactionIndex": 0},
+        ]
+
+    with pytest.raises(EventRecoveryError, match="ordering is not canonical"):
+        asyncio.run(replay_stream_history(store, stream, "program-address", fetch_page))
+    assert store.intake_paused(stream)
+    assert store.checkpoint(stream) == (1, "checkpoint-signature")
+
+
+def test_history_replay_requires_transaction_index_before_unpausing(tmp_path):
+    store = _store(tmp_path / "events.sqlite3")
+    stream = "copytrade:wallet-a"
+    store.enqueue(stream, "checkpoint-signature", {}, slot=10)
+    checkpoint = store.claim_next(stream)
+    assert checkpoint is not None
+    store.mark_processed(checkpoint.event_id)
+    store.mark_recovery_required(stream, "connection_gap")
+
+    async def fetch_page(_address, _before, _limit):
+        return [
+            {"signature": "newer", "slot": 12},
+            {"signature": "checkpoint-signature", "slot": 10, "transactionIndex": 0},
+        ]
+
+    with pytest.raises(EventRecoveryError, match="missing canonical"):
+        asyncio.run(replay_stream_history(store, stream, "wallet-a", fetch_page))
+    assert store.intake_paused(stream)
+    assert store.checkpoint(stream) == (1, "checkpoint-signature")
+
+
 def test_history_replay_fails_closed_if_checkpoint_cannot_be_found(tmp_path):
     store = _store(tmp_path / "events.sqlite3")
     stream = "protection:wallet-a"
@@ -234,7 +346,7 @@ def test_history_replay_fails_closed_if_checkpoint_cannot_be_found(tmp_path):
     store.mark_recovery_required(stream)
 
     async def missing_checkpoint(_address, _before, _limit):
-        return [{"signature": "unrelated-signature", "slot": 20}]
+        return [{"signature": "unrelated-signature", "slot": 20, "transactionIndex": 1}]
 
     with pytest.raises(EventRecoveryError, match="checkpoint"):
         asyncio.run(
@@ -300,10 +412,10 @@ def test_queue_saturation_is_recovered_from_readonly_history(tmp_path):
     async def fetch_page(_address, before, _limit):
         assert before is None
         return [
-            {"signature": "missed-at-capacity", "slot": 13},
-            {"signature": "pending-b", "slot": 12},
-            {"signature": "pending-a", "slot": 11},
-            {"signature": "checkpoint-signature", "slot": 10},
+            {"signature": "missed-at-capacity", "slot": 13, "transactionIndex": 4},
+            {"signature": "pending-b", "slot": 12, "transactionIndex": 3},
+            {"signature": "pending-a", "slot": 11, "transactionIndex": 2},
+            {"signature": "checkpoint-signature", "slot": 10, "transactionIndex": 1},
         ]
 
     assert asyncio.run(

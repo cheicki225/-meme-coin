@@ -162,6 +162,9 @@ class LiveTrader(PaperTrader):
         buy_amount_sol = settings.get("buy_amount_sol", 0.1)
         amount_lamports = int(buy_amount_sol * 1_000_000_000)
         slippage_bps = int(settings.get("buy_slippage_pct", 50) * 100)
+        # Obtain the valuation rate before any signed swap can be broadcast.
+        # If the provider is unavailable, fail before the irreversible action.
+        sol_usd_rate = await get_sol_usd_rate()
         keypair = self._get_execution_keypair()
         use_jito = settings.get("use_jito", False)
 
@@ -191,7 +194,7 @@ class LiveTrader(PaperTrader):
             self.data_store.activate_emergency_stop("confirmed buy did not debit SOL from the wallet")
             raise jupiter_executor.SwapError("Confirmed SOL cashflow is inconsistent with a buy.")
         sol_spent = -native_delta / 1_000_000_000
-        cost_basis_usd = sol_spent * await get_sol_usd_rate()
+        cost_basis_usd = sol_spent * sol_usd_rate
 
         if units_received <= 0:
             log.error(f"❌ Achat LIVE sur {token_mint[:8]}... a renvoyé 0 token reçu — anomalie.")
@@ -244,6 +247,9 @@ class LiveTrader(PaperTrader):
             log.warning(f"Montant à vendre trop petit après conversion decimals pour {token_mint[:8]}...")
             return None
 
+        # As with buys, never broadcast a swap whose confirmed SOL cashflow
+        # cannot be valued because the quote provider is unavailable.
+        sol_usd_rate = await get_sol_usd_rate()
         slippage_bps = int(settings.get("buy_slippage_pct", 50) * 100)
         keypair = self._get_position_keypair(position.get("execution_wallet"))
 
@@ -264,7 +270,7 @@ class LiveTrader(PaperTrader):
             self.data_store.activate_emergency_stop("confirmed sell did not credit SOL to the wallet")
             raise jupiter_executor.SwapError("Confirmed SOL cashflow is inconsistent with a sell.")
         sol_received = native_delta / 1_000_000_000
-        proceeds_usd = sol_received * await get_sol_usd_rate()
+        proceeds_usd = sol_received * sol_usd_rate
 
         log.info(
             f"💰 [LIVE] Vente réelle confirmée : tokens -> {sol_received:.4f} SOL "

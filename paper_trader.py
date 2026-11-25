@@ -230,24 +230,208 @@ class PaperTrader:
         self.price_stream = price_stream
         self._risk_lock = asyncio.Lock()
         self._risk_reservations = {}
+        self._position_monitor_tasks: dict[int, asyncio.Task] = {}
 
-    async def _reserve_entry_risk(self, reservation_id: str, settings: dict) -> tuple[bool, str | None]:
+    @staticmethod
+    def _finite_number(value: object) -> float | None:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        try:
+            parsed = float(value)
+        except (OverflowError, TypeError, ValueError):
+            return None
+        return parsed if math.isfinite(parsed) else None
+
+    @staticmethod
+    def _is_valid_market_price(price: object) -> bool:
+        """Return whether a quote can safely be used to realize simulated PnL."""
+        finite_price = PaperTrader._finite_number(price)
+        return finite_price is not None and finite_price > 0
+
+    def _start_position_monitor(self, position: dict, *, max_duration_s: float = 3600) -> bool:
+        """Start one monitor task for a position and retain its failures for logs."""
+        position_id = id(position)
+        existing = self._position_monitor_tasks.get(position_id)
+        if existing is not None and not existing.done():
+            return False
+
+        task = asyncio.create_task(self._monitor_position(position, max_duration_s=max_duration_s))
+        if not isinstance(task, asyncio.Task):
+            # Test doubles may intentionally close the coroutine without scheduling it.
+            return True
+        self._position_monitor_tasks[position_id] = task
+        task.add_done_callback(
+            lambda finished, key=position_id: self._position_monitor_finished(key, finished)
+        )
+        return True
+
+    def _position_monitor_finished(self, position_id: int, task: asyncio.Task) -> None:
+        if self._position_monitor_tasks.get(position_id) is task:
+            self._position_monitor_tasks.pop(position_id, None)
+        if task.cancelled():
+            return
+        try:
+            task.result()
+        except Exception as exc:
+            log.error(
+                "Position monitor stopped unexpectedly; persisted position remains open (%s)",
+                type(exc).__name__,
+            )
+
+    def resume_open_positions(self) -> int:
+        """Resume persisted PAPER position monitors without restarting their age."""
+        if config.TRADING_MODE != "PAPER":
+            return 0
+        positions = self.data_store.state.get("open_positions", [])
+        if not isinstance(positions, list):
+            log.error("Persisted open positions are malformed; PAPER monitors were not resumed")
+            return 0
+
+        resumed = 0
+        now = time.time()
+        for position in positions:
+            if not isinstance(position, dict):
+                continue
+            units = self._finite_number(position.get("units"))
+            if (
+                units is None
+                or units <= 0
+                or not isinstance(position.get("token_mint"), str)
+                or not isinstance(position.get("source_wallet"), str)
+                or not isinstance(position.get("settings"), dict)
+            ):
+                log.warning("Malformed persisted PAPER position was left open and unmonitored")
+                continue
+
+            entry_time = self._finite_number(position.get("entry_time"))
+            if entry_time is None or entry_time <= 0 or entry_time > now:
+                self._mark_monitor_state_unknown(position, "entry_time_unavailable")
+                continue
+            elapsed = now - entry_time
+            remaining_duration = max(0.0, 3600 - elapsed)
+            if self._start_position_monitor(position, max_duration_s=remaining_duration):
+                resumed += 1
+        return resumed
+
+    def _mark_monitor_state_unknown(self, position: dict, reason: str) -> None:
+        """Keep a persisted position visible when its monitor cannot be resumed safely."""
+        position["exit_status"] = "unknown"
+        position["exit_pending_reason"] = reason
+        position["exit_request_reason"] = "MONITOR_RESUME"
+        position.setdefault("exit_pending_since", time.time())
+        try:
+            self.data_store.save()
+        except Exception:
+            log.error("Could not persist unknown PAPER monitor state; position remains open in memory")
+        log.warning(
+            "PAPER position monitor remains unknown for %s (%s)",
+            str(position.get("token_mint", "unknown"))[:8],
+            reason,
+        )
+
+    async def _record_exit_price_unknown(self, position: dict, close_reason: str) -> None:
+        """Persist an unresolved exit request without fabricating a fill or PnL."""
+        is_new = (
+            position.get("exit_status") != "unknown"
+            or position.get("exit_pending_reason") != "exit_price_unavailable"
+            or position.get("exit_request_reason") != close_reason
+        )
+        position["exit_status"] = "unknown"
+        position["exit_pending_reason"] = "exit_price_unavailable"
+        position["exit_request_reason"] = close_reason
+        position.setdefault("exit_pending_since", time.time())
+        try:
+            self.data_store.save()
+        except Exception:
+            log.error("Could not persist unresolved PAPER exit; position remains open in memory")
+        if is_new:
+            log.warning(
+                "%s exit remains unknown for %s (%s): no valid market price",
+                config.TRADING_MODE,
+                str(position.get("token_mint", "unknown"))[:8],
+                close_reason,
+            )
+            if self.notifier:
+                await self.notifier.notify(
+                    "sell_failed",
+                    f"⏳ *Sortie non résolue* ({close_reason})\n"
+                    f"Token: `{str(position.get('token_mint', 'unknown'))[:8]}...`\n"
+                    "Prix indisponible; position conservée, aucun PnL réalisé.",
+                )
+
+    @staticmethod
+    def _clear_exit_price_unknown(position: dict) -> None:
+        position.pop("exit_status", None)
+        position.pop("exit_pending_reason", None)
+        position.pop("exit_request_reason", None)
+        position.pop("exit_pending_since", None)
+
+    async def _reserve_entry_risk(
+        self,
+        reservation_id: str,
+        settings: dict,
+        *,
+        existing_position: dict | None = None,
+        sol_usd_rate: float | None = None,
+        simulated_fee_sol: float | None = None,
+    ) -> tuple[bool, str | None]:
         amount_sol = settings.get("buy_amount_sol", 0.1)
-        if not isinstance(amount_sol, (int, float)) or amount_sol <= 0:
+        if (not isinstance(amount_sol, (int, float)) or isinstance(amount_sol, bool)
+                or not math.isfinite(amount_sol) or amount_sol <= 0):
             return False, "invalid_buy_amount"
-        sol_usd = await get_sol_usd_rate()
+        sol_usd = sol_usd_rate
+        if sol_usd is None:
+            sol_usd = await get_sol_usd_rate()
         # Reserve a conservative fee/rent cushion until confirmed position
         # accounting replaces it with the actual cash cost.
-        cushion_sol = config.MAX_TRANSACTION_FEE_LAMPORTS / 1_000_000_000 + 0.005
+        fee_cushion_sol = config.MAX_TRANSACTION_FEE_LAMPORTS / 1_000_000_000
+        if simulated_fee_sol is not None:
+            if (not isinstance(simulated_fee_sol, (int, float))
+                    or isinstance(simulated_fee_sol, bool)
+                    or not math.isfinite(simulated_fee_sol)
+                    or simulated_fee_sol < 0):
+                return False, "invalid_simulated_fee"
+            fee_cushion_sol = max(fee_cushion_sol, simulated_fee_sol)
+        cushion_sol = fee_cushion_sol + 0.005
+        if (not isinstance(sol_usd, (int, float)) or isinstance(sol_usd, bool)
+                or not math.isfinite(sol_usd) or sol_usd <= 0):
+            return False, "invalid_sol_usd_rate"
         proposed_usd = (amount_sol + cushion_sol) * sol_usd
         async with self._risk_lock:
+            if reservation_id in self._risk_reservations:
+                return False, "entry_already_reserved"
             reserved = list(self._risk_reservations.values())
+            state = self.data_store.state
+            reserved_exposure_usd = sum(reserved)
+            risk_state = state
+            if existing_position is not None:
+                if not isinstance(existing_position, dict):
+                    return False, "invalid_position_state"
+                positions = state.get("open_positions") if isinstance(state, dict) else None
+                if not isinstance(positions, list):
+                    return False, "invalid_position_state"
+                if sum(position is existing_position for position in positions) != 1:
+                    return False, "invalid_position_state"
+                existing_cost_usd = existing_position.get("cost_basis_usd")
+                if (not isinstance(existing_cost_usd, (int, float))
+                        or isinstance(existing_cost_usd, bool)
+                        or not math.isfinite(existing_cost_usd)
+                        or existing_cost_usd < 0):
+                    return False, "invalid_position_exposure"
+                risk_state = dict(state)
+                risk_state["open_positions"] = [
+                    position for position in positions if position is not existing_position
+                ]
+                # An add-on keeps its existing position slot. Count its current
+                # cost toward exposure while the remaining positions continue
+                # to enforce MAX_OPEN_POSITIONS normally.
+                reserved_exposure_usd += existing_cost_usd
             allowed, reason = risk_controls.assess_new_position(
-                self.data_store.state,
+                risk_state,
                 proposed_usd,
                 max_exposure_usd=config.MAX_OPEN_EXPOSURE_USD,
                 max_open_positions=config.MAX_OPEN_POSITIONS,
-                reserved_exposure_usd=sum(reserved),
+                reserved_exposure_usd=reserved_exposure_usd,
                 reserved_positions=len(reserved),
             )
             if allowed:
@@ -290,6 +474,8 @@ class PaperTrader:
                             sol_usd_rate: float | None = None) -> dict:
         """Version PAPER : conversion directe au prix coté, aucun slippage simulé.
         Retourne None seulement si la vente doit être annulée (jamais en PAPER)."""
+        if not self._is_valid_market_price(current_price):
+            return None
         proceeds_usd = units * current_price
         if config.TRADING_MODE == "PAPER":
             if sol_usd_rate is None:
@@ -827,7 +1013,7 @@ class PaperTrader:
                 f"{sig_line}{speed_line}\nRaison: {reason}",
                 reply_markup=keyboard,
             )
-        asyncio.create_task(self._monitor_position(position))
+        self._start_position_monitor(position)
         return position
 
     async def _get_transaction_slot(self, signature: str) -> int:
@@ -973,8 +1159,12 @@ class PaperTrader:
                     market_cap = live["market_cap"]
                     data = live["pair_data"]
 
-                if price <= 0:
+                if not self._is_valid_market_price(price):
                     continue
+
+                if position.get("exit_status") == "unknown":
+                    self._clear_exit_price_unknown(position)
+                    self.data_store.save()
 
                 position["ath_market_cap"] = max(position["ath_market_cap"], market_cap)
                 change_pct = self._pnl_pct(position, price)
@@ -1048,10 +1238,11 @@ class PaperTrader:
                     await self._check_buy_the_dip(position, price)
 
             if position["units"] > 0:
-                # CORRIGÉ (même bug que ci-dessus) : repli DexScreener-only,
-                # même problème pour un token jamais migré.
                 live = await get_live_price_and_market_cap(position["token_mint"])
-                price = live["price"] or position["entry_price"]
+                price = live.get("price") if isinstance(live, dict) else None
+                if not self._is_valid_market_price(price):
+                    await self._record_exit_price_unknown(position, "EXPIRATION")
+                    return
                 change_pct = self._pnl_pct(position, price)
                 await self._close_remaining(position, price, change_pct, "EXPIRATION")
         finally:
@@ -1088,23 +1279,73 @@ class PaperTrader:
             if i in position["dip_levels_hit"]:
                 continue
             if drop_pct >= level["drop_pct"]:
-                # Keep the simulated token buy and its fee on the same SOL/USD
-                # snapshot so the position basis matches the modeled cash cost.
-                sol_usd = await get_sol_usd_rate()
-                dip_amount_usd = level["amount_sol"] * sol_usd
+                # Use one quote for both risk reservation and accounting, so
+                # the admitted USD exposure matches the amount actually added.
                 fee_sol = _simulated_paper_fee_sol(position.get("buy_mode", "simple"))
-                fee_usd = _paper_fee_usd_at_rate(fee_sol, sol_usd)
-                new_units = dip_amount_usd / price
-                position["units"] += new_units
-                position["cost_basis_usd"] += dip_amount_usd + fee_usd
-                position["total_sol_invested"] = (
-                    position.get("total_sol_invested", 0) + level["amount_sol"] + fee_sol
+                sol_usd = await get_sol_usd_rate()
+                if i in position["dip_levels_hit"]:
+                    continue
+                reservation_id = (
+                    f"dip:{position['token_mint']}:{id(position)}:{i}"
                 )
-                position["simulated_fees_sol"] = position.get("simulated_fees_sol", 0) + fee_sol
-                position["simulated_fees_usd"] = position.get("simulated_fees_usd", 0) + fee_usd
-                _record_fee_accounting_status(position)
-                position["dip_levels_hit"].append(i)
-                self.data_store.save()
+                allowed, risk_reason = await self._reserve_entry_risk(
+                    reservation_id,
+                    {"buy_amount_sol": level.get("amount_sol")},
+                    existing_position=position,
+                    sol_usd_rate=sol_usd,
+                    simulated_fee_sol=fee_sol,
+                )
+                if not allowed:
+                    log.warning(
+                        "PAPER buy-the-dip rejected by risk controls (%s): %s",
+                        risk_reason,
+                        position["token_mint"][:8],
+                    )
+                    continue
+                if i in position["dip_levels_hit"]:
+                    self._release_entry_risk(reservation_id)
+                    continue
+                accounting_fields = (
+                    "units",
+                    "cost_basis_usd",
+                    "total_sol_invested",
+                    "simulated_fees_sol",
+                    "simulated_fees_usd",
+                    "fee_accounting_version",
+                    "fee_accounting_complete",
+                    "fee_accounting_note",
+                )
+                original_fields = {
+                    name: (name in position, position.get(name))
+                    for name in accounting_fields
+                }
+                original_dip_levels_hit = list(position["dip_levels_hit"])
+                try:
+                    # Keep the simulated token buy and its fee on the same
+                    # SOL/USD snapshot so the basis matches modeled cash cost.
+                    dip_amount_usd = level["amount_sol"] * sol_usd
+                    fee_usd = _paper_fee_usd_at_rate(fee_sol, sol_usd)
+                    new_units = dip_amount_usd / price
+                    position["units"] += new_units
+                    position["cost_basis_usd"] += dip_amount_usd + fee_usd
+                    position["total_sol_invested"] = (
+                        position.get("total_sol_invested", 0) + level["amount_sol"] + fee_sol
+                    )
+                    position["simulated_fees_sol"] = position.get("simulated_fees_sol", 0) + fee_sol
+                    position["simulated_fees_usd"] = position.get("simulated_fees_usd", 0) + fee_usd
+                    _record_fee_accounting_status(position)
+                    position["dip_levels_hit"].append(i)
+                    self.data_store.save()
+                except Exception:
+                    for name, (was_present, value) in original_fields.items():
+                        if was_present:
+                            position[name] = value
+                        else:
+                            position.pop(name, None)
+                    position["dip_levels_hit"] = original_dip_levels_hit
+                    raise
+                finally:
+                    self._release_entry_risk(reservation_id)
 
                 log.info(
                     f"📉 [PAPER] Buy The Dip niveau {i} déclenché sur {position['token_mint'][:8]}... "
@@ -1219,10 +1460,13 @@ class PaperTrader:
     # SELL INITIALS
     # ══════════════════════════════════════════════════════════
 
-    async def sell_initials(self, position: dict, price: float) -> bool:
+    async def sell_initials(self, position: dict, price: float | None) -> bool:
         """Vend exactement de quoi récupérer la mise investie (cost_basis_usd), garde le reste."""
         if config.TRADING_MODE == "LIVE":
             log.error("LIVE sell-initials is disabled because it does not submit a confirmed swap.")
+            return False
+        if not self._is_valid_market_price(price):
+            await self._record_exit_price_unknown(position, "SELL_INITIALS")
             return False
         if position.get("initials_sold"):
             return False
@@ -1467,8 +1711,11 @@ class PaperTrader:
     # ══════════════════════════════════════════════════════════
 
     @measure_async("strategy.partial_close", "internal")
-    async def _partial_close(self, position: dict, exit_price: float, change_pct: float,
+    async def _partial_close(self, position: dict, exit_price: float | None, change_pct: float,
                               sell_ratio: float, tp_index):
+        if not self._is_valid_market_price(exit_price):
+            await self._record_exit_price_unknown(position, "PARTIAL_CLOSE")
+            return
         units_sold = position["units"] * sell_ratio
 
         sell_result = await self._execute_sell(position["token_mint"], units_sold, exit_price, position["settings"])
@@ -1501,6 +1748,7 @@ class PaperTrader:
             position["tp_levels_hit"].append(tp_index)
 
         state = self.data_store.state
+        self._clear_exit_price_unknown(position)
         state["total_pnl_usd"] = state.get("total_pnl_usd", 0) + pnl_usd
         if pnl_usd < 0:
             state["session_losses_usd"] = state.get("session_losses_usd", 0) + abs(pnl_usd)
@@ -1535,8 +1783,12 @@ class PaperTrader:
             self.data_store.save()
 
     @measure_async("strategy.close_position", "internal")
-    async def _close_remaining(self, position: dict, exit_price: float, change_pct: float, close_reason: str):
+    async def _close_remaining(self, position: dict, exit_price: float | None, change_pct: float,
+                               close_reason: str):
         if position["units"] <= 0:
+            return
+        if not self._is_valid_market_price(exit_price):
+            await self._record_exit_price_unknown(position, close_reason)
             return
 
         sell_result = await self._execute_sell(position["token_mint"], position["units"], exit_price, position["settings"])
@@ -1556,6 +1808,7 @@ class PaperTrader:
         simulated_fee_usd = sell_result.get("simulated_fee_usd", 0.0)
         pnl_usd = proceeds - simulated_fee_usd - position["cost_basis_usd"]
 
+        self._clear_exit_price_unknown(position)
         position["status"] = "closed"
         position["exit_price"] = exit_price
         position["exit_time"] = time.time()
