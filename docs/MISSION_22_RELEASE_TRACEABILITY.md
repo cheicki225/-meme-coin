@@ -1,6 +1,6 @@
 # Mission 22 — Release traceability and audit plan
 
-**Status: `BLOCKED / MANUAL_VERIFICATION_REQUIRED`**  
+**Status: `BLOCKED / MANUAL_VERIFICATION_REQUIRED`**
 This matrix is preparatory. It does not authorize a merge or release, and it does not claim an independent DEX/CPI audit. The historical [Mission 17 release matrix](MISSION_17_REPORT.md) remains useful context but is not evidence for current Mission 19–22 work.
 
 ## Release decision rules
