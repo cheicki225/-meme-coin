@@ -48,6 +48,7 @@ from helius_event_store import (
     EventRecord,
     HeliusEventStore,
     RetryableEventError,
+    await_subscription_acknowledgements,
     drain_stream,
     get_default_event_store,
     recover_required_streams,
@@ -67,7 +68,9 @@ class ProtectionScanner:
         self.notifier = notifier
         self._event_store = event_store or get_default_event_store()
         self._running = False
+        self._stop_requested = False
         self._ws = None
+        self._loop: asyncio.AbstractEventLoop | None = None
         self._subscribed_addresses: set[str] = set()
         self._sub_id_to_address: dict[int, str] = {}
         self._request_id_to_address: dict[int, str] = {}
@@ -75,6 +78,7 @@ class ProtectionScanner:
 
     async def start(self):
         self._running = True
+        self._stop_requested = False
         log.info("🛡️  Protection scanner démarré.")
 
         # Scan RPC complet UNE SEULE FOIS au démarrage — rattrape ce qui a pu
@@ -91,6 +95,7 @@ class ProtectionScanner:
                 await self._run_connection()
             except EventStoreError:
                 self._running = False
+                self._stop_requested = True
                 log.critical("Protection event storage failed; listener stopped fail-closed")
             except Exception as e:
                 log.error("External operation failed (%s)", type(e).__name__)
@@ -98,8 +103,25 @@ class ProtectionScanner:
 
     def stop(self):
         self._running = False
+        self._stop_requested = True
+        ws = self._ws
+        loop = self._loop
+        if ws is None or loop is None or not loop.is_running():
+            return
+
+        def schedule_close() -> None:
+            task = loop.create_task(ws.close())
+            task.add_done_callback(
+                lambda done: None if done.cancelled() else done.exception()
+            )
+
+        try:
+            loop.call_soon_threadsafe(schedule_close)
+        except RuntimeError:
+            return
 
     async def _run_connection(self):
+        self._loop = asyncio.get_running_loop()
         async with websockets.connect(config.HELIUS_WS_URL, ping_interval=20) as ws:
             self._ws = ws
             self._subscribed_addresses = set()
@@ -110,17 +132,28 @@ class ProtectionScanner:
             await self._sync_subscriptions()
             for stream in known_streams:
                 self._event_store.mark_recovery_required(stream, "connection_gap")
+            buffered_messages = await await_subscription_acknowledgements(
+                ws, self._request_id_to_address, self._handle_message
+            )
             ready = await recover_required_streams(
                 self._event_store,
                 "protection:",
                 self._process_event_record,
                 self._address_for_stream,
+                should_stop=lambda: self._stop_requested,
             )
             if not ready:
                 log.error("Protection event recovery is incomplete; intake remains paused")
                 await ws.close()
-                await asyncio.sleep(5)
+                if self._running:
+                    await asyncio.sleep(5)
                 return
+            if not self._running:
+                return
+            for message in buffered_messages:
+                if not self._running:
+                    return
+                await self._handle_message(message)
             log.info(f"✅ Protection scanner connecté en WebSocket — synchronisation toutes les {config.PROTECTION_SCAN_INTERVAL_S}s.")
 
             sync_task = asyncio.create_task(self._periodic_sync())
@@ -223,6 +256,7 @@ class ProtectionScanner:
                 await self._ws.close()
         except EventStoreError:
             self._running = False
+            self._stop_requested = True
             log.critical("Protection event storage failed; listener stopped fail-closed")
             if self._ws is not None:
                 await self._ws.close()
@@ -271,7 +305,10 @@ class ProtectionScanner:
 
     async def _drain_event_stream(self, stream: str) -> str:
         result = await drain_stream(
-            self._event_store, stream, self._process_event_record
+            self._event_store,
+            stream,
+            self._process_event_record,
+            should_stop=lambda: self._stop_requested,
         )
         if result == "unknown":
             log.error("Protection event stream is blocked pending manual review")
@@ -287,6 +324,7 @@ class ProtectionScanner:
                 await asyncio.sleep(1)
             except EventStoreError:
                 self._running = False
+                self._stop_requested = True
                 log.critical("Protection event storage failed; listener stopped fail-closed")
                 if self._ws is not None:
                     await self._ws.close()
@@ -298,7 +336,12 @@ class ProtectionScanner:
         if not parsed:
             raise RetryableEventError("enhanced_fetch_unavailable")
 
-        self._event_store.mark_effect_started(event.event_id)
+        self._event_store.mark_effect_started(
+            event.event_id,
+            claim_generation=event.claim_generation,
+            recovery=event.recovery_claim,
+            recovery_generation=event.recovery_generation,
+        )
         with measure_execution("event.decision", "internal"):
             await self._process_parsed_transaction(parsed)
 

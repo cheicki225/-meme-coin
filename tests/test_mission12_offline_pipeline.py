@@ -514,10 +514,15 @@ def test_history_replay_source_failure_keeps_pause_until_successful_recovery(
     store = HeliusEventStore(tmp_path / "replay.sqlite3")
     stream = "copytrade:synthetic-wallet"
     store.ensure_stream(stream)
-    store.enqueue(stream, "synthetic-checkpoint", {}, slot=10)
+    store.enqueue(
+        stream, "synthetic-checkpoint", {}, slot=10,
+        transaction_index=0, is_replay=True,
+    )
     checkpoint = store.claim_next(stream)
     assert checkpoint is not None
-    store.mark_processed(checkpoint.event_id)
+    store.mark_processed(
+        checkpoint.event_id, claim_generation=checkpoint.claim_generation
+    )
     store.mark_recovery_required(stream, "connection_gap")
 
     calls = 0
@@ -537,6 +542,12 @@ def test_history_replay_source_failure_keeps_pause_until_successful_recovery(
         processed.append(event.signature)
 
     monkeypatch.setattr(helius_event_store, "fetch_signature_page", fetch_page)
+
+    async def finalized_boundary() -> int:
+        return 11
+
+    monkeypatch.setattr(helius_event_store, "fetch_processed_slot", finalized_boundary)
+    monkeypatch.setattr(helius_event_store, "fetch_finalized_slot", finalized_boundary)
 
     async def scenario() -> None:
         ready = await recover_required_streams(
@@ -562,7 +573,7 @@ def test_history_replay_source_failure_keeps_pause_until_successful_recovery(
 
     asyncio.run(scenario())
 
-    assert calls == 2
+    assert calls == 3
     assert processed == ["synthetic-newer"]
     assert store.checkpoint(stream) == (2, "synthetic-newer")
     assert store.intake_paused(stream) is False
@@ -574,10 +585,15 @@ def test_replay_error_is_sanitized_and_does_not_advance_checkpoint(tmp_path):
     store = HeliusEventStore(tmp_path / "replay-error.sqlite3")
     stream = "copytrade:synthetic-wallet"
     store.ensure_stream(stream)
-    store.enqueue(stream, "synthetic-checkpoint", {}, slot=10)
+    store.enqueue(
+        stream, "synthetic-checkpoint", {}, slot=10,
+        transaction_index=0, is_replay=True,
+    )
     checkpoint = store.claim_next(stream)
     assert checkpoint is not None
-    store.mark_processed(checkpoint.event_id)
+    store.mark_processed(
+        checkpoint.event_id, claim_generation=checkpoint.claim_generation
+    )
     store.mark_recovery_required(stream, "connection_gap")
 
     async def unavailable(_address: str, _before: str | None, _limit: int):
