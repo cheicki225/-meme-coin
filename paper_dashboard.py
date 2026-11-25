@@ -508,6 +508,50 @@ def _read_helius_store(path: Path | None) -> tuple[dict[str, Any] | None, str | 
         return None, _as_of(path, include_wal=True), "event-store read failed"
 
 
+def _read_mission18_admissions(
+    path: Path | None,
+) -> tuple[dict[str, int] | None, str | None, str]:
+    """Read aggregate Mission 18 reservation counts without selecting identities."""
+    if path is None:
+        return None, None, "Mission 18 admission source not configured"
+    try:
+        if not path.is_file():
+            return None, None, "Mission 18 admission source unavailable"
+        as_of = _as_of(path, include_wal=True)
+        with closing(_readonly_connection(path)) as connection:
+            tables = {
+                row[0]
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+            table = "mission18_paper_reservations"
+            if table not in tables:
+                return None, as_of, "Mission 18 reservation schema unavailable"
+            columns = {
+                row[1]
+                for row in connection.execute(f"PRAGMA table_info({table})")
+            }
+            required = {
+                "signal_id", "correlation_key", "exposure_usd", "status",
+                "created_at_utc", "updated_at_utc",
+            }
+            if not required.issubset(columns):
+                return None, as_of, "Mission 18 reservation schema is incomplete"
+            rows = connection.execute(
+                f"SELECT status, COUNT(*) AS count FROM {table} GROUP BY status"
+            ).fetchall()
+        counts = {"pending": 0, "unknown": 0, "committed": 0, "released": 0}
+        for row in rows:
+            status, count = row["status"], row["count"]
+            if status not in counts or type(count) is not int or count < 0:
+                return None, as_of, "Mission 18 reservation aggregates are malformed"
+            counts[status] = count
+        return counts, as_of, "aggregate reservations only; signal provenance and freshness remain UNKNOWN"
+    except (OSError, sqlite3.Error, ValueError, TypeError):
+        return None, _as_of(path, include_wal=True), "Mission 18 admission source read failed"
+
+
 def _read_bounded_lines(path: Path) -> tuple[list[bytes], str | None, bool]:
     try:
         if not path.is_file():
@@ -631,14 +675,17 @@ def build_snapshot(
     state_path: str | Path | None = "sniper_data.sqlite3",
     helius_path: str | Path | None = "data/helius_events.sqlite3",
     metrics_path: str | Path | None = "data/execution_metrics.jsonl",
+    mission18_admission_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Read explicitly configured local sources and return aggregate status only."""
     state_file = Path(state_path) if state_path is not None else None
     helius_file = Path(helius_path) if helius_path is not None else None
     metrics_file = Path(metrics_path) if metrics_path is not None else None
+    mission18_file = Path(mission18_admission_path) if mission18_admission_path is not None else None
     state, state_as_of, state_detail = _read_state(state_file)
     points = _state_points(state, state_as_of, state_detail)
     helius, helius_as_of, helius_detail = _read_helius_store(helius_file)
+    mission18_counts, mission18_as_of, mission18_detail = _read_mission18_admissions(mission18_file)
     metrics, metrics_as_of, metrics_detail = _read_metrics(metrics_file)
     if metrics is not None:
         metric_notes = []
@@ -654,6 +701,17 @@ def build_snapshot(
         "runtime_mode": _unknown("runtime configuration", "configuration is not loaded by this dashboard"),
         "runtime_heartbeat": _unknown("runtime heartbeat", "no heartbeat source is persisted"),
         "signals": _unknown("signal store", "no canonical signal snapshot is persisted on this base"),
+        "mission18_admission_reservations": (
+            _point(
+                "DEGRADED" if mission18_counts["pending"] or mission18_counts["unknown"] else "OBSERVED",
+                mission18_counts,
+                "Mission 18 SQLite reservation aggregates",
+                mission18_as_of,
+                mission18_detail,
+            )
+            if mission18_counts is not None
+            else _unknown("Mission 18 SQLite reservation aggregates", mission18_detail, mission18_as_of)
+        ),
         "helius_inbox": (
             _point("OBSERVED", helius, "Helius SQLite inbox", helius_as_of, helius_detail)
             if helius is not None else _unknown("Helius SQLite inbox", helius_detail)
@@ -710,6 +768,7 @@ def create_server(
     state_path: str | Path | None = "sniper_data.sqlite3",
     helius_path: str | Path | None = "data/helius_events.sqlite3",
     metrics_path: str | Path | None = "data/execution_metrics.jsonl",
+    mission18_admission_path: str | Path | None = None,
     *,
     port: int = 8765,
 ) -> ThreadingHTTPServer:
@@ -758,7 +817,12 @@ def create_server(
                 respond(self, 200, "text/html; charset=utf-8", _PAGE.encode("utf-8"))
             elif route == "/api/status":
                 body = json.dumps(
-                    build_snapshot(state_path, helius_path, metrics_path),
+                    build_snapshot(
+                        state_path,
+                        helius_path,
+                        metrics_path,
+                        mission18_admission_path,
+                    ),
                     ensure_ascii=True,
                     allow_nan=False,
                     separators=(",", ":"),
@@ -792,6 +856,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--state-path", default="sniper_data.sqlite3", help="SQLite state DB or legacy JSON snapshot")
     parser.add_argument("--helius-db", default="data/helius_events.sqlite3", help="Helius event-store SQLite path")
     parser.add_argument("--metrics-file", default="data/execution_metrics.jsonl", help="Execution-metrics JSONL path")
+    parser.add_argument(
+        "--mission18-admissions",
+        default=None,
+        help="Optional SQLite DB containing Mission 18 admission reservations",
+    )
     parser.add_argument("--port", type=int, default=8765, help="loopback port (default: 8765)")
     args = parser.parse_args()
     if not 1 <= args.port <= 65535:
@@ -801,7 +870,13 @@ def _parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = _parse_args()
-    server = create_server(args.state_path, args.helius_db, args.metrics_file, port=args.port)
+    server = create_server(
+        args.state_path,
+        args.helius_db,
+        args.metrics_file,
+        args.mission18_admissions,
+        port=args.port,
+    )
     print(f"Read-only PAPER snapshot viewer: http://127.0.0.1:{server.server_port}/")
     try:
         server.serve_forever(poll_interval=0.2)
