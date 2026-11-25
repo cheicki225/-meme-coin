@@ -61,6 +61,12 @@ For each restart or restore, use a separate entry. Stop the process cleanly, con
 
 Do not clear a row, reset a checkpoint, or convert an `UNKNOWN` state manually. A restore containing an unresolved event or position remains stopped for reviewed reconciliation.
 
+## Optional machine-readable record check
+
+For a sanitized JSON export of this record, run `python scripts/mission20_validate_operator_evidence.py <record.json>`. The schema requires `schema_version=1`, a run ID, operator-reported Mission 19 gate status, UTC open/close times, at least 25 hourly observation rows, opening/closing integrity results, a backup and restore to a new path, and redacted evidence references in the form `redacted:<label>`.
+
+The checker validates field shape, reported flags, zero `UNKNOWN`/429 counts, maximum observation gaps, recorded duration and restore fields. It does not read a target database, verify reference contents, authenticate timestamps, prove wall-clock continuity, or prove that the Mission 19 gate was actually cleared. Its output always remains `MANUAL_VERIFICATION_REQUIRED`; a structurally valid synthetic fixture is not a soak or restore result. Keep raw logs, secrets, endpoints, wallets, signatures and account identifiers out of the JSON.
+
 ## Abort and stop record
 
 Stop immediately and preserve state if any of these occurs: PAPER/LIVE flags drift, emergency stop becomes inactive, an UNKNOWN or unverified effect appears, canonical event order is missing or contradicted, USD mapping/quote becomes unverified or stale, provider quota is exceeded, SQLite reports an error, a duplicate effect is possible, an external write path appears, or the process stops unexpectedly.
