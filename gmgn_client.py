@@ -72,7 +72,7 @@ async def _get(sub_path: str, params: dict = None) -> dict:
         async with aiohttp.ClientSession(connector=rpc_client.get_http_connector(), connector_owner=False) as session:
             async with session.get(
                 f"{GMGN_BASE_URL}{sub_path}", headers=headers, params=query,
-                timeout=aiohttp.ClientTimeout(total=10),
+                timeout=aiohttp.ClientTimeout(total=10), allow_redirects=False,
             ) as resp:
                 if resp.status != 200:
                     log.warning(f"⚠️ GMGN — {sub_path} a répondu {resp.status}")
@@ -149,7 +149,7 @@ async def get_wallet_profits(wallet_address: str, chain: str = "sol") -> dict:
         async with aiohttp.ClientSession(connector=rpc_client.get_http_connector(), connector_owner=False) as session:
             async with session.post(
                 f"{GMGN_BASE_URL}/v1/user/wallet_profits", headers=headers, params=query, json=body,
-                timeout=aiohttp.ClientTimeout(total=10),
+                timeout=aiohttp.ClientTimeout(total=10), allow_redirects=False,
             ) as resp:
                 if resp.status != 200:
                     log.warning(f"⚠️ GMGN — wallet_profits a répondu {resp.status}")

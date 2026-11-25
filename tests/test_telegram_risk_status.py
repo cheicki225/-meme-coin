@@ -1,5 +1,6 @@
 import asyncio
 
+import backtest
 import telegram_bot
 
 
@@ -50,7 +51,7 @@ def test_stats_distinguishes_manual_emergency_stop_from_loss_breaker_and_pending
 
     asyncio.run(_bot_with_state(state).cmd_stats(update, None))
 
-    assert "Circuit breaker pertes* : 🟢 inactif" in message.text
+    assert "Circuit breaker pertes* : ⚪ état inconnu" in message.text
     assert "Arrêt d'urgence : 🛑 ACTIF — commande Telegram /halt" in message.text
     assert "Transactions en attente : ⚠️ 1 à réconcilier" in message.text
     assert "do-not-display-this-signature" not in message.text
@@ -69,7 +70,7 @@ def test_stats_does_not_claim_manual_stop_when_only_loss_limit_is_reached(monkey
         100,
     )
 
-    assert "Circuit breaker pertes* : 🛑 ACTIF" in status
+    assert "Circuit breaker pertes* : ⚪ état inconnu" in status
     assert "Arrêt d'urgence : 🟢 inactif" in status
     assert "Transactions en attente : aucune" in status
 
@@ -88,7 +89,7 @@ def test_stats_marks_historical_aggregate_pnl_as_potentially_incomplete(monkeypa
 
     asyncio.run(bot.cmd_stats(update, None))
 
-    assert "42.50$" in message.text
+    assert "P&L total: ⚪ inconnu (provenance SOL/USD non vérifiée)" in message.text
     assert "PnL historique potentiellement incomplet" in message.text
     assert state["pnl_fee_history_incomplete"] is True
     assert state["pnl_fee_history_warning_version"] == 1
@@ -134,8 +135,53 @@ def test_session_stats_menu_displays_historical_pnl_warning(monkeypatch):
     asyncio.run(bot.show_session_stats(object()))
 
     assert "Historical PnL may be incomplete" in captured["text"]
+    assert "unknown (SOL/USD provenance unverified)" in captured["text"]
+    assert "Win rate: `⚪ unknown`" in captured["text"]
     assert state["pnl_fee_history_incomplete"] is True
     assert bot.data_store.save_count == 1
+
+
+def test_refresh_pnl_reports_unknown_in_english_without_fetching_price():
+    bot = _bot_with_state({"language": "en"})
+    captured = {}
+
+    class Query:
+        async def answer(self, text, **kwargs):
+            captured["text"] = text
+            captured["kwargs"] = kwargs
+
+    asyncio.run(bot._refresh_pnl(Query(), "fixture-mint"))
+
+    assert captured["text"] == (
+        "P&L unknown: SOL/USD provenance is not independently verified."
+    )
+    assert captured["kwargs"]["show_alert"] is True
+
+
+def test_manual_exit_quote_failure_persists_unknown_provenance(monkeypatch):
+    captured = {}
+    bot = object.__new__(telegram_bot.SniperTelegramBot)
+
+    class Trader:
+        async def _record_exit_price_unknown(self, position, reason, *, pending_reason):
+            captured["record"] = (position, reason, pending_reason)
+
+    bot.trader = Trader()
+
+    async def unavailable(_mint):
+        raise backtest.SolUsdPriceUnavailable("independent_provenance_unavailable")
+
+    monkeypatch.setattr(backtest, "get_live_price_and_market_cap", unavailable)
+    position = {"token_mint": "fixture-mint"}
+
+    result = asyncio.run(bot._load_exit_quote(position, "MANUAL_SELL"))
+
+    assert result is None
+    assert captured["record"] == (
+        position,
+        "MANUAL_SELL",
+        "sol_usd_provenance_unverified",
+    )
 
 
 def test_stats_shows_unknown_state_instead_of_false_inactive_status():

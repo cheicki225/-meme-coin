@@ -15,7 +15,10 @@ import config
 async def try_variant(session, label, headers, params):
     url = "https://pro-api.solscan.io/v2.0/account/transfer"
     try:
-        async with session.get(url, headers=headers, params=params, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+        async with session.get(
+            url, headers=headers, params=params,
+            timeout=aiohttp.ClientTimeout(total=10), allow_redirects=False,
+        ) as resp:
             status = resp.status
             text = await resp.text()
             marker = "✅" if status == 200 else ("❌" if status == 401 else "⚠️")
@@ -25,7 +28,7 @@ async def try_variant(session, label, headers, params):
             elif status != 401:
                 print(f"      Détail : {text[:150]}")
     except Exception as e:
-        print(f"❌ {label:30s} -> erreur : {e}")
+        print(f"❌ {label:30s} -> erreur : {type(e).__name__}")
 
 
 async def main():
@@ -58,13 +61,6 @@ async def main():
         for label, headers in variants:
             await try_variant(session, label, headers, params)
 
-        # Variantes avec la clé en paramètre d'URL plutôt qu'en header
-        print()
-        for param_name in ["token", "apikey", "api_key", "key"]:
-            params_with_key = dict(params)
-            params_with_key[param_name] = key
-            await try_variant(session, f"Query param: {param_name}", {}, params_with_key)
-
         # Test sur un endpoint BEAUCOUP plus simple (chaininfo, presque aucun
         # paramètre) — si ÇA marche mais pas account/transfer, le problème
         # n'est pas le format d'auth mais l'accès à cet endpoint précis.
@@ -72,12 +68,15 @@ async def main():
         simple_url = "https://pro-api.solscan.io/v2.0/chaininfo"
         for label, headers in [("token", {"token": key}), ("Authorization Bearer", {"Authorization": f"Bearer {key}"})]:
             try:
-                async with session.get(simple_url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                async with session.get(
+                    simple_url, headers=headers, timeout=aiohttp.ClientTimeout(total=10),
+                    allow_redirects=False,
+                ) as resp:
                     text = await resp.text()
                     marker = "✅" if resp.status == 200 else "❌"
                     print(f"{marker} chaininfo avec {label:25s} -> statut {resp.status} — {text[:150]}")
             except Exception as e:
-                print(f"❌ chaininfo avec {label:25s} -> erreur : {e}")
+                print(f"❌ chaininfo avec {label:25s} -> erreur : {type(e).__name__}")
 
     print("\n── Interprétation ──")
     print("✅ = ce format fonctionne, à utiliser dans solscan_client.py")

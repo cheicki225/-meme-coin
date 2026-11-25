@@ -27,6 +27,7 @@ class _FakeSession:
         self._data = data
         self._status = status
         self.request_options = None
+        self.request_options_history = []
 
     async def __aenter__(self):
         return self
@@ -36,6 +37,7 @@ class _FakeSession:
 
     def get(self, _url, **kwargs):
         self.request_options = kwargs
+        self.request_options_history.append(kwargs)
         return _FakeResponse(self._data, self._status)
 
 
@@ -74,13 +76,11 @@ def test_rate_rejects_expired_cache_and_static_fallback_when_provider_fails(monk
         {"quote": stale_quote, "monotonic_ts": time.monotonic() - backtest.SOL_PRICE_CACHE_TTL_S - 1},
     )
     monkeypatch.setattr(config, "SOL_USD_RATE", 999_999.0)
-    monkeypatch.setattr(backtest.rpc_client, "get_http_connector", lambda: None)
+    async def unexpected_quote_fetch():
+        raise AssertionError("financial rate must not consume an informational quote")
 
-    def fail_session(**_kwargs):
-        raise OSError("synthetic transport failure")
-
-    monkeypatch.setattr(backtest.aiohttp, "ClientSession", fail_session)
-    with pytest.raises(backtest.SolUsdPriceUnavailable):
+    monkeypatch.setattr(backtest, "get_sol_usd_quote", unexpected_quote_fetch)
+    with pytest.raises(backtest.SolUsdPriceUnavailable, match="independent_provenance_unavailable"):
         asyncio.run(backtest.get_sol_usd_rate())
 
 
@@ -96,3 +96,17 @@ def test_rate_rejects_invalid_provider_response_without_using_untrusted_pair(mon
 
     with pytest.raises(backtest.SolUsdPriceUnavailable, match="no_valid_sol_base_pair"):
         asyncio.run(backtest.get_sol_usd_quote())
+
+
+def test_external_market_price_clients_refuse_redirects(monkeypatch):
+    session = _FakeSession({}, status=302)
+    monkeypatch.setattr(backtest.rpc_client, "get_http_connector", lambda: None)
+    monkeypatch.setattr(backtest.aiohttp, "ClientSession", lambda **_kwargs: session)
+
+    pair = asyncio.run(backtest._get_pair_data("fixture-mint", retries=1))
+    gecko = asyncio.run(backtest._gecko_get("/fixture"))
+
+    assert pair == {}
+    assert gecko == {}
+    assert len(session.request_options_history) == 2
+    assert all(options["allow_redirects"] is False for options in session.request_options_history)

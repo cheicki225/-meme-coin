@@ -1038,7 +1038,13 @@ class DataStore:
 
     def get_wallet_settings(self, address: str) -> dict:
         entry = self.state["monitored_dev_wallets"].get(address, {})
-        return entry.get("settings", copy.deepcopy(config.DEFAULT_WALLET_SETTINGS))
+        settings = entry.get("settings")
+        if not isinstance(settings, dict):
+            settings = copy.deepcopy(config.DEFAULT_WALLET_SETTINGS)
+            entry["settings"] = settings
+        for key, default_value in config.DEFAULT_WALLET_SETTINGS.items():
+            settings.setdefault(key, copy.deepcopy(default_value))
+        return settings
 
     def mark_bought(self, address: str, token_mint: str):
         """

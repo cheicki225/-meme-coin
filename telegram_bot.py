@@ -110,20 +110,8 @@ def _format_risk_status(state: dict, loss_limit_usd: float) -> str:
     if not isinstance(state, dict):
         state = {}
 
-    losses = state.get("session_losses_usd")
-    if (
-        isinstance(losses, (int, float)) and not isinstance(losses, bool)
-        and math.isfinite(losses) and losses >= 0
-        and isinstance(loss_limit_usd, (int, float)) and not isinstance(loss_limit_usd, bool)
-        and math.isfinite(loss_limit_usd) and loss_limit_usd > 0
-    ):
-        breaker = "🛑 ACTIF — limite atteinte" if losses >= loss_limit_usd else "🟢 inactif"
-        loss_line = (
-            f"🛑 *Circuit breaker pertes* : {breaker}\n"
-            f"Pertes de session : `${losses:.2f}` / `${loss_limit_usd:.0f}`"
-        )
-    else:
-        loss_line = "🛑 *Circuit breaker pertes* : ⚪ état inconnu"
+    # Persisted USD losses lack independently verified SOL/USD provenance.
+    loss_line = "🛑 *Circuit breaker pertes* : ⚪ état inconnu (provenance SOL/USD non vérifiée)"
 
     emergency_stop = state.get("emergency_stop")
     if emergency_stop is True:
@@ -537,8 +525,8 @@ class SniperTelegramBot:
         n_ruggers, n_copytrade = self.data_store.count_wallets_by_mode()
         text = (
             f"📊 *Stats*\n\n"
-            f"P&L total: {state.get('total_pnl_usd', 0):+.2f}$\n"
-            f"Pertes de session: {state.get('session_losses_usd', 0):.2f}$\n"
+            "P&L total: ⚪ inconnu (provenance SOL/USD non vérifiée)\n"
+            "Pertes de session: ⚪ inconnues (provenance SOL/USD non vérifiée)\n"
             f"Positions ouvertes: {len(state.get('open_positions', []))}\n"
             f"Positions clôturées: {len(state.get('closed_positions', []))}\n"
             f"Ruggers monitorés: {n_ruggers}\n"
@@ -741,7 +729,7 @@ class SniperTelegramBot:
             f"{t('main_menu_autobuy', lang)}: {auto_buy}\n"
             f"{t('main_menu_autosell', lang)}: {auto_sell}\n"
             f"{t('main_menu_ruggers', lang)}: {n_ruggers} | Copy Trading: {n_copytrade} (total {self.data_store.count_wallets()}/{config.MAX_MONITORED_WALLETS})\n"
-            f"P&L: {state.get('total_pnl_usd', 0):+.2f}$"
+            f"P&L: {'⚪ inconnu (provenance SOL/USD non vérifiée)' if lang == 'fr' else '⚪ unknown (SOL/USD provenance unverified)'}"
         )
 
         lang_button_key = "language_button_fr" if lang == "fr" else "language_button_en"
@@ -1658,11 +1646,16 @@ class SniperTelegramBot:
         keyboard = []
         for i, pos in enumerate(positions):
             lines.append(
-                t("position_line", lang, mint=pos["token_mint"][:8], price=pos["entry_price"],
-                  units=pos["units"], cost=pos["cost_basis_usd"])
+                t("position_line", lang, mint=pos["token_mint"][:8], units=pos["units"])
             )
             if pos.get("exit_status") == "unknown":
-                if pos.get("exit_pending_reason") == "entry_time_unavailable":
+                if pos.get("exit_pending_reason") == "sol_usd_provenance_unverified":
+                    lines.append(
+                        "  ⏳ Surveillance suspendue : provenance SOL/USD non vérifiée; P&L et sortie inconnus."
+                        if lang == "fr"
+                        else "  ⏳ Monitoring paused: SOL/USD provenance is unverified; P&L and exit are unknown."
+                    )
+                elif pos.get("exit_pending_reason") == "entry_time_unavailable":
                     lines.append("  ⏳ Surveillance suspendue : date d'entrée inconnue; vérification manuelle requise.")
                 else:
                     lines.append("  ⏳ Sortie non résolue : prix actuel indisponible; position conservée.")
@@ -1971,14 +1964,11 @@ class SniperTelegramBot:
         else:
             lines = [f"📋 *Journal P&L* ({len(closed)} trade(s) au total)\n"]
             for pos in page_items:
-                emoji = "✅" if pos.get("total_sol_received", 0) >= pos.get("total_sol_invested", 0) else "❌"
-                result_pct = pos.get("result_pct", 0)
-                pnl_sol = pos.get("total_sol_received", 0) - pos.get("total_sol_invested", 0)
                 reason = pos.get("close_reason", "?")
                 lines.append(
-                    f"{emoji} `{pos['token_mint'][:8]}...` — {result_pct:+.1f}% "
-                    f"({pnl_sol:+.3f} SOL) — {reason}"
+                    f"⚪ `{pos['token_mint'][:8]}...` — résultat financier inconnu — {reason}"
                 )
+            lines.append("\nProvenance SOL/USD non vérifiée indépendamment.")
             text = "\n".join(lines)
 
         keyboard = []
@@ -2588,15 +2578,22 @@ class SniperTelegramBot:
         lang = self.data_store.state.get("language", "fr")
         state = self.data_store.state
         closed = state.get("closed_positions", [])
-        wins = [p for p in closed if p.get("total_sol_received", 0) >= p.get("total_sol_invested", 0)]
         n_ruggers, n_copytrade = self.data_store.count_wallets_by_mode()
         text = t(
             "session_stats", lang,
-            pnl=state.get("total_pnl_usd", 0),
+            pnl=(
+                "⚪ inconnu (provenance SOL/USD non vérifiée)"
+                if lang == "fr"
+                else "⚪ unknown (SOL/USD provenance unverified)"
+            ),
             n_ruggers=n_ruggers, n_copytrade=n_copytrade,
             total=self.data_store.count_wallets(), max_wallets=config.MAX_MONITORED_WALLETS,
             open_count=len(state.get("open_positions", [])), closed_count=len(closed),
-            win_rate=(len(wins) / len(closed) * 100) if closed else 0,
+            win_rate=(
+                "⚪ inconnu"
+                if lang == "fr"
+                else "⚪ unknown"
+            ),
         )
         pnl_warning = _pnl_fee_history_warning(self.data_store, lang)
         if pnl_warning:
@@ -4198,8 +4195,12 @@ class SniperTelegramBot:
             await query.edit_message_text("Position introuvable.")
             return
         position = positions[index]
-        from backtest import get_live_price_and_market_cap
-        live = await get_live_price_and_market_cap(position["token_mint"])
+        live = await self._load_exit_quote(position, "MANUAL_SELL")
+        if live is None:
+            await query.answer(
+                "Sortie inconnue : provenance SOL/USD non vérifiée.", show_alert=True
+            )
+            return
         price = live.get("price") if isinstance(live, dict) else None
         ratio = min(pct / 100, 1.0)
         if not self.trader._is_valid_market_price(price):
@@ -4212,9 +4213,10 @@ class SniperTelegramBot:
         await self.show_positions(query)
 
     async def _sell_all(self, query):
-        from backtest import get_live_price_and_market_cap
         for position in list(self.data_store.state.get("open_positions", [])):
-            live = await get_live_price_and_market_cap(position["token_mint"])
+            live = await self._load_exit_quote(position, "MANUAL_SELL_ALL")
+            if live is None:
+                continue
             price = live.get("price") if isinstance(live, dict) else None
             if not self.trader._is_valid_market_price(price):
                 await self.trader._close_remaining(position, None, 0.0, "MANUAL_SELL_ALL")
@@ -4229,6 +4231,21 @@ class SniperTelegramBot:
                 return position
         return None
 
+    async def _load_exit_quote(self, position: dict, reason: str) -> dict | None:
+        """Keep manual exits durable UNKNOWN when USD valuation lacks provenance."""
+        from backtest import SolUsdPriceUnavailable, get_live_price_and_market_cap
+
+        try:
+            result = await get_live_price_and_market_cap(position["token_mint"])
+        except SolUsdPriceUnavailable:
+            await self.trader._record_exit_price_unknown(
+                position,
+                reason,
+                pending_reason="sol_usd_provenance_unverified",
+            )
+            return None
+        return result if isinstance(result, dict) else None
+
     async def _quick_sell_by_mint(self, query, token_mint: str, pct: int):
         """Vente rapide déclenchée depuis les boutons 25/50/75/100% attachés à l'alerte d'achat."""
         position = await self._find_position_by_mint(token_mint)
@@ -4241,8 +4258,16 @@ class SniperTelegramBot:
         # bonding curve — le prix retombait alors silencieusement sur
         # position["entry_price"] (0% affiché, PnL réel masqué). Voir le
         # docstring de get_live_price_and_market_cap.
-        from backtest import get_live_price_and_market_cap
-        live = await get_live_price_and_market_cap(token_mint)
+        live = await self._load_exit_quote(position, "MANUAL_QUICK_SELL")
+        if live is None:
+            lang = self.data_store.state.get("language", "fr")
+            await query.answer(
+                "Sortie inconnue : provenance SOL/USD non vérifiée."
+                if lang == "fr"
+                else "Exit unknown: SOL/USD provenance is unverified.",
+                show_alert=True,
+            )
+            return
         price = live.get("price") if isinstance(live, dict) else None
         if not self.trader._is_valid_market_price(price):
             await self.trader._partial_close(
@@ -4261,23 +4286,16 @@ class SniperTelegramBot:
 
     async def _refresh_pnl(self, query, token_mint: str):
         """Bouton 'Tap to Refresh' — édite le message avec le P&L actuel de la position."""
-        position = await self._find_position_by_mint(token_mint)
-        if not position:
-            await query.answer("Position clôturée — plus de P&L à afficher.", show_alert=True)
-            return
-
-        # CORRIGÉ (même bug que _quick_sell_by_mint) : voir le docstring de
-        # get_live_price_and_market_cap.
-        from backtest import get_live_price_and_market_cap
-        live = await get_live_price_and_market_cap(token_mint)
-        price = live.get("price") if isinstance(live, dict) else None
-        if not self.trader._is_valid_market_price(price):
-            await query.answer("Prix indisponible; PnL inconnu pour le moment.", show_alert=True)
-            return
-        change_pct = self.trader._pnl_pct(position, price)
-        value_usd = position["units"] * price
-
-        await query.answer(f"P&L actuel : {change_pct:+.1f}% ({value_usd:.2f}$)", show_alert=True)
+        lang = self.data_store.state.get("language", "fr")
+        message = (
+            "P&L inconnu : provenance SOL/USD non vérifiée indépendamment."
+            if lang == "fr"
+            else "P&L unknown: SOL/USD provenance is not independently verified."
+        )
+        await query.answer(
+            message,
+            show_alert=True,
+        )
 
     async def _delayed_delete(self, chat_id: int, message_id: int, delay: int = 30):
         await asyncio.sleep(delay)
@@ -4305,8 +4323,12 @@ class SniperTelegramBot:
             await query.edit_message_text("Position introuvable.")
             return
         position = positions[index]
-        from backtest import get_live_price_and_market_cap
-        live = await get_live_price_and_market_cap(position["token_mint"])
+        live = await self._load_exit_quote(position, "SELL_INITIALS")
+        if live is None:
+            await query.answer(
+                "Sortie inconnue : provenance SOL/USD non vérifiée.", show_alert=True
+            )
+            return
         price = live.get("price") if isinstance(live, dict) else None
         if not self.trader._is_valid_market_price(price):
             await self.trader.sell_initials(position, None)

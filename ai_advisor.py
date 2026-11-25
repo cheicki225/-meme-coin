@@ -100,7 +100,10 @@ async def _call_anthropic(prompt: str) -> dict:
     }
     try:
         async with aiohttp.ClientSession(connector=rpc_client.get_http_connector(), connector_owner=False) as session:
-            async with session.post(url, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+            async with session.post(
+                url, json=payload, headers=headers,
+                timeout=aiohttp.ClientTimeout(total=15), allow_redirects=False,
+            ) as resp:
                 if resp.status != 200:
                     log.debug(f"Anthropic API statut {resp.status}")
                     return None
@@ -129,7 +132,10 @@ async def _call_grok(prompt: str) -> dict:
     }
     try:
         async with aiohttp.ClientSession(connector=rpc_client.get_http_connector(), connector_owner=False) as session:
-            async with session.post(url, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+            async with session.post(
+                url, json=payload, headers=headers,
+                timeout=aiohttp.ClientTimeout(total=15), allow_redirects=False,
+            ) as resp:
                 if resp.status != 200:
                     log.debug(f"Grok API statut {resp.status}")
                     return None

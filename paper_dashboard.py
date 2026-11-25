@@ -374,6 +374,18 @@ def _state_points(state: dict[str, Any] | None, as_of: str | None, detail: str) 
         if total_pnl is not None
         else _unknown("persisted state", "recorded PnL is missing or malformed", as_of)
     )
+    # A stored number and local receive timestamp do not independently verify
+    # the provider quote used to create these USD values.
+    exposure_point = _unknown(
+        "valuation provenance",
+        "stored USD cost basis cannot be independently verified against a provider quote",
+        as_of,
+    )
+    pnl_point = _unknown(
+        "valuation provenance",
+        "stored USD PnL cannot be independently verified against a provider quote",
+        as_of,
+    )
 
     open_rows = _position_list(state, "open_positions")
     closed_rows = _position_list(state, "closed_positions")
@@ -416,6 +428,12 @@ def _state_points(state: dict[str, Any] | None, as_of: str | None, detail: str) 
             )
         else:
             fee_point = _unknown("persisted state", "fee history is not established")
+
+    fee_point = _unknown(
+        "valuation provenance",
+        "stored USD fee values cannot be independently verified against a provider quote",
+        as_of,
+    )
 
     return {
         "emergency_stop": stop_point,

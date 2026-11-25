@@ -57,7 +57,10 @@ async def get_wallet_labels(address: str, token_address: str = None) -> dict:
 
     try:
         async with aiohttp.ClientSession(connector=rpc_client.get_http_connector(), connector_owner=False) as session:
-            async with session.post(MOBULA_LABELS_URL, json=body, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+            async with session.post(
+                MOBULA_LABELS_URL, json=body, headers=headers,
+                timeout=aiohttp.ClientTimeout(total=10), allow_redirects=False,
+            ) as resp:
                 if resp.status == 401:
                     log.warning("Clé Mobula invalide.")
                     return None
@@ -123,6 +126,7 @@ async def get_deployer_tokens(wallet_address: str, blockchain: str = "solana") -
             async with session.get(
                 "https://api.mobula.io/api/2/wallet/deployer",
                 params=params, headers=headers, timeout=aiohttp.ClientTimeout(total=15),
+                allow_redirects=False,
             ) as resp:
                 if resp.status == 401:
                     log.warning("Clé Mobula rejetée (401) pour wallet/deployer.")

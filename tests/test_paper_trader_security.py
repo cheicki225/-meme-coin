@@ -1,6 +1,7 @@
 import asyncio
 import time
 
+import monitoring_list
 import paper_trader
 import pytest
 
@@ -26,6 +27,63 @@ def _valid_security_result(score=80):
         "lp_lock_data_available": True,
         "lp_locked_pct": 100.0,
     }
+
+
+def test_wallet_settings_backfill_goplus_default_and_preserve_explicit_opt_out():
+    store = object.__new__(monitoring_list.DataStore)
+    store.state = {
+        "monitored_dev_wallets": {
+            "legacy-wallet": {"settings": {"buy_amount_sol": 0.1}},
+            "opted-out-wallet": {"settings": {"security_check_enabled": False}},
+        }
+    }
+
+    legacy = store.get_wallet_settings("legacy-wallet")
+    opted_out = store.get_wallet_settings("opted-out-wallet")
+
+    assert legacy["security_check_enabled"] is True
+    assert opted_out["security_check_enabled"] is False
+
+
+def test_monitor_persists_unknown_when_sol_usd_provenance_is_unavailable(monkeypatch):
+    async def unavailable_rate():
+        raise paper_trader.SolUsdPriceUnavailable("independent_provenance_unavailable")
+
+    monkeypatch.setattr(paper_trader.config, "TRADING_MODE", "PAPER")
+    monkeypatch.setattr(paper_trader, "get_sol_usd_rate", unavailable_rate)
+    position = {
+        "token_mint": "fixture-mint",
+        "units": 1.0,
+        "settings": {},
+    }
+    trader = paper_trader.PaperTrader(_Store({}))
+
+    asyncio.run(trader._monitor_position(position, max_duration_s=1))
+
+    assert position["exit_status"] == "unknown"
+    assert position["exit_pending_reason"] == "sol_usd_provenance_unverified"
+
+
+def test_paper_close_keeps_position_open_and_unknown_without_verified_rate(monkeypatch):
+    async def unavailable_rate():
+        raise paper_trader.SolUsdPriceUnavailable("independent_provenance_unavailable")
+
+    monkeypatch.setattr(paper_trader.config, "TRADING_MODE", "PAPER")
+    monkeypatch.setattr(paper_trader, "get_sol_usd_rate", unavailable_rate)
+    position = {
+        "token_mint": "fixture-mint",
+        "units": 5.0,
+        "cost_basis_usd": 10.0,
+        "settings": {"buy_mode": "simple"},
+    }
+    trader = paper_trader.PaperTrader(_Store({}))
+
+    asyncio.run(trader._close_remaining(position, 3.0, 25.0, "TAKE_PROFIT"))
+
+    assert position["units"] == 5.0
+    assert position["cost_basis_usd"] == 10.0
+    assert position["exit_status"] == "unknown"
+    assert position["exit_pending_reason"] == "sol_usd_provenance_unverified"
 
 
 class _Store:
@@ -122,6 +180,36 @@ def test_invalid_minimum_security_score_blocks_entry(monkeypatch, minimum_score)
     result = asyncio.run(trader.open_position("token-mint", "source-wallet", "test"))
 
     assert result is None
+    assert buy_calls == []
+
+
+def test_malformed_goplus_setting_does_not_become_an_opt_out(monkeypatch):
+    settings = {
+        "security_check_enabled": None,
+        "min_security_score": 0,
+        "buy_only_once": False,
+        "buy_mode": "simple",
+        "buy_amount_sol": 0.1,
+    }
+    trader = paper_trader.PaperTrader(_Store(settings))
+    buy_calls = []
+
+    async def pair_data(_mint):
+        return {"priceUsd": "1", "marketCap": "10000"}
+
+    async def unavailable(_mint):
+        return {"error": "provider_unavailable", "security_score": 0}
+
+    async def execute_buy(*_args):
+        buy_calls.append(True)
+        raise AssertionError("malformed GoPlus setting must not bypass the security gate")
+
+    monkeypatch.setattr(paper_trader.config, "TRADING_MODE", "PAPER")
+    monkeypatch.setattr(paper_trader, "_get_pair_data", pair_data)
+    monkeypatch.setattr(paper_trader.security_check, "check_token_security", unavailable)
+    trader._execute_buy = execute_buy
+
+    assert asyncio.run(trader.open_position("token-mint", "source-wallet", "test")) is None
     assert buy_calls == []
 
 

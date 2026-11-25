@@ -34,7 +34,13 @@ import rpc_client
 import wallet
 import wallet_history
 import position_price_stream
-from backtest import _get_pair_data, get_bonding_curve_price, get_sol_usd_rate, get_live_price_and_market_cap
+from backtest import (
+    SolUsdPriceUnavailable,
+    _get_pair_data,
+    get_bonding_curve_price,
+    get_live_price_and_market_cap,
+    get_sol_usd_rate,
+)
 import security as security_check
 
 log = logging.getLogger("paper_trader")
@@ -230,6 +236,7 @@ class PaperTrader:
         self.price_stream = price_stream
         self._risk_lock = asyncio.Lock()
         self._risk_reservations = {}
+        self._risk_reservation_rates = {}
         self._position_monitor_tasks: dict[int, asyncio.Task] = {}
 
     @staticmethod
@@ -329,15 +336,21 @@ class PaperTrader:
             reason,
         )
 
-    async def _record_exit_price_unknown(self, position: dict, close_reason: str) -> None:
+    async def _record_exit_price_unknown(
+        self,
+        position: dict,
+        close_reason: str,
+        *,
+        pending_reason: str = "exit_price_unavailable",
+    ) -> None:
         """Persist an unresolved exit request without fabricating a fill or PnL."""
         is_new = (
             position.get("exit_status") != "unknown"
-            or position.get("exit_pending_reason") != "exit_price_unavailable"
+            or position.get("exit_pending_reason") != pending_reason
             or position.get("exit_request_reason") != close_reason
         )
         position["exit_status"] = "unknown"
-        position["exit_pending_reason"] = "exit_price_unavailable"
+        position["exit_pending_reason"] = pending_reason
         position["exit_request_reason"] = close_reason
         position.setdefault("exit_pending_since", time.time())
         try:
@@ -346,7 +359,7 @@ class PaperTrader:
             log.error("Could not persist unresolved PAPER exit; position remains open in memory")
         if is_new:
             log.warning(
-                "%s exit remains unknown for %s (%s): no valid market price",
+                "%s exit remains unknown for %s (%s): quote or provenance unavailable",
                 config.TRADING_MODE,
                 str(position.get("token_mint", "unknown"))[:8],
                 close_reason,
@@ -356,7 +369,11 @@ class PaperTrader:
                     "sell_failed",
                     f"⏳ *Sortie non résolue* ({close_reason})\n"
                     f"Token: `{str(position.get('token_mint', 'unknown'))[:8]}...`\n"
-                    "Prix indisponible; position conservée, aucun PnL réalisé.",
+                    + (
+                        "Provenance SOL/USD non vérifiée; position conservée, aucun PnL réalisé."
+                        if pending_reason == "sol_usd_provenance_unverified"
+                        else "Prix indisponible; position conservée, aucun PnL réalisé."
+                    ),
                 )
 
     @staticmethod
@@ -372,16 +389,16 @@ class PaperTrader:
         settings: dict,
         *,
         existing_position: dict | None = None,
-        sol_usd_rate: float | None = None,
         simulated_fee_sol: float | None = None,
     ) -> tuple[bool, str | None]:
         amount_sol = settings.get("buy_amount_sol", 0.1)
         if (not isinstance(amount_sol, (int, float)) or isinstance(amount_sol, bool)
                 or not math.isfinite(amount_sol) or amount_sol <= 0):
             return False, "invalid_buy_amount"
-        sol_usd = sol_usd_rate
-        if sol_usd is None:
+        try:
             sol_usd = await get_sol_usd_rate()
+        except SolUsdPriceUnavailable:
+            return False, "sol_usd_provenance_unverified"
         # Reserve a conservative fee/rent cushion until confirmed position
         # accounting replaces it with the actual cash cost.
         fee_cushion_sol = config.MAX_TRANSACTION_FEE_LAMPORTS / 1_000_000_000
@@ -436,11 +453,13 @@ class PaperTrader:
             )
             if allowed:
                 self._risk_reservations[reservation_id] = proposed_usd
+                self._risk_reservation_rates[reservation_id] = float(sol_usd)
                 return True, None
             return False, reason
 
     def _release_entry_risk(self, reservation_id: str) -> None:
         self._risk_reservations.pop(reservation_id, None)
+        self._risk_reservation_rates.pop(reservation_id, None)
 
     # ══════════════════════════════════════════════════════════
     # PRIMITIVES D'EXÉCUTION — surchargées par LiveTrader pour le vrai trading
@@ -762,7 +781,7 @@ class PaperTrader:
                     return None
 
         # ── Vérification sécurité GoPlus (si activée pour ce wallet) ──
-        if settings.get("security_check_enabled"):
+        if settings.get("security_check_enabled", True) is not False:
             security = await security_check.check_token_security(token_mint)
             if not security_check.is_valid_solana_security_result(security):
                 # Le seuil configurable peut être réglé à 0; une réponse
@@ -1056,6 +1075,13 @@ class PaperTrader:
 
     async def _monitor_position(self, position: dict, poll_interval: int = 1, max_duration_s: int = 3600):
         settings = position["settings"]
+        try:
+            await get_sol_usd_rate()
+        except SolUsdPriceUnavailable:
+            self._mark_monitor_state_unknown(
+                position, "sol_usd_provenance_unverified"
+            )
+            return
         elapsed = 0
         no_activity_elapsed = 0
 
@@ -1282,7 +1308,6 @@ class PaperTrader:
                 # Use one quote for both risk reservation and accounting, so
                 # the admitted USD exposure matches the amount actually added.
                 fee_sol = _simulated_paper_fee_sol(position.get("buy_mode", "simple"))
-                sol_usd = await get_sol_usd_rate()
                 if i in position["dip_levels_hit"]:
                     continue
                 reservation_id = (
@@ -1292,7 +1317,6 @@ class PaperTrader:
                     reservation_id,
                     {"buy_amount_sol": level.get("amount_sol")},
                     existing_position=position,
-                    sol_usd_rate=sol_usd,
                     simulated_fee_sol=fee_sol,
                 )
                 if not allowed:
@@ -1301,6 +1325,10 @@ class PaperTrader:
                         risk_reason,
                         position["token_mint"][:8],
                     )
+                    continue
+                sol_usd = self._risk_reservation_rates.get(reservation_id)
+                if sol_usd is None:
+                    self._release_entry_risk(reservation_id)
                     continue
                 if i in position["dip_levels_hit"]:
                     self._release_entry_risk(reservation_id)
@@ -1321,8 +1349,7 @@ class PaperTrader:
                 }
                 original_dip_levels_hit = list(position["dip_levels_hit"])
                 try:
-                    # Keep the simulated token buy and its fee on the same
-                    # SOL/USD snapshot so the basis matches modeled cash cost.
+                    # Reuse the quote used to calculate the admission reservation.
                     dip_amount_usd = level["amount_sol"] * sol_usd
                     fee_usd = _paper_fee_usd_at_rate(fee_sol, sol_usd)
                     new_units = dip_amount_usd / price
@@ -1475,7 +1502,13 @@ class PaperTrader:
         fee_sol = _simulated_paper_fee_sol(position.get("buy_mode", "simple"))
         # Use one market-rate snapshot for both the USD fee and net SOL
         # recovery of this simulated sale.
-        sol_usd_rate = await get_sol_usd_rate()
+        try:
+            sol_usd_rate = await get_sol_usd_rate()
+        except SolUsdPriceUnavailable:
+            await self._record_exit_price_unknown(
+                position, "SELL_INITIALS", pending_reason="sol_usd_provenance_unverified"
+            )
+            return False
         fee_usd = _paper_fee_usd_at_rate(fee_sol, sol_usd_rate)
         current_value = position["units"] * price
         if current_value <= cost_basis + fee_usd:
@@ -1718,7 +1751,15 @@ class PaperTrader:
             return
         units_sold = position["units"] * sell_ratio
 
-        sell_result = await self._execute_sell(position["token_mint"], units_sold, exit_price, position["settings"])
+        try:
+            sell_result = await self._execute_sell(
+                position["token_mint"], units_sold, exit_price, position["settings"]
+            )
+        except SolUsdPriceUnavailable:
+            await self._record_exit_price_unknown(
+                position, "PARTIAL_CLOSE", pending_reason="sol_usd_provenance_unverified"
+            )
+            return
         if sell_result is None:
             log.error(f"❌ Vente partielle échouée sur {position['token_mint'][:8]}... — position inchangée, nouvel essai au prochain poll.")
             if self.notifier:
@@ -1791,7 +1832,16 @@ class PaperTrader:
             await self._record_exit_price_unknown(position, close_reason)
             return
 
-        sell_result = await self._execute_sell(position["token_mint"], position["units"], exit_price, position["settings"])
+        try:
+            sell_result = await self._execute_sell(
+                position["token_mint"], position["units"], exit_price,
+                position["settings"],
+            )
+        except SolUsdPriceUnavailable:
+            await self._record_exit_price_unknown(
+                position, close_reason, pending_reason="sol_usd_provenance_unverified"
+            )
+            return
         if sell_result is None:
             log.error(f"❌ Clôture échouée sur {position['token_mint'][:8]}... ({close_reason}) — position reste ouverte, nouvel essai au prochain poll.")
             if self.notifier:

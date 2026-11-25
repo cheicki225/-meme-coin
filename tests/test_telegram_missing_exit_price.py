@@ -79,5 +79,8 @@ def test_refresh_pnl_reports_unknown_when_price_is_missing(monkeypatch):
 
     asyncio.run(bot._refresh_pnl(query, position["token_mint"]))
 
-    assert query.answers == [("Prix indisponible; PnL inconnu pour le moment.", {"show_alert": True})]
+    assert query.answers == [(
+        "P&L inconnu : provenance SOL/USD non vérifiée indépendamment.",
+        {"show_alert": True},
+    )]
     assert store.state["total_pnl_usd"] == 0.0

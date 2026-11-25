@@ -25,7 +25,7 @@ from execution_metrics import (
 
 log = logging.getLogger("helius_event_store")
 
-_SCHEMA_VERSION = 3
+_SCHEMA_VERSION = 4
 _PAGE_LIMIT = 1000
 _ACTIVE_STATES = ("pending", "retry", "processing", "unknown")
 
@@ -44,6 +44,10 @@ class EventIntakePausedError(EventStoreError):
 
 class EventRecoveryError(EventStoreError):
     """Raised when history replay cannot prove the gap was completely recovered."""
+
+
+class CanonicalOrderRequiredError(EventStoreError):
+    """Raised when an event cannot be assigned a provider-canonical order."""
 
 
 class RetryableEventError(RuntimeError):
@@ -67,6 +71,7 @@ class EventRecord:
     payload: dict
     attempts: int
     received_at: float
+    transaction_index: int | None = None
 
 
 @dataclass(frozen=True)
@@ -144,6 +149,7 @@ class HeliusEventStore:
                         signature TEXT NOT NULL,
                         correlation_id TEXT NOT NULL DEFAULT '',
                         slot INTEGER,
+                        transaction_index INTEGER,
                         payload_json TEXT NOT NULL,
                         status TEXT NOT NULL CHECK (
                             status IN ('pending','retry','processing','processed','unknown')
@@ -180,6 +186,8 @@ class HeliusEventStore:
                         "ALTER TABLE event_inbox ADD COLUMN "
                         "effect_started INTEGER NOT NULL DEFAULT 0"
                     )
+                if "transaction_index" not in columns:
+                    db.execute("ALTER TABLE event_inbox ADD COLUMN transaction_index INTEGER")
                 if version < _SCHEMA_VERSION:
                     db.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
         except sqlite3.DatabaseError as exc:
@@ -214,6 +222,7 @@ class HeliusEventStore:
         payload: dict | None = None,
         *,
         slot: int | None = None,
+        transaction_index: int | None = None,
         is_replay: bool = False,
         now: float | None = None,
     ) -> EnqueueResult:
@@ -222,6 +231,16 @@ class HeliusEventStore:
         signature = self._validate_signature(signature)
         if slot is not None and (type(slot) is not int or slot < 0):
             raise ValueError("slot must be a non-negative integer")
+        if transaction_index is not None and (
+            type(transaction_index) is not int or transaction_index < 0
+        ):
+            raise ValueError("transaction_index must be a non-negative integer")
+        if is_replay and (slot is None or transaction_index is None):
+            raise EventRecoveryError(
+                "History replay requires canonical slot and transaction index"
+            )
+        if not is_replay and transaction_index is not None:
+            raise ValueError("canonical transaction index is accepted only from history replay")
         if not isinstance(payload, dict):
             raise ValueError("payload must be a JSON object")
         encoded = json.dumps(
@@ -321,12 +340,13 @@ class HeliusEventStore:
                 cursor = db.execute(
                     """
                     INSERT INTO event_inbox(
-                        stream, sequence, signature, correlation_id, slot, payload_json,
-                        status, received_at
-                    ) VALUES(?,?,?,?,?,?,'pending',?)
+                        stream, sequence, signature, correlation_id, slot,
+                        transaction_index, payload_json, status, received_at
+                    ) VALUES(?,?,?,?,?,?,?,'pending',?)
                     """,
                     (
-                        stream, sequence, signature, correlation_id, slot, encoded,
+                        stream, sequence, signature, correlation_id, slot,
+                        transaction_index, encoded,
                         received_at,
                     ),
                 )
@@ -371,6 +391,7 @@ class HeliusEventStore:
                 row = db.execute(
                     """
                     SELECT event_id, sequence, signature, correlation_id, slot,
+                           transaction_index,
                            payload_json, status,
                             attempts, next_retry_at, lease_until, received_at,
                             effect_started
@@ -384,6 +405,7 @@ class HeliusEventStore:
                     return None
                 (
                     event_id, sequence, signature, correlation_id, slot,
+                    transaction_index,
                     raw_payload, status, attempts, retry_at, lease_until, received_at,
                     effect_started,
                 ) = row
@@ -440,7 +462,7 @@ class HeliusEventStore:
                 return EventRecord(
                     int(event_id), stream, int(sequence), str(signature),
                     str(correlation_id or uuid.uuid4().hex), slot,
-                    payload, int(attempts) + 1, float(received_at),
+                    payload, int(attempts) + 1, float(received_at), transaction_index,
                 )
         except sqlite3.DatabaseError as exc:
             raise EventStoreError("Helius inbox claim failed") from exc
@@ -777,6 +799,12 @@ async def process_next_event(
     if event is None:
         return "unknown" if store.has_unknown(stream) else "idle"
 
+    if event.slot is None or event.transaction_index is None:
+        store.mark_unknown(event.event_id, "canonical_order_missing")
+        log.error("Helius event lacks provider-canonical order; ordered stream is blocked")
+        record_execution_metric("event.unknown", 0, "unknown", "helius")
+        return "unknown"
+
     with correlate_event(event.correlation_id):
         with measure_execution("event.processing", "helius") as metric:
             try:
@@ -945,6 +973,7 @@ async def replay_stream_history(
             item["signature"],
             {"replayed": True},
             slot=item["slot"],
+            transaction_index=item["transactionIndex"],
             is_replay=True,
         )
         inserted += int(result.inserted)

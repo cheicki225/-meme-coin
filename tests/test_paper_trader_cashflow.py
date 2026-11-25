@@ -433,12 +433,30 @@ def test_entry_risk_refuses_duplicate_active_reservation_id(monkeypatch):
     result = asyncio.run(trader._reserve_entry_risk(
         "dip:mint:position:0",
         {"buy_amount_sol": 0.1},
-        sol_usd_rate=200.0,
         simulated_fee_sol=0.003,
     ))
 
     assert result == (False, "entry_already_reserved")
     assert trader._risk_reservations == {"dip:mint:position:0": 10.0}
+
+
+def test_entry_risk_fails_closed_without_independently_verified_sol_usd(monkeypatch):
+    class Store:
+        state = {"open_positions": []}
+
+    async def unavailable_rate():
+        raise paper_trader.SolUsdPriceUnavailable("independent_provenance_unavailable")
+
+    monkeypatch.setattr(paper_trader, "get_sol_usd_rate", unavailable_rate)
+    trader = paper_trader.PaperTrader(Store())
+
+    result = asyncio.run(
+        trader._reserve_entry_risk("signal-1", {"buy_amount_sol": 0.1})
+    )
+
+    assert result == (False, "sol_usd_provenance_unverified")
+    assert trader._risk_reservations == {}
+    assert trader._risk_reservation_rates == {}
 
 
 def test_sell_initials_books_fee_in_realized_pnl_and_net_sol_recovery(monkeypatch):

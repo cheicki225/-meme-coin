@@ -43,6 +43,7 @@ import config
 import rpc_client
 from execution_metrics import measure_async, measure_execution
 from helius_event_store import (
+    CanonicalOrderRequiredError,
     EventQueueFullError,
     EventStoreError,
     EventRecord,
@@ -328,6 +329,7 @@ class CopyTradeListener:
         *,
         source: str | None = None,
         slot: int | None = None,
+        transaction_index: int | None = None,
         is_replay: bool = False,
     ):
         if source is None:
@@ -341,6 +343,7 @@ class CopyTradeListener:
                 signature,
                 {"is_swap_related": bool(is_swap_related), "replayed": bool(is_replay)},
                 slot=slot,
+                transaction_index=transaction_index,
                 is_replay=is_replay,
             )
         except EventQueueFullError:
@@ -382,6 +385,8 @@ class CopyTradeListener:
         return address if address and address != "unmapped" else None
 
     async def _process_event_record(self, event: EventRecord) -> None:
+        if event.slot is None or event.transaction_index is None:
+            raise CanonicalOrderRequiredError("canonical_order_missing")
         is_swap_related = event.payload.get("is_swap_related")
         with measure_execution("event.parse", "helius"):
             parsed = await self._fetch_parsed_transaction(event.signature)

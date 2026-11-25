@@ -257,8 +257,8 @@ TRANSLATIONS = {
     # ── Positions ─────────────────────────────────────────────────────
     "positions_title": {"fr": "📊 *Positions*", "en": "📊 *Positions*"},
     "no_open_positions": {"fr": "Aucune position ouverte.", "en": "No open positions."},
-    "position_line": {"fr": "`{mint}...` — entrée ${price:.8f} ({units:.2f} unités, coût {cost:.2f}$)",
-                       "en": "`{mint}...` — entry ${price:.8f} ({units:.2f} units, cost ${cost:.2f})"},
+    "position_line": {"fr": "`{mint}...` — {units:.2f} unités; valorisation USD inconnue",
+                       "en": "`{mint}...` — {units:.2f} units; USD valuation unknown"},
     "btn_sell_initials": {"fr": "💰 Sell Initials (pos {n})", "en": "💰 Sell Initials (pos {n})"},
     "btn_sell_all": {"fr": "🔴 Sell All", "en": "🔴 Sell All"},
 
@@ -345,12 +345,12 @@ TRANSLATIONS = {
               "_Configurable per wallet in 🎯 Ruggers → [wallet] → 🎯 Advanced strategies._",
     },
     "session_stats": {
-        "fr": "📊 *Stats de session*\n\nP&L total : `{pnl:+.2f}$`\nRuggers suivis : `{n_ruggers}` | "
+        "fr": "📊 *Stats de session*\n\nP&L total : `{pnl}`\nRuggers suivis : `{n_ruggers}` | "
               "Copy Trading : `{n_copytrade}` (total `{total}/{max_wallets}`)\nPositions ouvertes : "
-              "`{open_count}`\nTrades clôturés : `{closed_count}`\nWin rate : `{win_rate:.0f}%`",
-        "en": "📊 *Session stats*\n\nTotal P&L: `{pnl:+.2f}$`\nRuggers tracked: `{n_ruggers}` | "
+              "`{open_count}`\nTrades clôturés : `{closed_count}`\nWin rate : `{win_rate}`",
+        "en": "📊 *Session stats*\n\nTotal P&L: `{pnl}`\nRuggers tracked: `{n_ruggers}` | "
               "Copy Trading: `{n_copytrade}` (total `{total}/{max_wallets}`)\nOpen positions: "
-              "`{open_count}`\nClosed trades: `{closed_count}`\nWin rate: `{win_rate:.0f}%`",
+              "`{open_count}`\nClosed trades: `{closed_count}`\nWin rate: `{win_rate}`",
     },
     "global_alerts_title": {
         "fr": "🔔 *Alertes globales*\n\nStatut actuel : {status}\n\nCoupe ou active toutes les "

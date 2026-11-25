@@ -29,7 +29,7 @@ def _notification(signature: str, subscription: int) -> str:
     )
 
 
-def test_new_token_ws_event_retries_429_and_completes_correlated_replay(
+def test_new_token_canonical_replay_retries_and_completes_correlated_replay(
     monkeypatch, tmp_path
 ):
     monkeypatch.setenv("EXECUTION_METRICS_PATH", str(tmp_path / "metrics.jsonl"))
@@ -56,10 +56,16 @@ def test_new_token_ws_event_retries_429_and_completes_correlated_replay(
     monkeypatch.setattr(listener, "_fetch_parsed_transaction", fetch)
 
     async def scenario():
-        await listener._handle_notification(_notification("synthetic-signature", 7))
+        await listener._handle_creation(
+            "synthetic-signature", stream="new-token:program", slot=42,
+            transaction_index=0, is_replay=True,
+        )
         assert store.checkpoint("new-token:program") == (0, None)
         await asyncio.sleep(0.01)
-        await listener._handle_notification(_notification("synthetic-signature", 7))
+        await listener._handle_creation(
+            "synthetic-signature", stream="new-token:program", slot=42,
+            transaction_index=0, is_replay=True,
+        )
 
     asyncio.run(scenario())
 
@@ -78,7 +84,7 @@ def test_new_token_ws_event_retries_429_and_completes_correlated_replay(
     assert end_to_end["p50_ms"] == end_to_end["p95_ms"] == end_to_end["p99_ms"]
 
 
-def test_protection_ws_event_is_persisted_before_parse_and_retried(
+def test_protection_canonical_replay_is_persisted_before_parse_and_retried(
     monkeypatch, tmp_path
 ):
     store = HeliusEventStore(
@@ -98,10 +104,16 @@ def test_protection_ws_event_is_persisted_before_parse_and_retried(
     monkeypatch.setattr(protection_scanner.rpc_client, "fetch_parsed_transaction", fetch)
 
     async def scenario():
-        await scanner._handle_message(_notification("synthetic-signature", 9))
+        await scanner._process_live_transaction(
+            "synthetic-signature", source="protection:wallet-public", slot=42,
+            transaction_index=0, is_replay=True,
+        )
         assert store.checkpoint("protection:wallet-public") == (0, None)
         await asyncio.sleep(0.01)
-        await scanner._handle_message(_notification("synthetic-signature", 9))
+        await scanner._process_live_transaction(
+            "synthetic-signature", source="protection:wallet-public", slot=42,
+            transaction_index=0, is_replay=True,
+        )
 
     asyncio.run(scenario())
 
@@ -111,6 +123,63 @@ def test_protection_ws_event_is_persisted_before_parse_and_retried(
         "synthetic-signature",
     )
     assert store.metrics()["retried"] == 1
+
+
+def test_live_helius_notifications_without_transaction_index_remain_unknown(
+    monkeypatch, tmp_path
+):
+    new_store = HeliusEventStore(tmp_path / "new-live.sqlite3")
+    new_listener = NewTokenListener(lambda _event: None, event_store=new_store)
+    new_listener._sub_id_to_stream[7] = "new-token:program"
+    protection_store = HeliusEventStore(tmp_path / "protection-live.sqlite3")
+    protection = ProtectionScanner(
+        SimpleNamespace(state={"protection_targets": {}}),
+        event_store=protection_store,
+    )
+    protection._sub_id_to_address[9] = "wallet-public"
+    copy_store = HeliusEventStore(tmp_path / "copy-live.sqlite3")
+    copytrade = CopyTradeListener(
+        SimpleNamespace(state={}), None, None, event_store=copy_store
+    )
+    copytrade._sub_id_to_wallet[11] = "tracked-wallet"
+    copytrade._subscribed_wallets = {"tracked-wallet"}
+
+    fetches = []
+
+    async def fetch(_signature):
+        fetches.append(_signature)
+        return {"parsed": True}
+
+    monkeypatch.setattr(new_listener, "_fetch_parsed_transaction", fetch)
+    monkeypatch.setattr(protection_scanner.rpc_client, "fetch_parsed_transaction", fetch)
+    monkeypatch.setattr(copytrade, "_fetch_parsed_transaction", fetch)
+    copy_notification = json.dumps(
+        {
+            "method": "logsNotification",
+            "params": {
+                "subscription": 11,
+                "result": {
+                    "context": {"slot": 42},
+                    "value": {
+                        "signature": "copy-live-signature",
+                        "logs": ["Program log: Instruction: Buy"],
+                    },
+                },
+            },
+        }
+    )
+
+    async def scenario():
+        await new_listener._handle_notification(_notification("new-live-signature", 7))
+        await protection._handle_message(_notification("protection-live-signature", 9))
+        await copytrade._handle_message(copy_notification)
+
+    asyncio.run(scenario())
+
+    assert fetches == []
+    assert new_store.has_unknown("new-token:program")
+    assert protection_store.has_unknown("protection:wallet-public")
+    assert copy_store.has_unknown("copytrade:tracked-wallet")
 
 
 def test_malformed_ws_notifications_mark_active_streams_for_replay(tmp_path):

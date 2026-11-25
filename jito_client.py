@@ -55,7 +55,10 @@ async def get_tip_accounts() -> list:
     payload = {"jsonrpc": "2.0", "id": 1, "method": "getTipAccounts", "params": []}
     try:
         async with aiohttp.ClientSession(connector=rpc_client.get_http_connector(), connector_owner=False) as session:
-            async with session.post(config.JITO_BLOCK_ENGINE_URL, json=payload, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+            async with session.post(
+                config.JITO_BLOCK_ENGINE_URL, json=payload,
+                timeout=aiohttp.ClientTimeout(total=10), allow_redirects=False,
+            ) as resp:
                 if resp.status != 200:
                     raise JitoError(f"getTipAccounts a échoué ({resp.status})")
                 data = await resp.json()
@@ -110,7 +113,10 @@ async def send_bundle_with_tip(swap_tx_bytes: bytes, keypair: Keypair, recent_bl
     }
 
     async with aiohttp.ClientSession(connector=rpc_client.get_http_connector(), connector_owner=False) as session:
-        async with session.post(config.JITO_BLOCK_ENGINE_URL, json=payload, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+        async with session.post(
+            config.JITO_BLOCK_ENGINE_URL, json=payload,
+            timeout=aiohttp.ClientTimeout(total=15), allow_redirects=False,
+        ) as resp:
             if resp.status != 200:
                 text = await resp.text()
                 raise JitoError(f"sendBundle a échoué ({resp.status}): {text[:200]}")
