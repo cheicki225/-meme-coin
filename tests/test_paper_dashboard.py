@@ -113,10 +113,10 @@ def test_state_snapshot_is_read_only_aggregated_and_redacted(tmp_path: Path) -> 
     assert snapshot["emergency_stop"]["value"] is True
     assert snapshot["emergency_stop"]["status"] == "OBSERVED"
     assert snapshot["open_positions"]["value"] == 1
-    assert snapshot["exposure_cost_basis_usd"]["value"] == 12.5
-    assert snapshot["pnl_recorded_usd"]["value"] == 7.25
-    assert snapshot["fee_history"]["status"] == "OBSERVED"
-    assert snapshot["fee_history"]["value"] == {"recorded_usd": 1.0, "history_complete": True}
+    assert snapshot["exposure_cost_basis_usd"]["status"] == "UNKNOWN"
+    assert snapshot["pnl_recorded_usd"]["status"] == "UNKNOWN"
+    assert snapshot["fee_history"]["status"] == "UNKNOWN"
+    assert "independently verified" in snapshot["fee_history"]["detail"]
     assert snapshot["unrealized_pnl_usd"]["status"] == "UNKNOWN"
     assert snapshot["emergency_stop"]["source"]
     assert snapshot["emergency_stop"]["as_of"]
@@ -268,9 +268,8 @@ def test_fee_and_pnl_completeness_require_matching_accounting_versions(tmp_path:
 
     snapshot = paper_dashboard.build_snapshot(database, None, None)
 
-    assert snapshot["pnl_recorded_usd"]["status"] == "INCOMPLETE"
-    assert snapshot["fee_history"]["status"] == "INCOMPLETE"
-    assert snapshot["fee_history"]["value"] == {"recorded_usd": 0.2, "history_complete": False}
+    assert snapshot["pnl_recorded_usd"]["status"] == "UNKNOWN"
+    assert snapshot["fee_history"]["status"] == "UNKNOWN"
 
 
 def test_aggregate_pnl_is_incomplete_without_matching_version(tmp_path: Path) -> None:
@@ -286,8 +285,8 @@ def test_aggregate_pnl_is_incomplete_without_matching_version(tmp_path: Path) ->
 
     snapshot = paper_dashboard.build_snapshot(database, None, None)
 
-    assert snapshot["pnl_recorded_usd"]["status"] == "INCOMPLETE"
-    assert snapshot["fee_history"]["status"] == "INCOMPLETE"
+    assert snapshot["pnl_recorded_usd"]["status"] == "UNKNOWN"
+    assert snapshot["fee_history"]["status"] == "UNKNOWN"
 
 
 def test_trade_fee_history_requires_matching_version(tmp_path: Path) -> None:
@@ -309,8 +308,8 @@ def test_trade_fee_history_requires_matching_version(tmp_path: Path) -> None:
 
     snapshot = paper_dashboard.build_snapshot(database, None, None)
 
-    assert snapshot["pnl_recorded_usd"]["status"] == "INCOMPLETE"
-    assert snapshot["fee_history"]["status"] == "INCOMPLETE"
+    assert snapshot["pnl_recorded_usd"]["status"] == "UNKNOWN"
+    assert snapshot["fee_history"]["status"] == "UNKNOWN"
 
 
 def test_trade_fee_rows_without_position_records_are_not_reported_as_zero(tmp_path: Path) -> None:
@@ -332,9 +331,8 @@ def test_trade_fee_rows_without_position_records_are_not_reported_as_zero(tmp_pa
 
     snapshot = paper_dashboard.build_snapshot(database, None, None)
 
-    assert snapshot["pnl_recorded_usd"]["status"] == "INCOMPLETE"
-    assert snapshot["fee_history"]["status"] == "INCOMPLETE"
-    assert snapshot["fee_history"]["value"] == {"recorded_usd": None, "history_complete": False}
+    assert snapshot["pnl_recorded_usd"]["status"] == "UNKNOWN"
+    assert snapshot["fee_history"]["status"] == "UNKNOWN"
 
 
 def test_snapshot_reads_latest_state_after_restart_without_caching(tmp_path: Path) -> None:
@@ -366,8 +364,8 @@ def test_snapshot_reads_latest_state_after_restart_without_caching(tmp_path: Pat
     assert first["emergency_stop"]["value"] is True
     assert second["emergency_stop"]["value"] is False
     assert second["open_positions"]["value"] == 1
-    assert second["exposure_cost_basis_usd"]["value"] == 9.0
-    assert second["fee_history"]["status"] == "INCOMPLETE"
+    assert second["exposure_cost_basis_usd"]["status"] == "UNKNOWN"
+    assert second["fee_history"]["status"] == "UNKNOWN"
 
 
 def test_state_read_timeout_fails_to_unknown_without_blocking(tmp_path: Path) -> None:

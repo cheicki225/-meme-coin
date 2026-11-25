@@ -31,7 +31,7 @@ Il couvre notamment /halt, /resume, /performance, /reconcile, /activity, les mes
 
 PAPER reste le mode par défaut. N’envoie aucune commande à un bot Telegram réel, ne contacte pas un déploiement, ne signe ni ne diffuse de transaction et n’active pas LIVE. Utilise des faux objets et des transports simulés.
 
-Ne logue jamais le texte d’une notification ni le contenu d’une exception Telegram: l’URL d’erreur peut contenir un token. Auditer les chemins qui violent cette règle: Notifier.notify_photo journalise actuellement la légende quand Telegram n'est pas connecté; ne pas conclure que toutes les notifications sont expurgées. N’affiche pas de clé, de secret, de signature complète ou d’adresse personnelle dans une réponse de monitoring. Ne contourne jamais authorize_update; vérifier sa couverture des callbacks avant de la revendiquer. Une commande d’arrêt d’urgence bloque de nouvelles opérations; elle ne liquide pas les positions.
+Ne logue jamais le texte d’une notification ni le contenu d’une exception Telegram: l’URL d’erreur peut contenir un token. `Notifier.notify_photo` journalise actuellement uniquement `reason=not_connected` quand le bot n’est pas connecté; garde le test de non-divulgation lors de toute modification. N’affiche pas de clé, de secret, de signature complète ou d’adresse personnelle dans une réponse de monitoring. Ne contourne jamais authorize_update; vérifier sa couverture des callbacks avant de la revendiquer. Une commande d’arrêt d’urgence bloque de nouvelles opérations; elle ne liquide pas les positions.
 
 ## Tests
 

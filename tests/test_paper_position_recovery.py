@@ -48,10 +48,14 @@ def test_expiration_without_valid_exit_price_stays_open_and_marks_unknown(monkey
     async def get_price(_token_mint):
         return {"price": price, "market_cap": 0}
 
+    async def verified_sol_usd_rate():
+        return 100.0
+
     async def close(*args):
         close_calls.append(args)
 
     monkeypatch.setattr(paper_trader, "get_live_price_and_market_cap", get_price)
+    monkeypatch.setattr(paper_trader, "get_sol_usd_rate", verified_sol_usd_rate)
     monkeypatch.setattr(trader, "_close_remaining", close)
 
     asyncio.run(trader._monitor_position(position, max_duration_s=0))
@@ -80,7 +84,11 @@ def test_expiration_with_valid_price_requests_close(monkeypatch):
     async def close(position_arg, price, change_pct, reason):
         close_calls.append((position_arg, price, change_pct, reason))
 
+    async def verified_sol_usd_rate():
+        return 100.0
+
     monkeypatch.setattr(paper_trader, "get_live_price_and_market_cap", get_price)
+    monkeypatch.setattr(paper_trader, "get_sol_usd_rate", verified_sol_usd_rate)
     monkeypatch.setattr(trader, "_close_remaining", close)
 
     asyncio.run(trader._monitor_position(position, max_duration_s=0))

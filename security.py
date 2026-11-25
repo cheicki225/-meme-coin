@@ -42,7 +42,12 @@ async def check_token_security(token_mint: str) -> dict:
 
     try:
         async with aiohttp.ClientSession(connector=rpc_client.get_http_connector(), connector_owner=False) as session:
-            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+            async with session.get(
+                url,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=10),
+                allow_redirects=False,
+            ) as resp:
                 if resp.status != 200:
                     log.debug(f"GoPlus statut {resp.status} pour {token_mint[:8]}...")
                     return _unavailable(f"http_{resp.status}")

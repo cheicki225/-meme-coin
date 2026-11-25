@@ -86,6 +86,7 @@ async def find_fixed_amount_transfers(exchange_address: str, target_amount_sol: 
                 async with session.get(
                     f"{config.SOLSCAN_API_BASE_URL}/account/transfer",
                     params=params, headers=headers, timeout=aiohttp.ClientTimeout(total=15),
+                    allow_redirects=False,
                 ) as resp:
                     if resp.status == 401:
                         log.warning(

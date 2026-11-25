@@ -140,26 +140,14 @@ async def get_sol_usd_quote() -> SolUsdQuote:
 
 
 async def get_sol_usd_rate() -> float:
-    """
-    Retourne la valeur numérique du taux obtenu par get_sol_usd_quote(). Les
-    consommateurs qui doivent conserver la provenance utilisent directement
-    l'objet quote. Aucun taux périmé ou config.SOL_USD_RATE statique n'est
-    accepté lorsque le fournisseur est indisponible.
+    """Refuse financial use until a quote has independently verified provenance.
 
-    CORRIGÉ suite à un vrai bug trouvé (repéré via un "Market cap: 1$"
-    absurde sur une notification d'achat) : la première version réutilisait
-    _get_pair_data() telle quelle, qui renvoie pairs[0] sans distinguer si
-    le token demandé est le baseToken ou le quoteToken de la paire. Or le
-    SOL est très majoritairement QUOTE token dans les paires que DexScreener
-    renvoie pour son propre mint (convention "MEMECOIN/SOL", pas
-    "SOL/MEMECOIN") — et priceUsd d'une paire DexScreener correspond
-    TOUJOURS au baseToken, jamais au quoteToken. pairs[0] pouvait donc être
-    le prix d'un memecoin random appairé au SOL, pas le prix du SOL
-    lui-même. Ne garde maintenant QUE les paires où le SOL est bien le
-    baseToken, puis prend la plus liquide parmi elles (évite une paire
-    exotique/peu liquide qui fausserait le prix).
+    ``get_sol_usd_quote`` is informational only: local receive time, TLS, and
+    a cache do not establish provider-side freshness or independently verify
+    the underlying market data. Returning its bare numeric rate would erase
+    those limits at the financial accounting boundary.
     """
-    return (await get_sol_usd_quote()).rate
+    raise SolUsdPriceUnavailable("independent_provenance_unavailable")
 
 
 # ════════════════════════════════════════════════════════════════
@@ -423,7 +411,10 @@ async def _gecko_get(path: str, params: dict = None) -> dict:
     url = f"{GECKOTERMINAL_BASE}{path}"
     try:
         async with aiohttp.ClientSession(connector=rpc_client.get_http_connector(), connector_owner=False) as session:
-            async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=12)) as resp:
+            async with session.get(
+                url, params=params, timeout=aiohttp.ClientTimeout(total=12),
+                allow_redirects=False,
+            ) as resp:
                 if resp.status != 200:
                     return {}
                 return await resp.json()
@@ -1043,14 +1034,19 @@ async def _get_pair_data(token_mint: str, retries: int = 3, retry_delay_s: float
     for attempt in range(retries):
         try:
             async with aiohttp.ClientSession(connector=rpc_client.get_http_connector(), connector_owner=False) as session:
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                async with session.get(
+                    url, timeout=aiohttp.ClientTimeout(total=10), allow_redirects=False,
+                ) as resp:
                     if resp.status == 200:
                         data = await resp.json()
                         pairs = data.get("pairs") or []
                         if pairs:
                             return pairs[0]
         except Exception as e:
-            log.debug(f"Erreur DexScreener pour {token_mint} (essai {attempt + 1}/{retries}): {type(e).__name__}")
+            log.debug(
+                "DexScreener request failed for %s (attempt %s/%s): %s",
+                token_mint[:8], attempt + 1, retries, type(e).__name__,
+            )
 
         if attempt < retries - 1:
             await asyncio.sleep(retry_delay_s)

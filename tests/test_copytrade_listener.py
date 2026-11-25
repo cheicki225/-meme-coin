@@ -37,10 +37,16 @@ def test_rpc_fetch_failure_is_retried_and_deduplicated_durably(tmp_path):
         listener = _listener(on_buy, tmp_path)
         listener._fetch_parsed_transaction = fetch
 
-        await listener._process_transaction("signature-1")
+        await listener._process_transaction(
+            "signature-1", source="copytrade:tracked-wallet", slot=42,
+            transaction_index=0, is_replay=True,
+        )
         assert listener._event_store.checkpoint("copytrade:tracked-wallet") == (0, None)
         await asyncio.sleep(0.01)
-        await listener._process_transaction("signature-1")
+        await listener._process_transaction(
+            "signature-1", source="copytrade:tracked-wallet", slot=42,
+            transaction_index=0, is_replay=True,
+        )
 
         assert attempts == 2
         assert buys == [("tracked-wallet", "token-mint", "signature-1")]
@@ -73,9 +79,15 @@ def test_concurrent_duplicate_signature_is_not_claimed_twice(tmp_path):
         listener = _listener(on_buy, tmp_path)
         listener._fetch_parsed_transaction = fetch
 
-        first = asyncio.create_task(listener._process_transaction("signature-2"))
+        first = asyncio.create_task(listener._process_transaction(
+            "signature-2", source="copytrade:tracked-wallet", slot=42,
+            transaction_index=1, is_replay=True,
+        ))
         await started.wait()
-        await listener._process_transaction("signature-2")
+        await listener._process_transaction(
+            "signature-2", source="copytrade:tracked-wallet", slot=42,
+            transaction_index=1, is_replay=True,
+        )
         release.set()
         await first
 

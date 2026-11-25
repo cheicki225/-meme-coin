@@ -145,12 +145,17 @@ async def _fetch_parsed_transaction(signature: str) -> dict:
 
     for attempt in range(3):
         try:
-            await rpc_client._rate_limiter.wait_if_needed()
+            if not await rpc_client.wait_for_provider_slot(config.HELIUS_PARSE_TX_URL):
+                if attempt < 2:
+                    await asyncio.sleep(1.0 * (2 ** attempt))
+                    continue
+                return {}
             async with aiohttp.ClientSession(connector=rpc_client.get_http_connector(), connector_owner=False) as session:
                 async with session.post(
                     config.HELIUS_PARSE_TX_URL,
                     json={"transactions": [signature]},
                     timeout=aiohttp.ClientTimeout(total=10),
+                    allow_redirects=False,
                 ) as resp:
                     if resp.status != 200:
                         if attempt < 2:
@@ -163,7 +168,10 @@ async def _fetch_parsed_transaction(signature: str) -> dict:
             if attempt < 2:
                 await asyncio.sleep(1.0 * (2 ** attempt))
                 continue
-            print(f"⚠️  Erreur fetch transaction {signature} (après réessais): {e}")
+            print(
+                "⚠️ Erreur fetch transaction %s... après réessais (%s)"
+                % (signature[:8], type(e).__name__)
+            )
             return {}
     return {}
 

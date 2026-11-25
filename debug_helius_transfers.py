@@ -29,11 +29,12 @@ async def main():
 
     connector = aiohttp.TCPConnector(resolver=ThreadedResolver())
     async with aiohttp.ClientSession(connector=connector) as session:
-        async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=20)) as resp:
+        async with session.post(
+            url, json=payload, timeout=aiohttp.ClientTimeout(total=20),
+            allow_redirects=False,
+        ) as resp:
             print("Statut HTTP:", resp.status)
-            text = await resp.text()
-            print("Réponse brute complète:")
-            print(text)
+            print("Contenu fournisseur masqué; aucun secret ou détail de réponse n'est affiché.")
 
 
 if __name__ == "__main__":

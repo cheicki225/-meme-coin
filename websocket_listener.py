@@ -30,6 +30,7 @@ import config
 import rpc_client
 from execution_metrics import measure_execution
 from helius_event_store import (
+    CanonicalOrderRequiredError,
     EventQueueFullError,
     EventStoreError,
     EventRecord,
@@ -373,6 +374,7 @@ class NewTokenListener:
         *,
         stream: str | None = None,
         slot: int | None = None,
+        transaction_index: int | None = None,
         is_replay: bool = False,
     ):
         """Persist a detected creation event before fetching its Enhanced transaction."""
@@ -383,6 +385,7 @@ class NewTokenListener:
                 signature,
                 {"replayed": bool(is_replay)},
                 slot=slot,
+                transaction_index=transaction_index,
                 is_replay=is_replay,
             )
         except EventQueueFullError:
@@ -415,6 +418,8 @@ class NewTokenListener:
                 return
 
     async def _process_event_record(self, event: EventRecord) -> None:
+        if event.slot is None or event.transaction_index is None:
+            raise CanonicalOrderRequiredError("canonical_order_missing")
         with measure_execution("event.parse", "helius"):
             parsed = await self._fetch_parsed_transaction(event.signature)
         if not parsed:
@@ -458,6 +463,7 @@ class NewTokenListener:
                         config.HELIUS_PARSE_TX_URL,
                         json={"transactions": [signature]},
                         timeout=aiohttp.ClientTimeout(total=10),
+                        allow_redirects=False,
                     ) as resp:
                         if resp.status == 429:
                             rpc_client.note_rate_limited_response(

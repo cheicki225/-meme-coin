@@ -256,6 +256,8 @@ def test_copy_buy_reaches_paper_risk_gate_once_with_synthetic_metrics(
             True,
             source=f"copytrade:{COPY_WALLET}",
             slot=42,
+            transaction_index=0,
+            is_replay=True,
         ))
         await fetch_started.wait()
         await listener._process_transaction(
@@ -263,6 +265,8 @@ def test_copy_buy_reaches_paper_risk_gate_once_with_synthetic_metrics(
             True,
             source=f"copytrade:{COPY_WALLET}",
             slot=42,
+            transaction_index=0,
+            is_replay=True,
         )
         release_fetch.set()
         await first
@@ -271,6 +275,8 @@ def test_copy_buy_reaches_paper_risk_gate_once_with_synthetic_metrics(
             True,
             source=f"copytrade:{COPY_WALLET}",
             slot=42,
+            transaction_index=0,
+            is_replay=True,
         )
 
     asyncio.run(scenario())
@@ -314,8 +320,12 @@ def test_tracked_developer_sniping_path_rejects_synthetic_honeypot(
     listener._fetch_parsed_transaction = parsed_transaction
 
     asyncio.run(
-        listener._handle_notification(
-            _creation_notification("synthetic-snipe-signature", 9)
+        listener._handle_creation(
+            "synthetic-snipe-signature",
+            stream="new-token:program",
+            slot=42,
+            transaction_index=0,
+            is_replay=True,
         )
     )
 
@@ -359,6 +369,8 @@ def test_emergency_stop_blocks_copy_buy_before_paper_simulation(
             True,
             source=f"copytrade:{COPY_WALLET}",
             slot=42,
+            transaction_index=0,
+            is_replay=True,
         )
     )
 
@@ -395,6 +407,8 @@ def test_unavailable_goplus_source_fails_closed_before_paper_copy_buy(
             True,
             source=f"copytrade:{COPY_WALLET}",
             slot=42,
+            transaction_index=0,
+            is_replay=True,
         )
     )
 
@@ -465,12 +479,16 @@ def test_copy_sell_uses_durable_signal_once_for_paper_close(monkeypatch, tmp_pat
             True,
             source=f"copytrade:{COPY_WALLET}",
             slot=43,
+            transaction_index=0,
+            is_replay=True,
         )
         await listener._process_transaction(
             "synthetic-copy-sell-signature",
             True,
             source=f"copytrade:{COPY_WALLET}",
             slot=43,
+            transaction_index=0,
+            is_replay=True,
         )
 
     asyncio.run(scenario())

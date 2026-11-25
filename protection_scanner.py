@@ -247,6 +247,7 @@ class ProtectionScanner:
         *,
         source: str | None = None,
         slot: int | None = None,
+        transaction_index: int | None = None,
         is_replay: bool = False,
     ):
         """Persist first, then parse and evaluate one protection event."""
@@ -260,6 +261,7 @@ class ProtectionScanner:
             signature,
             {"replayed": bool(is_replay)},
             slot=slot,
+            transaction_index=transaction_index,
             is_replay=is_replay,
         )
 
