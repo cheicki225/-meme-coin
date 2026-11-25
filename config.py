@@ -98,7 +98,7 @@ ALCHEMY_API_KEY = os.getenv("ALCHEMY_API_KEY", "")
 ALCHEMY_RPC_URL = f"https://solana-mainnet.g.alchemy.com/v2/{ALCHEMY_API_KEY}" if ALCHEMY_API_KEY else None
 
 # ── Sécurité token (GoPlus — gratuit, clé optionnelle) ────────────
-# Activation par wallet via settings["security_check_enabled"] (voir DEFAULT_WALLET_SETTINGS).
+# Activé par défaut pour les nouveaux wallets; un réglage existant explicite est conservé.
 GOPLUS_API_KEY = os.getenv("GOPLUS_API_KEY", "")
 GOPLUS_API_SECRET = os.getenv("GOPLUS_API_SECRET", "")
 GOPLUS_MIN_DEX_TVL_USD = float(os.getenv("GOPLUS_MIN_DEX_TVL_USD", "10000"))
@@ -339,7 +339,7 @@ DEFAULT_WALLET_SETTINGS = {
         "remove_if_no_launch_h": 2,     # "🧹 Remove if no launch" — probation en heures
     },
     # ── Sécurité GoPlus (avant achat) ─────────────────────────────
-    "security_check_enabled": False,     # OFF par défaut : la bonding curve Pump.fun limite déjà le risque
+    "security_check_enabled": True,      # Bloque par défaut si la source GoPlus est absente/incomplète
     "min_security_score": 60,            # score GoPlus minimum (0-100) pour valider l'achat
     # ── Avis IA (Claude/Grok) — appui au scoring, jamais bloquant seul ─
     "ai_advisor_enabled": False,

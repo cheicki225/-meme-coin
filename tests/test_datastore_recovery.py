@@ -9,7 +9,7 @@ import pytest
 
 import config
 from monitoring_list import DataStore
-from sqlite_state import StateStoreCorruptError, StateStoreError
+from sqlite_state import StateStoreConflictError, StateStoreCorruptError, StateStoreError
 
 
 def _use_temp_sqlite(tmp_path, monkeypatch):
@@ -25,6 +25,27 @@ def test_new_datastore_starts_with_emergency_stop_active(tmp_path, monkeypatch):
 
     assert store.state["emergency_stop"] is True
     assert store.state["emergency_stop_reason"] == "startup safety default"
+
+
+def test_stale_sqlite_snapshot_cannot_overwrite_newer_state(tmp_path, monkeypatch):
+    _use_temp_sqlite(tmp_path, monkeypatch)
+    current = DataStore()
+    stale = DataStore()
+
+    current.state["emergency_stop_reason"] = "fixture-current"
+    current.state["emergency_stop"] = True
+    current.save()
+    stale.state["emergency_stop_reason"] = "fixture-stale"
+    stale.state["emergency_stop"] = False
+    stale_revision = stale._state_revision
+    with pytest.raises(StateStoreConflictError, match="snapshot is stale"):
+        stale.save()
+    assert stale._state_revision == stale_revision
+    assert current._sqlite_store.current_revision() == current._state_revision
+
+    restarted = DataStore()
+    assert restarted.state["emergency_stop_reason"] == "fixture-current"
+    assert restarted.state["emergency_stop"] is True
 
 
 def test_datastore_backfills_active_stop_when_persisted_state_has_no_stop_key(tmp_path, monkeypatch):

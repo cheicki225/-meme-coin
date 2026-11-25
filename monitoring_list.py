@@ -30,7 +30,12 @@ import threading
 import time
 
 import config
-from sqlite_state import SQLiteStateStore, StateStoreCorruptError, StateStoreError
+from sqlite_state import (
+    SQLiteStateStore,
+    StateStoreConflictError,
+    StateStoreCorruptError,
+    StateStoreError,
+)
 
 BACKUP_DIR_NAME = "backups"
 BACKUP_INTERVAL_S = 300   # 5 minutes entre deux backups automatiques
@@ -59,7 +64,7 @@ log = logging.getLogger("monitoring_list")
 class DataStore:
     """Charge/sauvegarde l'état complet du bot dans un fichier JSON."""
 
-    def __init__(self, path: str = None):
+    def __init__(self, path: str | None = None):
         self.path = path or config.DATA_FILE
         self._use_sqlite = path is None and getattr(config, "DATA_BACKEND", "json") == "sqlite"
         db_path = config.SQLITE_DB_FILE if self._use_sqlite else self.path
@@ -67,6 +72,7 @@ class DataStore:
         self._last_backup_time = 0
         self._confirmed_accounting_lock = threading.RLock()
         self._sqlite_store = None
+        self._state_revision: int | None = None
         if self._use_sqlite:
             try:
                 self._sqlite_store = SQLiteStateStore(config.SQLITE_DB_FILE)
@@ -102,6 +108,7 @@ class DataStore:
         if self._sqlite_store:
             try:
                 loaded = self._sqlite_store.load(self._default_state, legacy_json_path=self.path)
+                self._state_revision = self._sqlite_store.last_loaded_revision
             except StateStoreError as exc:
                 if (not isinstance(exc, StateStoreCorruptError)
                         and self._sqlite_store.has_committed_state()):
@@ -114,7 +121,14 @@ class DataStore:
                             if not backup_store.has_committed_state():
                                 continue
                             restored = backup_store.load(self._default_state)
-                            self._sqlite_store.save(restored)
+                            expected_revision = self._sqlite_store.last_loaded_revision
+                            if expected_revision is None:
+                                raise StateStoreConflictError(
+                                    "Cannot restore SQLite state without a verified revision"
+                                )
+                            self._state_revision = self._sqlite_store.save(
+                                restored, expected_revision=expected_revision
+                            )
                             loaded = restored
                             log.warning("State restored from SQLite backup %s after load failure: %s", candidate, exc)
                             break
@@ -134,7 +148,14 @@ class DataStore:
                                 restored = json.load(source)
                             if isinstance(restored, dict):
                                 loaded = restored
-                                self._sqlite_store.save(loaded)
+                                expected_revision = self._sqlite_store.last_loaded_revision
+                                if expected_revision is None:
+                                    raise StateStoreConflictError(
+                                        "Cannot import JSON backup without a verified SQLite revision"
+                                    )
+                                self._state_revision = self._sqlite_store.save(
+                                    loaded, expected_revision=expected_revision
+                                )
                                 log.warning("State imported from JSON backup %s after load failure: %s", candidate, exc)
                                 break
                         except (OSError, json.JSONDecodeError, StateStoreError) as backup_error:
@@ -319,7 +340,9 @@ class DataStore:
     def save(self):
         try:
             if self._sqlite_store:
-                self._sqlite_store.save(self.state)
+                self._state_revision = self._sqlite_store.save(
+                    self.state, expected_revision=self._state_revision
+                )
             else:
                 parent_dir = os.path.dirname(os.path.abspath(self.path))
                 os.makedirs(parent_dir, exist_ok=True)
@@ -575,7 +598,21 @@ class DataStore:
             lock = threading.RLock()
             self._confirmed_accounting_lock = lock
         with lock:
-            return self._record_confirmed_accounting_locked(signature, accounting, valuation)
+            for attempt in range(3):
+                try:
+                    return self._record_confirmed_accounting_locked(
+                        signature, accounting, valuation
+                    )
+                except StateStoreConflictError:
+                    if self._sqlite_store is None or attempt == 2:
+                        raise
+                    # A different process committed since this snapshot was
+                    # loaded. Reapply this ledger event to the latest state;
+                    # never overwrite that process with a stale document.
+                    self.state = self._load()
+            raise StateStoreConflictError(
+                "Confirmed accounting could not be committed after reload retries"
+            )
 
     def _record_confirmed_accounting_locked(
         self,

@@ -511,8 +511,8 @@ def test_history_replay_source_failure_keeps_pause_until_successful_recovery(
         if calls == 1:
             raise source_error
         return [
-            {"signature": "synthetic-newer", "slot": 12},
-            {"signature": "synthetic-checkpoint", "slot": 10},
+            {"signature": "synthetic-newer", "slot": 12, "transactionIndex": 1},
+            {"signature": "synthetic-checkpoint", "slot": 10, "transactionIndex": 0},
         ]
 
     async def handler(event) -> None:

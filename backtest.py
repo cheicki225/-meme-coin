@@ -16,6 +16,8 @@ import logging
 import math
 import struct
 import time
+from dataclasses import dataclass
+from datetime import datetime, timezone
 
 import aiohttp
 from solders.pubkey import Pubkey
@@ -45,23 +47,104 @@ DEXSCREENER_PAIRS_URL = "https://api.dexscreener.com/latest/dex/tokens/{address}
 # rendant chaque perte affichée bien pire que la perte réelle (cas
 # concret : -58.7% affiché pour une perte réelle nettement plus faible).
 #
-# Fix : réutilise _get_pair_data (plus bas dans ce fichier) sur le mint
-# natif du SOL — même source DexScreener que tout le reste du bot, aucune
-# nouvelle dépendance externe — avec un cache court pour éviter un appel
-# réseau à chaque conversion. Repli en cascade sur la dernière valeur
-# connue puis sur config.SOL_USD_RATE uniquement si DexScreener est
-# injoignable et qu'aucune valeur n'a jamais été mise en cache (ex: tout
-# premier appel juste après un redémarrage, avant le premier succès).
-_sol_price_cache = {"rate": None, "ts": 0.0}
-SOL_PRICE_CACHE_TTL_S = 300  # 5 min — un taux SOL/USD ne bouge pas assez vite pour justifier plus fréquent
+# Le taux utilise l'endpoint HTTPS fixe DexScreener, avec vérification TLS
+# standard et une fenêtre de cache bornée. Sans réponse valide dans cette
+# fenêtre, les conversions échouent au lieu de reprendre un taux périmé ou
+# une constante locale. Le temps local de réception ne prouve pas l'heure
+# interne du fournisseur ni l'authenticité indépendante de son marché.
+@dataclass(frozen=True)
+class SolUsdQuote:
+    """A locally received SOL/USD quote with an explicit provider label."""
+
+    rate: float
+    source: str
+    received_at_utc: str
+
+
+class SolUsdPriceUnavailable(RuntimeError):
+    """Raised when no fresh, valid provider quote is available."""
+
+
+_sol_price_cache = {"quote": None, "monotonic_ts": 0.0}
+SOL_PRICE_CACHE_TTL_S = 300  # Fenêtre maximale de réutilisation locale, pas un SLA de fraîcheur fournisseur.
+
+
+async def get_sol_usd_quote() -> SolUsdQuote:
+    """Return a fresh quote from the fixed HTTPS provider or fail closed.
+
+    The local receive time bounds cache freshness; DexScreener does not expose
+    a provider-side quote timestamp in this response. TLS verifies the fixed
+    HTTPS endpoint, but this metadata does not authenticate the underlying
+    market data independently.
+    """
+    now = time.monotonic()
+    cached = _sol_price_cache.get("quote")
+    if cached is not None and now - _sol_price_cache["monotonic_ts"] < SOL_PRICE_CACHE_TTL_S:
+        return cached
+
+    try:
+        url = DEXSCREENER_PAIRS_URL.format(address=config.SOL_MINT)
+        async with aiohttp.ClientSession(connector=rpc_client.get_http_connector(), connector_owner=False) as session:
+            async with session.get(
+                url,
+                timeout=aiohttp.ClientTimeout(total=10),
+                allow_redirects=False,
+            ) as resp:
+                if resp.status != 200:
+                    raise SolUsdPriceUnavailable("provider_http_error")
+                data = await resp.json()
+        pairs = data.get("pairs") if isinstance(data, dict) else None
+        if not isinstance(pairs, list):
+            raise SolUsdPriceUnavailable("invalid_provider_response")
+
+        valid_pairs = []
+        for pair in pairs:
+            if not isinstance(pair, dict):
+                continue
+            base = pair.get("baseToken")
+            if not isinstance(base, dict) or base.get("address") != config.SOL_MINT:
+                continue
+            try:
+                price = float(pair.get("priceUsd"))
+                liquidity = float((pair.get("liquidity") or {}).get("usd", 0) or 0)
+            except (AttributeError, TypeError, ValueError, OverflowError):
+                continue
+            if (
+                isinstance(pair.get("priceUsd"), bool)
+                or not math.isfinite(price)
+                or price <= 0
+                or not math.isfinite(liquidity)
+                or liquidity < 0
+            ):
+                continue
+            valid_pairs.append((liquidity, price, pair.get("dexId")))
+        if not valid_pairs:
+            raise SolUsdPriceUnavailable("no_valid_sol_base_pair")
+
+        _, price, _dex_id = max(valid_pairs, key=lambda item: item[0])
+        quote = SolUsdQuote(
+            rate=price,
+            source="dexscreener_https",
+            received_at_utc=datetime.now(timezone.utc).isoformat(),
+        )
+        _sol_price_cache["quote"] = quote
+        _sol_price_cache["monotonic_ts"] = time.monotonic()
+        log.info("SOL/USD quote refreshed from DexScreener HTTPS")
+        return quote
+    except SolUsdPriceUnavailable:
+        log.warning("SOL/USD provider quote unavailable; refusing stale or static valuation")
+        raise
+    except Exception as exc:
+        log.warning("SOL/USD provider request failed (%s); refusing stale or static valuation", type(exc).__name__)
+        raise SolUsdPriceUnavailable("provider_unavailable") from exc
 
 
 async def get_sol_usd_rate() -> float:
     """
-    Retourne le taux SOL/USD actuel, rafraîchi au maximum toutes les
-    SOL_PRICE_CACHE_TTL_S secondes via DexScreener (mint natif du SOL,
-    config.SOL_MINT). Ne lève jamais d'exception — voir le repli en
-    cascade documenté ci-dessus.
+    Retourne la valeur numérique du taux obtenu par get_sol_usd_quote(). Les
+    consommateurs qui doivent conserver la provenance utilisent directement
+    l'objet quote. Aucun taux périmé ou config.SOL_USD_RATE statique n'est
+    accepté lorsque le fournisseur est indisponible.
 
     CORRIGÉ suite à un vrai bug trouvé (repéré via un "Market cap: 1$"
     absurde sur une notification d'achat) : la première version réutilisait
@@ -76,37 +159,7 @@ async def get_sol_usd_rate() -> float:
     baseToken, puis prend la plus liquide parmi elles (évite une paire
     exotique/peu liquide qui fausserait le prix).
     """
-    now = time.time()
-    if _sol_price_cache["rate"] is not None and (now - _sol_price_cache["ts"]) < SOL_PRICE_CACHE_TTL_S:
-        return _sol_price_cache["rate"]
-
-    try:
-        url = DEXSCREENER_PAIRS_URL.format(address=config.SOL_MINT)
-        async with aiohttp.ClientSession(connector=rpc_client.get_http_connector(), connector_owner=False) as session:
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    pairs = data.get("pairs") or []
-                    sol_base_pairs = [p for p in pairs if (p.get("baseToken") or {}).get("address") == config.SOL_MINT]
-                    if sol_base_pairs:
-                        best_pair = max(sol_base_pairs, key=lambda p: (p.get("liquidity") or {}).get("usd", 0) or 0)
-                        price = float(best_pair.get("priceUsd", 0) or 0)
-                        if price > 0:
-                            _sol_price_cache["rate"] = price
-                            _sol_price_cache["ts"] = now
-                            log.info(f"💱 Taux SOL/USD rafraîchi : {price:.2f}$ (source DexScreener, paire {best_pair.get('dexId', '?')})")
-                            return price
-                    log.warning("⚠️ Taux SOL/USD — aucune paire avec SOL en baseToken trouvée chez DexScreener.")
-    except Exception as e:
-        log.warning(f"⚠️ Taux SOL/USD — échec de rafraîchissement DexScreener : {type(e).__name__}")
-
-    if _sol_price_cache["rate"] is not None:
-        return _sol_price_cache["rate"]  # dernière valeur connue, même périmée — mieux qu'une constante figée depuis des mois
-    log.warning(
-        f"⚠️ Taux SOL/USD — aucune valeur en cache, repli sur config.SOL_USD_RATE "
-        f"({config.SOL_USD_RATE}$, potentiellement obsolète)."
-    )
-    return config.SOL_USD_RATE
+    return (await get_sol_usd_quote()).rate
 
 
 # ════════════════════════════════════════════════════════════════

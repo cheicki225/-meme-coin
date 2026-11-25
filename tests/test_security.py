@@ -3,10 +3,15 @@ from types import SimpleNamespace
 
 import pytest
 
+import config
 import security
 
 
 TOKEN_MINT = "AbCdEf123"
+
+
+def test_new_wallet_security_defaults_require_goplus_check():
+    assert config.DEFAULT_WALLET_SETTINGS["security_check_enabled"] is True
 
 
 def _control(status="0", authorities=None, field="authority"):

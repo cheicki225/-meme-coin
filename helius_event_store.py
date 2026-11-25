@@ -867,11 +867,13 @@ async def replay_stream_history(
     address: str,
     fetch_page: FetchSignaturePage,
 ) -> int:
-    """Replay a bounded address-history gap before allowing stream intake again.
+    """Replay an address-history gap only with a verifiable transaction order.
 
     The RPC provider returns newest-first pages. The checkpoint must be found
     before any replay is enqueued. If it is outside retained provider history or
     the gap exceeds inbox capacity, the stream remains paused for manual review.
+    A slot and transaction index are required so page order can be checked
+    across slots and within each slot before intake resumes.
     """
     if not isinstance(address, str) or not address.strip():
         raise EventRecoveryError("History replay requires a known monitored address")
@@ -882,6 +884,7 @@ async def replay_stream_history(
     newest_first: list[dict] = []
     before: str | None = None
     found_checkpoint = False
+    previous_order: tuple[int, int] | None = None
     page_limit = _PAGE_LIMIT
     max_items = store.max_pending_events
     max_pages = (max_items // page_limit) + 2
@@ -905,6 +908,18 @@ async def replay_stream_history(
             signature = item.get("signature")
             if not isinstance(signature, str) or not signature:
                 raise EventRecoveryError("History replay entry has no signature")
+            slot = item.get("slot")
+            transaction_index = item.get("transactionIndex")
+            if type(slot) is not int or slot < 0 or type(transaction_index) is not int or transaction_index < 0:
+                raise EventRecoveryError(
+                    "History replay is missing canonical slot and transaction index"
+                )
+            order = (slot, transaction_index)
+            if previous_order is not None and order >= previous_order:
+                raise EventRecoveryError(
+                    "History replay transaction ordering is not canonical"
+                )
+            previous_order = order
             if signature == checkpoint_signature:
                 found_checkpoint = True
                 break
@@ -929,7 +944,7 @@ async def replay_stream_history(
             stream,
             item["signature"],
             {"replayed": True},
-            slot=item.get("slot") if type(item.get("slot")) is int else None,
+            slot=item["slot"],
             is_replay=True,
         )
         inserted += int(result.inserted)

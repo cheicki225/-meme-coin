@@ -1,3 +1,4 @@
+import multiprocessing
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -23,6 +24,19 @@ from monitoring_list import (
 SOL = "So11111111111111111111111111111111111111112"
 TOKEN = "Token1111111111111111111111111111111111111"
 WALLET = "Wallet111111111111111111111111111111111111"
+
+
+def _record_accounting_in_process(database_path, legacy_path, barrier, result_queue, signature, timestamp):
+    """Open the same SQLite state from a spawned process and record one fixture."""
+    config.DATA_BACKEND = "sqlite"
+    config.SQLITE_DB_FILE = str(database_path)
+    config.DATA_FILE = str(legacy_path)
+    store = DataStore()
+    barrier.wait(timeout=20)
+    accounting = _confirmed_accounting(event_timestamp=timestamp)
+    valuation = value_confirmed_sol_cashflow_usd(accounting)
+    inserted = store.record_confirmed_accounting(signature, accounting, valuation)
+    result_queue.put(("ok", inserted))
 
 
 def _transaction(*, native_delta=-1_010_000_000, token_delta=2_000_000, fee=10_000_000, extra=None):
@@ -429,6 +443,106 @@ def test_concurrent_confirmed_accounting_replays_insert_once(tmp_path):
     assert sum(results) == 1
     assert len(store.state["confirmed_accounting_ledger"]) == 1
     assert len(store.state["confirmed_accounting_idempotency"]) == 1
+
+
+def test_sqlite_accounting_reloads_and_retries_after_stale_snapshot(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "DATA_BACKEND", "sqlite")
+    monkeypatch.setattr(config, "DATA_FILE", str(tmp_path / "legacy.json"))
+    monkeypatch.setattr(config, "SQLITE_DB_FILE", str(tmp_path / "state.sqlite3"))
+    first = DataStore()
+    stale = DataStore()
+    assert first._state_revision == stale._state_revision
+
+    first_accounting = _confirmed_accounting(event_timestamp=1_101.0)
+    second_accounting = _confirmed_accounting(event_timestamp=1_102.0)
+    assert first.record_confirmed_accounting(
+        "fixture-instance-one", first_accounting,
+        value_confirmed_sol_cashflow_usd(first_accounting),
+    )
+    assert stale.record_confirmed_accounting(
+        "fixture-instance-two", second_accounting,
+        value_confirmed_sol_cashflow_usd(second_accounting),
+    )
+
+    restarted = DataStore()
+    ledger = restarted.state["confirmed_accounting_ledger"]
+    assert {record["signature"] for record in ledger} == {
+        "fixture-instance-one", "fixture-instance-two",
+    }
+    assert len(restarted.state["confirmed_accounting_idempotency"]) == 2
+
+
+def test_sqlite_confirmed_accounting_concurrent_process_writes_are_not_lost(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "DATA_BACKEND", "sqlite")
+    monkeypatch.setattr(config, "DATA_FILE", str(tmp_path / "legacy.json"))
+    monkeypatch.setattr(config, "SQLITE_DB_FILE", str(tmp_path / "state.sqlite3"))
+    monkeypatch.setenv("PYTHON_DOTENV_DISABLED", "true")
+    DataStore()  # Initialize the fixture database before spawning writers.
+
+    context = multiprocessing.get_context("spawn")
+    barrier = context.Barrier(2)
+    results = context.Queue()
+    shared_path = str(tmp_path / "state.sqlite3")
+    legacy_path = str(tmp_path / "legacy.json")
+    workers = [
+        context.Process(
+            target=_record_accounting_in_process,
+            args=(
+                shared_path, legacy_path, barrier, results,
+                f"fixture-process-{index}", 1_200.0 + index,
+            ),
+        )
+        for index in range(2)
+    ]
+    for worker in workers:
+        worker.start()
+
+    outcomes = [results.get(timeout=30) for _ in workers]
+    for worker in workers:
+        worker.join(timeout=30)
+        assert worker.exitcode == 0
+    assert outcomes == [("ok", True), ("ok", True)]
+
+    restarted = DataStore()
+    ledger = restarted.state["confirmed_accounting_ledger"]
+    assert {record["signature"] for record in ledger} == {
+        "fixture-process-0", "fixture-process-1",
+    }
+    assert len(restarted.state["confirmed_accounting_idempotency"]) == 2
+
+
+def test_sqlite_same_confirmed_accounting_is_idempotent_across_processes(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "DATA_BACKEND", "sqlite")
+    monkeypatch.setattr(config, "DATA_FILE", str(tmp_path / "legacy.json"))
+    monkeypatch.setattr(config, "SQLITE_DB_FILE", str(tmp_path / "state.sqlite3"))
+    monkeypatch.setenv("PYTHON_DOTENV_DISABLED", "true")
+    DataStore()
+
+    context = multiprocessing.get_context("spawn")
+    barrier = context.Barrier(2)
+    results = context.Queue()
+    shared_path = str(tmp_path / "state.sqlite3")
+    legacy_path = str(tmp_path / "legacy.json")
+    workers = [
+        context.Process(
+            target=_record_accounting_in_process,
+            args=(shared_path, legacy_path, barrier, results, "fixture-shared-signature", 1_300.0),
+        )
+        for _ in range(2)
+    ]
+    for worker in workers:
+        worker.start()
+
+    outcomes = [results.get(timeout=30) for _ in workers]
+    for worker in workers:
+        worker.join(timeout=30)
+        assert worker.exitcode == 0
+    assert sorted(inserted for _, inserted in outcomes) == [False, True]
+
+    restarted = DataStore()
+    ledger = restarted.state["confirmed_accounting_ledger"]
+    assert [record["signature"] for record in ledger] == ["fixture-shared-signature"]
+    assert len(restarted.state["confirmed_accounting_idempotency"]) == 1
 
 
 def test_confirmed_accounting_reconciliation_rolls_back_ledger_and_index_on_save_error(monkeypatch, tmp_path):
