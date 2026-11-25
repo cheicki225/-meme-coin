@@ -1,6 +1,6 @@
 # Mission 20 — PAPER validation evidence template
 
-**Status: `BLOCKED / MANUAL_VERIFICATION_REQUIRED`**  
+**Status: `BLOCKED / MANUAL_VERIFICATION_REQUIRED`**
 This is a blank record for a future authorized target run. No target, provider, bot process, restoration drill, or 24-hour soak was accessed or started while preparing it. The existing [PAPER release runbook](PAPER_RELEASE_CANDIDATE_RUNBOOK.md) remains the procedure of record.
 
 ## Entry gate
