@@ -42,3 +42,21 @@ Avec `TRADING_MODE=PAPER`, `LIVE_EXECUTION_ENABLED=false`, `PYTHON_DOTENV_DISABL
 - Le workflow CI GitHub se déclenche sur un push/Pull Request; le run sur le SHA `36bf8fc…` était en cours. La tête documentaire finale après ce rapport exige une nouvelle vérification de CI exacte.
 
 **Conclusion :** les outils et formulaires de préparation sont présents et testés offline. L’acceptation M20 reste `BLOCKED / MANUAL_VERIFICATION_REQUIRED` jusqu’à la levée des gates M19 et une autorisation opérationnelle distincte.
+
+## Revue indépendante et correction du code de sortie
+
+La revue indépendante du head précédent a trouvé une ambiguïté P2 : un record bien formé pouvait produire le code de sortie `0` même si `mission19_gate` n’était pas `CLEARED`. La validation de format pouvait donc être confondue avec une validation opérationnelle par un appelant qui ne lit que le code de sortie.
+
+Le commit code/tests `ffa30265d790391f00bcfadce14f254179c0c442` corrige ce signal : le CLI retourne `2` pour une entrée invalide/illisible et `3` si le schéma est valide mais que la preuve opérationnelle n’est pas explicitement vérifiée. Comme le validateur actuel garde toujours `operational_evidence_verified=false`, il ne retourne jamais `0`. Deux régressions couvrent ces codes.
+
+Vérifications locales après correction, avec plugins pytest tiers désactivés pour éviter l’incompatibilité préexistante `web3`/`eth_typing` de l’installation globale :
+
+| Vérification | Résultat |
+|---|---|
+| Tests M20 ciblés + readiness locale + reprise DataStore | `36 passed` |
+| Suite complète | `855 passed` en 22,62 s |
+| `python -m compileall -q .` | Réussi |
+| `mypy --follow-imports=silent scripts/mission20_validate_operator_evidence.py` | Aucune erreur |
+| `git diff --check` | Réussi |
+
+La CI du nouveau head final doit être relue sur la PR #31 avant de rapporter ce correctif comme validé par GitHub. Aucun soak, accès cible, fournisseur, base cible ou processus du bot n’a été ajouté à cette revue.
