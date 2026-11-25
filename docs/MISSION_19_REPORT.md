@@ -11,7 +11,7 @@ Mission 19 renforce la reprise de l’inbox Helius avec une fenêtre de reconnex
 - Base vérifiée : PR #30, `codex/mission-18-core-paper-integration-20261125`, head `e9334d5716b7fd5969cae3f077bb9fc1a2a1d1d7`.
 - Worktree isolé : `C:\Users\LENOVO\AppData\Local\BOT-MEME-COIN-MISSION19-20261125`, branche `codex/mission-19-data-integrity-20261125`.
 - Le checkout utilisateur et le worktree Mission 18 sont restés intacts. La Mission 19 n’a pas été fusionnée dans `main`.
-- PR #30 demeure une dépendance brouillon/non fusionnée; sa CI `45701063429` est la preuve du head M18 exact, pas de la Mission 19.
+- PR #30 demeure une dépendance brouillon/non fusionnée; sa CI `45701063429` est la preuve du head M18 exact, pas de la Mission 19. La PR brouillon #33 a été ouverte le 25 novembre 2026 vers cette base, à partir du head initial M19 `cf67581e30d4641ee17c77531c2bff3fb7d6214a`; aucun résultat CI M19 exact-head n’était disponible à l’ouverture.
 - Aucune valeur de `.env`, clé, wallet, signature, compte, processus ou base cible n’a été lue. Les tests ont reçu explicitement `TRADING_MODE=PAPER`, `LIVE_EXECUTION_ENABLED=false` et `PYTHON_DOTENV_DISABLED=true`.
 
 ## Changements réalisés
@@ -66,7 +66,7 @@ Python 3.11.9, Windows. Commandes de test exécutées avec les variables PAPER c
 | Tests avec autoload pytest par défaut | Le chargement du plugin global Web3 échoue avant la collecte car `web3.tools.pytest_ethereum` importe un symbole `ContractName` absent de l’installation `eth_typing`. Le désactivation des plugins tiers via `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` a permis l’exécution complète sans changer l’environnement installé. |
 | Fournisseurs, RPC, réseau d’exécution et target PAPER | Aucun appel réseau ou démarrage. Aucune clé, signature, transaction, ordre, dépense, déploiement ou merge. |
 
-Trois sous-agents Codex distincts ont fourni des audits en lecture seule : Helius/reprise, provenance prix/runtime et gates Missions 20–22. Les revues Helius ont signalé des défauts P1 de borne/fencing, d’arrêt pendant la reprise et de drain après arrêt; les cas ont été corrigés puis testés. Les findings P2 sur l’ACK malformé et les échecs répétés du RPC finalized sont également corrigés et couverts. La revue finale Helius confirme qu’il ne reste aucun défaut P1/P2 dans le périmètre examiné. L’état du PR/CI exact Mission 19 sera ajouté après commit et contrôle du head.
+Trois sous-agents Codex distincts ont fourni des audits en lecture seule : Helius/reprise, provenance prix/runtime et gates Missions 20–22. Les revues Helius ont signalé des défauts P1 de borne/fencing, d’arrêt pendant la reprise et de drain après arrêt; les cas ont été corrigés puis testés. Les findings P2 sur l’ACK malformé et les échecs répétés du RPC finalized sont également corrigés et couverts. La revue finale Helius confirme qu’il ne reste aucun défaut P1/P2 dans le périmètre examiné. La PR brouillon #33 est ouverte et empilée sur #30; son head évolue avec les mises à jour du rapport. Le statut de CI doit être vérifié sur le SHA courant de la PR avant toute conclusion de validation.
 
 ## Gates ouvertes et risques résiduels
 
