@@ -36,6 +36,7 @@ from helius_event_store import (
     EventRecord,
     HeliusEventStore,
     RetryableEventError,
+    await_subscription_acknowledgements,
     drain_stream,
     get_default_event_store,
     recover_required_streams,
@@ -99,6 +100,7 @@ class NewTokenListener:
         self._event_store = event_store or get_default_event_store()
         self.data_store = data_store
         self._running = False
+        self._stop_requested = False
         self._ws = None
         self._stop_event: asyncio.Event | None = None
         self._subscribed_wallets: set[str] = set()
@@ -116,6 +118,7 @@ class NewTokenListener:
             return
 
         self._running = True
+        self._stop_requested = False
         self._stop_event = asyncio.Event()
         reconnect_attempt = 0
         while self._running:
@@ -128,6 +131,7 @@ class NewTokenListener:
                 raise
             except EventStoreError:
                 self._running = False
+                self._stop_requested = True
                 log.critical("New-token event storage failed; listener stopped fail-closed")
             except Exception as e:
                 log.error("External operation failed (%s)", type(e).__name__)
@@ -147,6 +151,7 @@ class NewTokenListener:
 
     async def stop(self):
         self._running = False
+        self._stop_requested = True
         if self._stop_event is not None:
             self._stop_event.set()
         ws = self._ws
@@ -229,16 +234,26 @@ class NewTokenListener:
             try:
                 for stream in known_streams:
                     self._event_store.mark_recovery_required(stream, "connection_gap")
+                buffered_messages = await await_subscription_acknowledgements(
+                    ws, self._request_id_to_stream, self._handle_notification
+                )
                 ready = await recover_required_streams(
                     self._event_store,
                     "new-token:",
                     self._process_event_record,
                     self._address_for_stream,
+                    should_stop=lambda: self._stop_requested,
                 )
                 if not ready:
                     log.error("New-token event recovery is incomplete; intake remains paused")
                     await ws.close()
                     return
+                if not self._running:
+                    return
+                for message in buffered_messages:
+                    if not self._running:
+                        return
+                    await self._handle_notification(message)
                 retry_task = asyncio.create_task(self._retry_pending_events())
                 async for message in ws:
                     await self._handle_notification(message)
@@ -325,6 +340,7 @@ class NewTokenListener:
                 await self._ws.close()
         except EventStoreError:
             self._running = False
+            self._stop_requested = True
             log.critical("New-token event storage failed; listener stopped fail-closed")
             if self._ws is not None:
                 await self._ws.close()
@@ -395,7 +411,10 @@ class NewTokenListener:
             return
 
         result = await drain_stream(
-            self._event_store, stream, self._process_event_record
+            self._event_store,
+            stream,
+            self._process_event_record,
+            should_stop=lambda: self._stop_requested,
         )
         if result == "unknown" and self._ws is not None:
             await self._ws.close()
@@ -405,13 +424,17 @@ class NewTokenListener:
             try:
                 for stream in self._event_store.stream_names("new-token:"):
                     result = await drain_stream(
-                        self._event_store, stream, self._process_event_record
+                        self._event_store,
+                        stream,
+                        self._process_event_record,
+                        should_stop=lambda: self._stop_requested,
                     )
                     if result == "unknown" and self._ws is not None:
                         await self._ws.close()
                 await asyncio.sleep(1)
             except EventStoreError:
                 self._running = False
+                self._stop_requested = True
                 log.critical("New-token event storage failed; listener stopped fail-closed")
                 if self._ws is not None:
                     await self._ws.close()
@@ -429,7 +452,12 @@ class NewTokenListener:
         if not token_mint or not dev_address:
             return
 
-        self._event_store.mark_effect_started(event.event_id)
+        self._event_store.mark_effect_started(
+            event.event_id,
+            claim_generation=event.claim_generation,
+            recovery=event.recovery_claim,
+            recovery_generation=event.recovery_generation,
+        )
         with measure_execution("event.decision", "internal"):
             await self.on_new_token({
                 "token_mint": token_mint,
