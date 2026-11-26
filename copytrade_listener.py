@@ -44,11 +44,13 @@ import rpc_client
 from execution_metrics import measure_async, measure_execution
 from helius_event_store import (
     CanonicalOrderRequiredError,
+    EventOutcomeUnknownError,
     EventQueueFullError,
     EventStoreError,
     EventRecord,
     HeliusEventStore,
     RetryableEventError,
+    await_subscription_acknowledgements,
     drain_stream,
     get_default_event_store,
     recover_required_streams,
@@ -91,7 +93,8 @@ class CopyTradeListener:
     ):
         """
         data_store: instance de monitoring_list.DataStore
-        on_buy: async(wallet_address: str, token_mint: str, signature: str)
+        on_buy: async(wallet_address: str, token_mint: str, signature: str,
+            event_record: EventRecord)
         on_sell: async(wallet_address: str, token_mint: str, signature: str)
         on_large_sol_transfer: async(wallet_address: str, destination: str,
             amount_sol: float, pct_of_balance: float, signature: str) —
@@ -108,6 +111,7 @@ class CopyTradeListener:
         self.on_large_sol_transfer = on_large_sol_transfer
         self.on_withdrawal = on_withdrawal
         self._running = False
+        self._stop_requested = False
         self._ws = None
         self._subscribed_wallets: set[str] = set()
         self._sub_id_to_wallet: dict[int, str] = {}
@@ -141,11 +145,13 @@ class CopyTradeListener:
             return
 
         self._running = True
+        self._stop_requested = False
         while self._running:
             try:
                 await self._run_connection()
             except EventStoreError:
                 self._running = False
+                self._stop_requested = True
                 log.critical("Copytrade event storage failed; listener stopped fail-closed")
             except Exception as e:
                 log.error("External operation failed (%s)", type(e).__name__)
@@ -153,6 +159,7 @@ class CopyTradeListener:
 
     async def stop(self):
         self._running = False
+        self._stop_requested = True
         if self._ws is not None:
             await self._ws.close()
 
@@ -167,17 +174,28 @@ class CopyTradeListener:
             await self._sync_subscriptions()
             for stream in known_streams:
                 self._event_store.mark_recovery_required(stream, "connection_gap")
+            buffered_messages = await await_subscription_acknowledgements(
+                ws, self._request_id_to_wallet, self._handle_message
+            )
             ready = await recover_required_streams(
                 self._event_store,
                 "copytrade:",
                 self._process_event_record,
                 self._address_for_stream,
+                should_stop=lambda: self._stop_requested,
             )
             if not ready:
                 log.error("Copytrade event recovery is incomplete; intake remains paused")
                 await ws.close()
-                await asyncio.sleep(5)
+                if self._running:
+                    await asyncio.sleep(5)
                 return
+            if not self._running:
+                return
+            for message in buffered_messages:
+                if not self._running:
+                    return
+                await self._handle_message(message)
             log.info(f"✅ Copytrade listener connecté — synchronisation des wallets suivis toutes les {config.COPYTRADE_SYNC_INTERVAL_S}s.")
 
             sync_task = asyncio.create_task(self._periodic_sync())
@@ -236,6 +254,7 @@ class CopyTradeListener:
             except EventStoreError:
                 metric["outcome"] = "failure"
                 self._running = False
+                self._stop_requested = True
                 log.critical("Copytrade event storage failed; listener stopped fail-closed")
                 if self._ws is not None:
                     await self._ws.close()
@@ -358,7 +377,10 @@ class CopyTradeListener:
 
     async def _drain_event_stream(self, stream: str) -> str:
         result = await drain_stream(
-            self._event_store, stream, self._process_event_record
+            self._event_store,
+            stream,
+            self._process_event_record,
+            should_stop=lambda: self._stop_requested,
         )
         if result == "unknown":
             log.error("Copytrade event stream is blocked pending manual review")
@@ -374,6 +396,7 @@ class CopyTradeListener:
                 await asyncio.sleep(1)
             except EventStoreError:
                 self._running = False
+                self._stop_requested = True
                 log.critical("Copytrade event storage failed; listener stopped fail-closed")
                 if self._ws is not None:
                     await self._ws.close()
@@ -399,7 +422,12 @@ class CopyTradeListener:
             if isinstance(event_details, dict):
                 is_swap_related = is_swap_related or bool(event_details.get("swap"))
 
-        self._event_store.mark_effect_started(event.event_id)
+        self._event_store.mark_effect_started(
+            event.event_id,
+            claim_generation=event.claim_generation,
+            recovery=event.recovery_claim,
+            recovery_generation=event.recovery_generation,
+        )
         with measure_execution("event.decision", "internal"):
             if self._creation_mode_wallets:
                 await self._check_large_sol_transfer(
@@ -419,9 +447,17 @@ class CopyTradeListener:
                 return
 
             if action_info["action"] == "buy" and self.on_buy:
-                await self.on_buy(
-                    wallet_address, action_info["token_mint"], event.signature
+                callback_result = await self.on_buy(
+                    wallet_address,
+                    action_info["token_mint"],
+                    event.signature,
+                    event_record=event,
                 )
+                if getattr(callback_result, "status", None) == "unknown":
+                    reason = getattr(
+                        callback_result, "reason", "handler_outcome_unknown"
+                    )
+                    raise EventOutcomeUnknownError(reason)
             elif action_info["action"] == "sell" and self.on_sell:
                 await self.on_sell(
                     wallet_address, action_info["token_mint"], event.signature
@@ -557,7 +593,7 @@ class CopyTradeListener:
         tous les appels existants dans ce fichier."""
         return await rpc_client.fetch_parsed_transaction(signature)
 
-    def _classify_transaction(self, parsed: dict) -> dict:
+    def _classify_transaction(self, parsed: dict) -> dict | None:
         """
         Détermine si la transaction est un achat ou une vente pour l'un des
         wallets suivis, et quel token est concerné.

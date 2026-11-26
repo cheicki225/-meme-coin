@@ -181,6 +181,7 @@ def _bot_with_store(store: _Store) -> main.SniperBot:
     bot = object.__new__(main.SniperBot)
     bot.data_store = store
     bot.trader = PaperTrader(store)
+    bot.paper_runtime = None
     bot.notifier = None
     bot.rug_scanner = _RecordingRugScanner()
     return bot
@@ -222,7 +223,7 @@ def _creation_notification(signature: str, subscription: int, slot: int = 42) ->
     )
 
 
-def test_copy_buy_reaches_paper_risk_gate_once_with_synthetic_metrics(
+def test_unverified_copy_event_remains_unknown_without_paper_admission(
     monkeypatch, tmp_path
 ):
     monkeypatch.setenv("EXECUTION_METRICS_PATH", str(tmp_path / "metrics.jsonl"))
@@ -281,14 +282,11 @@ def test_copy_buy_reaches_paper_risk_gate_once_with_synthetic_metrics(
 
     asyncio.run(scenario())
 
-    assert len(store.state["open_positions"]) == 1
-    assert store.state["open_positions"][0]["token_mint"] == TOKEN_MINT
-    assert store.state["open_positions"][0]["reason"].startswith("Copy trade")
-    assert listener._event_store.checkpoint(f"copytrade:{COPY_WALLET}") == (
-        1,
-        "synthetic-copy-signature",
-    )
-    # One concurrent delivery and one later redelivery are both rejected.
+    assert store.state["open_positions"] == []
+    assert listener._event_store.has_unknown(f"copytrade:{COPY_WALLET}")
+    assert listener._event_store.intake_paused(f"copytrade:{COPY_WALLET}")
+    assert listener._event_store.checkpoint(f"copytrade:{COPY_WALLET}") == (0, None)
+    # Concurrent and later redeliveries do not process an unresolved event again.
     assert listener._event_store.metrics()["duplicates"] == 2
     assert fetch_calls == 1
 
@@ -298,7 +296,7 @@ def test_copy_buy_reaches_paper_risk_gate_once_with_synthetic_metrics(
     assert COPY_WALLET not in metrics_text
     assert TOKEN_MINT not in metrics_text
     summary = execution_metrics.summarize_metrics(metrics_path)
-    assert summary["stages"]["event.end_to_end:helius"]["count"] == 1
+    assert summary["stages"]["event.unknown:helius"]["count"] == 1
     assert summary["stages"]["decision.copytrade_buy:internal"]["count"] == 1
 
 
@@ -344,7 +342,7 @@ def test_tracked_developer_sniping_path_rejects_synthetic_honeypot(
     )
 
 
-def test_emergency_stop_blocks_copy_buy_before_paper_simulation(
+def test_emergency_stop_stays_active_while_unverified_copy_event_is_unknown(
     monkeypatch, tmp_path
 ):
     store = _Store(emergency_stop=True)
@@ -376,13 +374,11 @@ def test_emergency_stop_blocks_copy_buy_before_paper_simulation(
 
     assert store.state["emergency_stop"] is True
     assert store.state["open_positions"] == []
-    assert listener._event_store.checkpoint(f"copytrade:{COPY_WALLET}") == (
-        1,
-        "synthetic-stopped-signature",
-    )
+    assert listener._event_store.has_unknown(f"copytrade:{COPY_WALLET}")
+    assert listener._event_store.checkpoint(f"copytrade:{COPY_WALLET}") == (0, None)
 
 
-def test_unavailable_goplus_source_fails_closed_before_paper_copy_buy(
+def test_unavailable_goplus_source_cannot_make_unverified_copy_event_eligible(
     monkeypatch, tmp_path
 ):
     store = _Store()
@@ -413,10 +409,8 @@ def test_unavailable_goplus_source_fails_closed_before_paper_copy_buy(
     )
 
     assert store.state["open_positions"] == []
-    assert listener._event_store.checkpoint(f"copytrade:{COPY_WALLET}") == (
-        1,
-        "synthetic-security-error-signature",
-    )
+    assert listener._event_store.has_unknown(f"copytrade:{COPY_WALLET}")
+    assert listener._event_store.checkpoint(f"copytrade:{COPY_WALLET}") == (0, None)
 
 
 def test_copy_sell_uses_durable_signal_once_for_paper_close(monkeypatch, tmp_path):
@@ -513,11 +507,16 @@ def test_history_replay_source_failure_keeps_pause_until_successful_recovery(
 ):
     store = HeliusEventStore(tmp_path / "replay.sqlite3")
     stream = "copytrade:synthetic-wallet"
-    store.ensure_stream(stream)
-    store.enqueue(stream, "synthetic-checkpoint", {}, slot=10)
+    store.enqueue(
+        stream, "synthetic-checkpoint", {}, slot=10,
+        transaction_index=0, is_replay=True,
+    )
     checkpoint = store.claim_next(stream)
     assert checkpoint is not None
-    store.mark_processed(checkpoint.event_id)
+    store.mark_processed(
+        checkpoint.event_id, claim_generation=checkpoint.claim_generation
+    )
+    store.ensure_stream(stream)
     store.mark_recovery_required(stream, "connection_gap")
 
     calls = 0
@@ -537,6 +536,12 @@ def test_history_replay_source_failure_keeps_pause_until_successful_recovery(
         processed.append(event.signature)
 
     monkeypatch.setattr(helius_event_store, "fetch_signature_page", fetch_page)
+
+    async def finalized_boundary() -> int:
+        return 11
+
+    monkeypatch.setattr(helius_event_store, "fetch_processed_slot", finalized_boundary)
+    monkeypatch.setattr(helius_event_store, "fetch_finalized_slot", finalized_boundary)
 
     async def scenario() -> None:
         ready = await recover_required_streams(
@@ -562,7 +567,7 @@ def test_history_replay_source_failure_keeps_pause_until_successful_recovery(
 
     asyncio.run(scenario())
 
-    assert calls == 2
+    assert calls == 3
     assert processed == ["synthetic-newer"]
     assert store.checkpoint(stream) == (2, "synthetic-newer")
     assert store.intake_paused(stream) is False
@@ -573,11 +578,16 @@ def test_history_replay_source_failure_keeps_pause_until_successful_recovery(
 def test_replay_error_is_sanitized_and_does_not_advance_checkpoint(tmp_path):
     store = HeliusEventStore(tmp_path / "replay-error.sqlite3")
     stream = "copytrade:synthetic-wallet"
-    store.ensure_stream(stream)
-    store.enqueue(stream, "synthetic-checkpoint", {}, slot=10)
+    store.enqueue(
+        stream, "synthetic-checkpoint", {}, slot=10,
+        transaction_index=0, is_replay=True,
+    )
     checkpoint = store.claim_next(stream)
     assert checkpoint is not None
-    store.mark_processed(checkpoint.event_id)
+    store.mark_processed(
+        checkpoint.event_id, claim_generation=checkpoint.claim_generation
+    )
+    store.ensure_stream(stream)
     store.mark_recovery_required(stream, "connection_gap")
 
     async def unavailable(_address: str, _before: str | None, _limit: int):

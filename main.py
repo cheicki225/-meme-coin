@@ -26,6 +26,10 @@ import wallet_history
 import backtest
 import ai_advisor
 from monitoring_list import DataStore
+from helius_event_store import EventRecord
+from mission18_paper_admission import SQLitePaperAdmissionStore
+from mission13_admission import PaperCandidateRequest
+from mission23_paper_runtime import Mission23PaperRuntime, PaperRuntimeResult
 from paper_trader import PaperTrader
 from live_trader import LiveTrader
 from protection_scanner import ProtectionScanner
@@ -81,6 +85,13 @@ class SniperBot:
             self.trader = LiveTrader(self.data_store, notifier=self.notifier, price_stream=self.position_price_stream)
         else:
             self.trader = PaperTrader(self.data_store, notifier=self.notifier, price_stream=self.position_price_stream)
+
+        self.paper_runtime: Mission23PaperRuntime | None = None
+        if config.TRADING_MODE == "PAPER":
+            self.trader.require_mission23_admission = True
+            if getattr(self.data_store, "_sqlite_store", None) is not None:
+                admission_store = SQLitePaperAdmissionStore(config.SQLITE_DB_FILE)
+                self.paper_runtime = Mission23PaperRuntime(admission_store, self.trader)
 
         self.listener = NewTokenListener(on_new_token=self.on_new_token, data_store=self.data_store)
         self.copytrade_listener = CopyTradeListener(
@@ -223,7 +234,7 @@ class SniperBot:
             self.data_store.update_wallet_activity(dev_address)
 
             if mode == "track_creation":
-                await self.trader.open_position(
+                await self._open_position_from_signal(
                     token_mint, dev_address,
                     reason=f"Dev connu ({wallet_info['label']}, ratio backtest {wallet_info['backtest_ratio']:.2f})",
                     creation_slot=creation_slot,
@@ -281,7 +292,8 @@ class SniperBot:
 
     @measure_async("decision.copytrade_buy", "internal")
     async def on_copytrade_buy(self, wallet_address: str, token_mint: str, signature: str,
-                                source_sol_spent_lamports: int = 0, source_tokens_received: float = 0):
+                                source_sol_spent_lamports: int = 0, source_tokens_received: float = 0,
+                                *, event_record: EventRecord | None = None) -> PaperRuntimeResult | None:
         """
         Callback du copytrade_listener : un wallet suivi en mode track_buy vient
         d'acheter un token. Applique Max Token Age et Follow Cooldown (les deux
@@ -295,6 +307,17 @@ class SniperBot:
         dans "Buy Confirmed" à côté du nôtre pour comparaison directe. Voir
         copytrade_listener._classify_transaction pour l'extraction.
         """
+        if config.TRADING_MODE == "PAPER":
+            result = await self._open_position_from_signal(
+                token_mint,
+                wallet_address,
+                reason="Copy trade signal",
+                event_record=event_record,
+                request=None,
+            )
+            log.info("Copytrade PAPER entry status: %s (%s)", result.status, result.reason)
+            return result
+
         entry = self.data_store.state["monitored_dev_wallets"].get(wallet_address)
         if not entry or entry.get("mode") != "track_buy":
             return
@@ -384,10 +407,48 @@ class SniperBot:
             )
 
         log.info(f"📋 Copy trade détecté : {label} a acheté {token_mint[:8]}... (tx {signature[:12]}...)")
-        await self.trader.open_position(
+        await self._open_position_from_signal(
             token_mint, wallet_address,
             reason=f"Copy trade — achat détecté chez {label}",
             source_entry_market_cap=source_entry_market_cap,
+            event_record=event_record,
+        )
+
+    async def _open_position_from_signal(
+        self,
+        token_mint: str,
+        source_wallet: str,
+        *,
+        reason: str,
+        creation_slot: int | None = None,
+        source_entry_market_cap: float | None = None,
+        event_record: EventRecord | None = None,
+        request: PaperCandidateRequest | None = None,
+    ) -> PaperRuntimeResult | dict[str, object] | None:
+        """Route PAPER entries through durable Mission 23 admission.
+
+        Legacy new-token and dev-sell callbacks lack an authenticated durable
+        event or Mission 13 evidence bundle and remain blocked. LIVE behavior
+        continues through its existing separately gated executor.
+        """
+        if config.TRADING_MODE != "PAPER":
+            return await self.trader.open_position(
+                token_mint,
+                source_wallet,
+                reason,
+                creation_slot=creation_slot,
+                source_entry_market_cap=source_entry_market_cap,
+            )
+        if getattr(self, "paper_runtime", None) is None:
+            from mission23_paper_runtime import PaperRuntimeResult
+            return PaperRuntimeResult("unknown", "durable_sqlite_admission_unavailable")
+        return await self.paper_runtime.process_event(
+            event_record,
+            request,
+            source_wallet=source_wallet,
+            token_mint=token_mint,
+            reason=reason,
+            proposed_exposure_usd=config.POSITION_SIZE_USD,
         )
 
     async def on_wallet_withdrawal(self, wallet_address: str, destination: str, amount: float, asset: str = "SOL", signature: str = None):
@@ -666,7 +727,7 @@ class SniperBot:
                 return  # pas le bon token, ou surveillance expirée/déjà consommée
 
             log.info(f"💥 Buy on Dev Sell déclenché : {label} a vendu {token_mint[:8]}... — achat maintenant.")
-            await self.trader.open_position(
+            await self._open_position_from_signal(
                 token_mint, wallet_address,
                 reason=f"Buy on Dev Sell — achat juste après la vente du dev ({label})"
             )
@@ -702,7 +763,7 @@ class SniperBot:
             self.data_store.add_dev_wallet(
                 dev_address, label="Auto-détecté (filtres désactivés)", scheme="inconnu", backtest_ratio=0.0,
             )
-            await self.trader.open_position(
+            await self._open_position_from_signal(
                 current_token_mint, dev_address,
                 reason="Nouveau dev — filtres de détection désactivés"
             )
@@ -785,7 +846,7 @@ class SniperBot:
                 f"_Ajouté quand même (backtest {result['ratio']:.2f}) — avis IA non bloquant._"
             ) if self.trader.notifier else None
 
-        await self.trader.open_position(
+        await self._open_position_from_signal(
             current_token_mint, dev_address,
             reason=f"Nouveau dev validé (ratio backtest {result['ratio']:.2f})"
         )
