@@ -44,6 +44,7 @@ import rpc_client
 from execution_metrics import measure_async, measure_execution
 from helius_event_store import (
     CanonicalOrderRequiredError,
+    EventOutcomeUnknownError,
     EventQueueFullError,
     EventStoreError,
     EventRecord,
@@ -92,7 +93,8 @@ class CopyTradeListener:
     ):
         """
         data_store: instance de monitoring_list.DataStore
-        on_buy: async(wallet_address: str, token_mint: str, signature: str)
+        on_buy: async(wallet_address: str, token_mint: str, signature: str,
+            event_record: EventRecord)
         on_sell: async(wallet_address: str, token_mint: str, signature: str)
         on_large_sol_transfer: async(wallet_address: str, destination: str,
             amount_sol: float, pct_of_balance: float, signature: str) —
@@ -445,9 +447,17 @@ class CopyTradeListener:
                 return
 
             if action_info["action"] == "buy" and self.on_buy:
-                await self.on_buy(
-                    wallet_address, action_info["token_mint"], event.signature
+                callback_result = await self.on_buy(
+                    wallet_address,
+                    action_info["token_mint"],
+                    event.signature,
+                    event_record=event,
                 )
+                if getattr(callback_result, "status", None) == "unknown":
+                    reason = getattr(
+                        callback_result, "reason", "handler_outcome_unknown"
+                    )
+                    raise EventOutcomeUnknownError(reason)
             elif action_info["action"] == "sell" and self.on_sell:
                 await self.on_sell(
                     wallet_address, action_info["token_mint"], event.signature
@@ -583,7 +593,7 @@ class CopyTradeListener:
         tous les appels existants dans ce fichier."""
         return await rpc_client.fetch_parsed_transaction(signature)
 
-    def _classify_transaction(self, parsed: dict) -> dict:
+    def _classify_transaction(self, parsed: dict) -> dict | None:
         """
         Détermine si la transaction est un achat ou une vente pour l'un des
         wallets suivis, et quel token est concerné.

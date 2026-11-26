@@ -21,6 +21,8 @@ class SolUsdQuoteUnavailable(RuntimeError):
 class LatestPriceTransport(Protocol):
     """Read-only transport interface; tests provide an offline implementation."""
 
+    provider_source: str
+
     async def fetch_latest(self, feed_id: str) -> Mapping[str, object]:
         """Return one provider response for the requested fixed feed ID."""
 
@@ -30,6 +32,8 @@ class SolUsdQuoteObservation:
     """An immutable provider-reported observation with explicit trust limits."""
 
     provider_id: str
+    provider_source: str
+    provider_source_status: str
     pair: str
     feed_id: str
     price_usd: Decimal
@@ -43,6 +47,9 @@ class SolUsdQuoteObservation:
     trust_status: str
     signed_payload_present: bool
     signature_verified: bool
+    signature_status: str
+    independent_check_status: str
+    quote_status: str
 
     @property
     def accounting_eligible(self) -> bool:
@@ -85,19 +92,34 @@ class PythHermesQuoteAdapter:
 
     async def observe(self, transport: LatestPriceTransport) -> SolUsdQuoteObservation:
         """Fetch one observation through an injected transport, without trust promotion."""
+        provider_source = getattr(transport, "provider_source", None)
+        if not isinstance(provider_source, str) or not provider_source.strip():
+            raise SolUsdQuoteUnavailable("provider_source_missing")
+        if provider_source.strip().lower() != self.provider_id:
+            raise SolUsdQuoteUnavailable("provider_source_unrecognized")
         try:
             response = await transport.fetch_latest(self._expected_feed_id)
         except Exception:
             raise SolUsdQuoteUnavailable("provider_transport_unavailable") from None
-        return self.parse_response(response, received_at_utc=self._clock())
+        return self.parse_response(
+            response,
+            received_at_utc=self._clock(),
+            provider_source=provider_source,
+        )
 
     def parse_response(
         self,
         response: Mapping[str, object],
         *,
         received_at_utc: datetime,
+        provider_source: str | None = None,
     ) -> SolUsdQuoteObservation:
         """Parse one Hermes-shaped response and enforce feed, age, and numeric checks."""
+        if not isinstance(provider_source, str) or not provider_source.strip():
+            raise SolUsdQuoteUnavailable("provider_source_missing")
+        normalized_source = provider_source.strip().lower()
+        if normalized_source != self.provider_id:
+            raise SolUsdQuoteUnavailable("provider_source_unrecognized")
         if not isinstance(response, Mapping):
             raise SolUsdQuoteUnavailable("invalid_provider_response")
         parsed = response.get("parsed")
@@ -152,6 +174,11 @@ class PythHermesQuoteAdapter:
             raise SolUsdQuoteUnavailable("invalid_provider_numeric_fields") from None
         if not price.is_finite() or price <= 0 or not confidence.is_finite() or confidence < 0:
             raise SolUsdQuoteUnavailable("invalid_provider_numeric_fields")
+        # A confidence interval at least as wide as the quoted midpoint has no
+        # strictly positive lower bound, so it cannot represent a coherent
+        # positive SOL/USD observation for valuation.
+        if confidence >= price:
+            raise SolUsdQuoteUnavailable("incoherent_price_confidence")
         if not isinstance(received_at_utc, datetime) or received_at_utc.tzinfo is None:
             raise SolUsdQuoteUnavailable("invalid_local_receive_time")
         received_at_utc = received_at_utc.astimezone(timezone.utc)
@@ -163,6 +190,8 @@ class PythHermesQuoteAdapter:
 
         return SolUsdQuoteObservation(
             provider_id=self.provider_id,
+            provider_source=normalized_source,
+            provider_source_status="transport_asserted_unverified",
             pair=self.pair,
             feed_id=self._expected_feed_id,
             price_usd=price,
@@ -173,7 +202,10 @@ class PythHermesQuoteAdapter:
             age_seconds=age_seconds,
             integrity_status="structure_numeric_and_age_checks_passed",
             feed_mapping_status="caller_configured_unverified",
-            trust_status="provider_reported_unverified",
+            trust_status="unknown",
             signed_payload_present=True,
             signature_verified=False,
+            signature_status="payload_present_unverified",
+            independent_check_status="unavailable",
+            quote_status="unknown",
         )

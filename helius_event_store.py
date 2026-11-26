@@ -67,6 +67,17 @@ class RetryableEventError(RuntimeError):
         super().__init__(self.code)
 
 
+class EventOutcomeUnknownError(RuntimeError):
+    """Signal that a callback cannot safely resolve an event for acknowledgement."""
+
+    def __init__(self, code: str = "handler_outcome_unknown") -> None:
+        normalized = str(code or "handler_outcome_unknown")
+        if not normalized.replace("_", "").isalnum() or len(normalized) > 48:
+            normalized = "handler_outcome_unknown"
+        self.code = normalized
+        super().__init__(self.code)
+
+
 @dataclass(frozen=True)
 class EventRecord:
     """One claimed inbox event; its signature is stored locally, never in telemetry."""
@@ -1051,15 +1062,49 @@ class HeliusEventStore:
         return [str(row[0]) for row in rows]
 
     def ensure_stream(self, stream: str) -> None:
-        """Persist a stream baseline without claiming it needs recovery yet."""
+        """Create a stream behind a manual bootstrap gate until it has a checkpoint.
+
+        A newly subscribed stream has no durable history boundary. A local
+        sequence or the first WebSocket notification cannot establish that no
+        earlier provider events were missed, so the stream remains paused until
+        an operator-approved bootstrap mechanism can supply a canonical
+        checkpoint. Existing streams with a checkpoint keep their state; older
+        uncheckpointed streams are moved behind the same manual gate.
+        """
         stream = self._validate_stream(stream)
         try:
             with self._connect() as db:
                 db.execute(
-                    "INSERT OR IGNORE INTO event_streams(stream) VALUES(?)", (stream,)
+                    """
+                    INSERT OR IGNORE INTO event_streams(
+                        stream, recovery_required, intake_paused, blocked_reason,
+                        recovery_generation
+                    ) VALUES(?, 1, 1, 'fresh_stream_bootstrap_required', 1)
+                    """,
+                    (stream,),
+                )
+                db.execute(
+                    """
+                    UPDATE event_streams SET recovery_required=1, intake_paused=1,
+                        blocked_reason='fresh_stream_bootstrap_required',
+                        recovery_generation=recovery_generation+1,
+                        recovery_boundary_slot=NULL
+                    WHERE stream=? AND checkpoint_signature IS NULL
+                        AND recovery_required=0
+                    """,
+                    (stream,),
                 )
         except sqlite3.DatabaseError as exc:
             raise EventStoreError("Helius event stream baseline could not be saved") from exc
+
+    def blocked_reason(self, stream: str) -> str | None:
+        """Return the bounded operator gate code for a stream, when present."""
+        stream = self._validate_stream(stream)
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT blocked_reason FROM event_streams WHERE stream=?", (stream,)
+            ).fetchone()
+        return str(row[0]) if row and row[0] is not None else None
 
     def mark_recovery_required(self, stream: str, reason: str = "connection_gap") -> None:
         stream = self._validate_stream(stream)
@@ -1323,6 +1368,20 @@ async def process_next_event(
                 metric["outcome"] = "unknown"
                 record_execution_metric("event.unknown", 0, "unknown", "helius")
                 raise
+            except EventOutcomeUnknownError as exc:
+                try:
+                    store.mark_unknown(
+                        event.event_id,
+                        exc.code,
+                        claim_generation=event.claim_generation,
+                    )
+                except EventClaimLostError:
+                    metric["outcome"] = "skipped"
+                    return "unknown" if store.has_unknown(stream) else "lease_lost"
+                metric["outcome"] = "unknown"
+                record_execution_metric("event.unknown", 0, "unknown", "helius")
+                log.error("Helius callback outcome UNKNOWN; ordered stream is blocked")
+                return "unknown"
             except EventClaimLostError:
                 metric["outcome"] = "skipped"
                 return "unknown" if store.has_unknown(stream) else "lease_lost"
@@ -1394,8 +1453,10 @@ async def recover_required_streams(
 
         _, checkpoint_signature = store.checkpoint(stream)
         if checkpoint_signature is None:
-            store.mark_recovery_required(stream, "missing_checkpoint")
-            log.error("Helius event recovery blocked: durable checkpoint is missing")
+            store.mark_recovery_required(stream, "fresh_stream_bootstrap_required")
+            log.error(
+                "Helius event recovery blocked: fresh stream requires a canonical checkpoint"
+            )
             return False
         address = address_for_stream(stream)
         if not address:
@@ -1462,6 +1523,7 @@ async def recover_required_streams(
                     address,
                     fetch_signature_page,
                     recovery_generation=recovery_generation,
+                    should_stop=should_stop,
                 )
             except EventRecoveryError as exc:
                 log.error("Helius event recovery blocked: %s", str(exc))
@@ -1502,6 +1564,45 @@ async def recover_required_streams(
 
 
 FetchSignaturePage = Callable[[str, str | None, int], Awaitable[list[dict]]]
+
+
+async def _await_history_page_or_stop(
+    operation: Awaitable[list[dict]],
+    should_stop: Callable[[], bool] | None,
+) -> list[dict]:
+    """Cancel an in-flight read-only history page when operator stop is set."""
+    if should_stop is None:
+        return await operation
+    task: asyncio.Future[list[dict]] = asyncio.ensure_future(operation)
+    try:
+        while not task.done():
+            if should_stop():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    pass
+                raise EventRecoveryError("History replay stopped before completion")
+            await asyncio.wait({task}, timeout=0.05)
+        if should_stop():
+            try:
+                task.result()
+            except Exception:
+                pass
+            raise EventRecoveryError("History replay stopped before completion")
+        return task.result()
+    except asyncio.CancelledError:
+        if not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        raise
+
+
 async def replay_stream_history(
     store: HeliusEventStore,
     stream: str,
@@ -1509,6 +1610,7 @@ async def replay_stream_history(
     fetch_page: FetchSignaturePage,
     *,
     recovery_generation: int | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> int:
     """Replay an address-history gap only with a verifiable transaction order.
 
@@ -1543,8 +1645,14 @@ async def replay_stream_history(
     max_items = store.max_pending_events
     max_pages = (max_items // page_limit) + 2
     for _ in range(max_pages):
+        if should_stop is not None and should_stop():
+            raise EventRecoveryError("History replay stopped before completion")
         try:
-            page = await fetch_page(address, before, page_limit)
+            page = await _await_history_page_or_stop(
+                fetch_page(address, before, page_limit), should_stop
+            )
+        except EventRecoveryError:
+            raise
         except Exception:
             # Keep provider details, URLs, and exception text out of logs and
             # persisted event state. The stream remains paused and can retry
@@ -1552,11 +1660,15 @@ async def replay_stream_history(
             raise EventRecoveryError(
                 "History replay source is temporarily unavailable"
             ) from None
+        if should_stop is not None and should_stop():
+            raise EventRecoveryError("History replay stopped before completion")
         if not isinstance(page, list):
             raise EventRecoveryError("History replay returned an invalid page")
         if not page:
             break
         for item in page:
+            if should_stop is not None and should_stop():
+                raise EventRecoveryError("History replay stopped before completion")
             if not isinstance(item, dict):
                 raise EventRecoveryError("History replay contains an invalid entry")
             signature = item.get("signature")
@@ -1617,6 +1729,8 @@ async def replay_stream_history(
         "observed_at_utc": datetime.now(timezone.utc).isoformat(),
     }
     for item in reversed(newest_first):
+        if should_stop is not None and should_stop():
+            raise EventRecoveryError("History replay stopped before completion")
         result = store.enqueue(
             stream,
             item["signature"],

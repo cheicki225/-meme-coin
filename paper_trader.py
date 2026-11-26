@@ -26,6 +26,7 @@ import random
 import logging
 import asyncio
 import math
+import copy
 
 import config
 from execution_metrics import measure_async
@@ -299,6 +300,9 @@ class PaperTrader:
         for position in positions:
             if not isinstance(position, dict):
                 continue
+            if position.get("provenance_state") == "SIMULATED" and position.get("accounting_eligible") is False:
+                log.info("SIMULATED PAPER position remains unmonitored and outside validated PnL")
+                continue
             units = self._finite_number(position.get("units"))
             if (
                 units is None
@@ -523,7 +527,28 @@ class PaperTrader:
 
     @measure_async("strategy.open_position", "internal")
     async def open_position(self, token_mint: str, source_wallet: str, reason: str, creation_slot: int = None,
-                             source_entry_market_cap: float = None):
+                             source_entry_market_cap: float = None, *,
+                             mission18_admission_store=None, mission18_signal_id: str | None = None,
+                             provenance_state: str | None = None):
+        require_mission23 = getattr(self, "require_mission23_admission", False)
+        has_admission = mission18_admission_store is not None and bool(mission18_signal_id)
+        if require_mission23 and config.TRADING_MODE == "PAPER" and not has_admission:
+            log.warning("PAPER entry refused: durable Mission 23 admission is required")
+            return None
+        if (mission18_admission_store is None) != (mission18_signal_id is None):
+            log.error("PAPER entry refused: incomplete durable admission context")
+            return None
+        if mission18_admission_store is not None:
+            if (config.TRADING_MODE != "PAPER" or not isinstance(mission18_signal_id, str)
+                    or not mission18_signal_id.strip()):
+                log.error("Durable Mission 18 admission is PAPER-only")
+                return None
+            if getattr(self.data_store, "_sqlite_store", None) is None:
+                log.error("PAPER entry refused: SQLite bot state is required for atomic admission")
+                return None
+            if getattr(self.data_store, "_state_revision", None) is None:
+                log.error("PAPER entry refused: persisted bot-state revision is unavailable")
+                return None
         # CORRIGÉ suite à un vrai cas observé : SOL (et USDC par précaution)
         # ne sont jamais un "token" à copier — voir le fix correspondant dans
         # copytrade_listener._classify_transaction (cause racine, qui exclut
@@ -948,18 +973,41 @@ class PaperTrader:
             "profit_trail_floor": None,
         }
 
+        if mission18_signal_id is not None:
+            position["mission18_signal_id"] = mission18_signal_id
+            position["provenance_state"] = provenance_state or "UNKNOWN"
+            position["accounting_eligible"] = False
+
         state = self.data_store.state
-        mark_pnl_fee_history_incomplete_if_needed(state)
-        if state.get("pnl_fee_history_incomplete") is not True:
-            state["pnl_fee_accounting_version"] = FEE_ACCOUNTING_VERSION
-        state.setdefault("open_positions", []).append(position)
+        state_after = copy.deepcopy(state) if mission18_admission_store is not None else state
+        if mission18_admission_store is None:
+            mark_pnl_fee_history_incomplete_if_needed(state_after)
+            if state_after.get("pnl_fee_history_incomplete") is not True:
+                state_after["pnl_fee_accounting_version"] = FEE_ACCOUNTING_VERSION
+        state_after.setdefault("open_positions", []).append(position)
         if buy_signature:
-            self.data_store.resolve_pending_transaction(
-                buy_signature, {"position_opened": token_mint, "units": units, "cost_basis_usd": cost_basis_usd}
-            )
-        if settings.get("buy_only_once", True):
+            if mission18_admission_store is not None:
+                log.error("Durable PAPER admission does not support signed transactions")
+                return None
+            self.data_store.resolve_pending_transaction(buy_signature, {
+                "position_opened": token_mint, "units": units, "cost_basis_usd": cost_basis_usd
+            })
+        if settings.get("buy_only_once", True) and mission18_admission_store is None:
             self.data_store.mark_bought(source_wallet, token_mint)
-        self.data_store.save()
+        if mission18_admission_store is None:
+            self.data_store.save()
+        else:
+            try:
+                revision = mission18_admission_store.commit_position(
+                    mission18_signal_id,
+                    state_after,
+                    expected_revision=self.data_store._state_revision,
+                )
+            except Exception:
+                mission18_admission_store.mark_unknown(mission18_signal_id)
+                raise
+            self.data_store.state = state_after
+            self.data_store._state_revision = revision
         self._release_entry_risk(reservation_id)
 
         log.info(
@@ -983,7 +1031,7 @@ class PaperTrader:
             except Exception as e:
                 log.debug(f"Impossible de calculer la télémétrie de vitesse : {type(e).__name__}")
 
-        if self.notifier:
+        if self.notifier and provenance_state != "SIMULATED":
             sig_line = f"\nTx: `{buy_signature[:16]}...`" if buy_signature else ""
             keyboard = _build_position_keyboard(token_mint)
 
@@ -1032,7 +1080,8 @@ class PaperTrader:
                 f"{sig_line}{speed_line}\nRaison: {reason}",
                 reply_markup=keyboard,
             )
-        self._start_position_monitor(position)
+        if not (position.get("provenance_state") == "SIMULATED" and position.get("accounting_eligible") is False):
+            self._start_position_monitor(position)
         return position
 
     async def _get_transaction_slot(self, signature: str) -> int:
@@ -1290,6 +1339,11 @@ class PaperTrader:
     # ══════════════════════════════════════════════════════════
 
     async def _check_buy_the_dip(self, position: dict, price: float):
+        if config.TRADING_MODE == "PAPER" and getattr(self, "require_mission23_admission", False):
+            log.info(
+                "PAPER buy-the-dip is blocked until an atomic incremental Mission 23 reservation exists"
+            )
+            return
         if config.TRADING_MODE == "LIVE":
             log.error("LIVE buy-the-dip is disabled because no confirmed add-on swap is implemented.")
             return

@@ -1294,21 +1294,152 @@ def test_existing_stream_without_checkpoint_fails_closed(tmp_path):
     )
     assert store.intake_paused(stream)
     assert store.recovery_required_streams("new-token:") == [stream]
+    assert store.blocked_reason(stream) == "fresh_stream_bootstrap_required"
 
 
-def test_fresh_stream_baseline_is_not_mistaken_for_a_recovery_gap(tmp_path):
+def test_fresh_stream_requires_manual_bootstrap_before_live_intake(tmp_path):
     store = _store(tmp_path / "events.sqlite3")
-    store.ensure_stream("new-token:program")
+    stream = "new-token:program"
+    store.ensure_stream(stream)
+    assert store.intake_paused(stream)
+    assert store.blocked_reason(stream) == "fresh_stream_bootstrap_required"
+    with pytest.raises(EventIntakePausedError):
+        store.enqueue(stream, "first-live-signature", {})
 
     async def handler(_event):
-        raise AssertionError("fresh stream has no event to process")
+        raise AssertionError("fresh stream has no trusted checkpoint")
 
-    assert asyncio.run(
+    assert not asyncio.run(
         recover_required_streams(
             store, "new-token:", handler, lambda name: name.removeprefix("new-token:")
         )
     )
-    assert store.recovery_required_streams("new-token:") == []
+    assert store.recovery_required_streams("new-token:") == [stream]
+    assert store.blocked_reason(stream) == "fresh_stream_bootstrap_required"
+    assert store.metrics()["paused_intake_rejections"] == 1
+
+
+def test_ensure_stream_gates_legacy_uncheckpointed_stream(tmp_path):
+    store = _store(tmp_path / "events.sqlite3")
+    stream = "copytrade:legacy-wallet"
+    store.enqueue(stream, "legacy-pending-event", {})
+    assert not store.intake_paused(stream)
+
+    store.ensure_stream(stream)
+
+    assert store.intake_paused(stream)
+    assert store.recovery_required_streams("copytrade:") == [stream]
+    assert store.blocked_reason(stream) == "fresh_stream_bootstrap_required"
+
+
+def test_stop_during_history_pagination_avoids_extra_pages_and_effects(
+    tmp_path, monkeypatch
+):
+    store = _store(tmp_path / "events.sqlite3")
+    stream = "copytrade:wallet-a"
+    _enqueue_ordered(store, stream, "checkpoint", slot=10, index=0)
+    checkpoint = store.claim_next(stream)
+    assert checkpoint is not None
+    _mark_processed(store, checkpoint)
+    store.mark_recovery_required(stream, "connection_gap")
+
+    running = {"value": True}
+    page_calls = []
+    page = [
+        {"signature": f"page-{i}", "slot": 1000 - i, "transactionIndex": 0}
+        for i in range(1000)
+    ]
+
+    async def fetch_page(_address, _before, limit):
+        page_calls.append(limit)
+        running["value"] = False
+        return page
+
+    monkeypatch.setattr("helius_event_store.fetch_signature_page", fetch_page)
+    monkeypatch.setattr("helius_event_store.fetch_processed_slot", _slot_zero)
+    monkeypatch.setattr("helius_event_store.fetch_finalized_slot", _slot_zero)
+
+    async def handler(_event):
+        raise AssertionError("shutdown must not start an event effect")
+
+    assert not asyncio.run(
+        recover_required_streams(
+            store,
+            "copytrade:",
+            handler,
+            lambda _stream: "wallet-a",
+            should_stop=lambda: not running["value"],
+        )
+    )
+    assert page_calls == [1000]
+    assert store.intake_paused(stream)
+    assert store.recovery_required_streams("copytrade:") == [stream]
+    assert store.checkpoint(stream) == (1, "checkpoint")
+    assert store.pending_count(stream) == 0
+
+
+def test_stop_cancels_inflight_readonly_history_page(tmp_path):
+    store = _store(tmp_path / "events.sqlite3")
+    stream = "copytrade:wallet-a"
+    _enqueue_ordered(store, stream, "checkpoint", slot=10, index=0)
+    checkpoint = store.claim_next(stream)
+    assert checkpoint is not None
+    _mark_processed(store, checkpoint)
+    store.mark_recovery_required(stream, "connection_gap")
+
+    running = {"value": True}
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def slow_page(_address, _before, _limit):
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    async def scenario():
+        recovery = asyncio.create_task(
+            replay_stream_history(
+                store,
+                stream,
+                "wallet-a",
+                slow_page,
+                should_stop=lambda: not running["value"],
+            )
+        )
+        await started.wait()
+        running["value"] = False
+        with pytest.raises(EventRecoveryError, match="stopped before completion"):
+            await recovery
+
+    asyncio.run(scenario())
+    assert cancelled.is_set()
+    assert store.intake_paused(stream)
+    assert store.checkpoint(stream) == (1, "checkpoint")
+
+
+def test_mocked_429_during_history_replay_keeps_stream_paused(tmp_path):
+    store = _store(tmp_path / "events.sqlite3")
+    stream = "copytrade:wallet-a"
+    _enqueue_ordered(store, stream, "checkpoint", slot=10, index=0)
+    checkpoint = store.claim_next(stream)
+    assert checkpoint is not None
+    _mark_processed(store, checkpoint)
+    store.mark_recovery_required(stream, "connection_gap")
+    calls = []
+
+    async def throttled(_address, _before, _limit):
+        calls.append(True)
+        raise RuntimeError("HTTP 429 provider detail must not escape")
+
+    with pytest.raises(EventRecoveryError, match="temporarily unavailable") as exc_info:
+        asyncio.run(replay_stream_history(store, stream, "wallet-a", throttled))
+    assert "429" not in str(exc_info.value)
+    assert calls == [True]
+    assert store.intake_paused(stream)
+    assert store.checkpoint(stream) == (1, "checkpoint")
 
 
 def test_queue_saturation_fails_closed_when_gap_exceeds_inbox_bound(tmp_path, monkeypatch):
