@@ -720,6 +720,71 @@ def test_operator_stop_during_finality_wait_keeps_stream_paused(tmp_path, monkey
     assert store.intake_paused(stream)
 
 
+@pytest.mark.parametrize("blocked_call", ["processed", "finalized"])
+def test_operator_stop_cancels_inflight_slot_read(tmp_path, monkeypatch, blocked_call):
+    store = _store(tmp_path / f"events-{blocked_call}.sqlite3")
+    stream = "copytrade:wallet-a"
+    _enqueue_ordered(store, stream, "checkpoint", slot=10, index=0)
+    checkpoint = store.claim_next(stream)
+    assert checkpoint is not None
+    _mark_processed(store, checkpoint)
+    store.mark_recovery_required(stream, "connection_gap")
+
+    running = {"value": True}
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+    history_reads = []
+
+    async def processed_boundary():
+        if blocked_call == "processed":
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+        return 15
+
+    async def finalized_slot():
+        if blocked_call == "finalized":
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+        return 15
+
+    async def history_page(_address, _before, _limit):
+        history_reads.append(True)
+        return [{"signature": "checkpoint", "slot": 10, "transactionIndex": 0}]
+
+    monkeypatch.setattr("helius_event_store.fetch_processed_slot", processed_boundary)
+    monkeypatch.setattr("helius_event_store.fetch_finalized_slot", finalized_slot)
+    monkeypatch.setattr("helius_event_store.fetch_signature_page", history_page)
+
+    async def scenario():
+        recovery = asyncio.create_task(
+            recover_required_streams(
+                store,
+                "copytrade:",
+                lambda _event: asyncio.sleep(0),
+                lambda _stream: "wallet-a",
+                should_stop=lambda: not running["value"],
+            )
+        )
+        await started.wait()
+        running["value"] = False
+        assert await recovery is False
+
+    asyncio.run(scenario())
+    assert cancelled.is_set()
+    assert history_reads == []
+    assert store.recovery_state(stream) is not None
+    assert store.intake_paused(stream)
+    assert store.checkpoint(stream) == (1, "checkpoint")
+
+
 def test_drain_stops_before_claiming_another_event(tmp_path):
     store = _store(tmp_path / "events.sqlite3")
     stream = "copytrade:wallet-a"
