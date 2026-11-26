@@ -15,7 +15,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, TypeVar
 
 from execution_metrics import (
     correlate_event,
@@ -33,6 +33,7 @@ _SUBSCRIPTION_BUFFER_LIMIT = 1000
 _FINALITY_POLL_SECONDS = 1.0
 _FINALITY_RPC_FAILURE_LIMIT = 3
 _ACTIVE_STATES = ("pending", "retry", "processing", "unknown")
+_Awaited = TypeVar("_Awaited")
 
 
 class EventStoreError(RuntimeError):
@@ -1469,7 +1470,11 @@ async def recover_required_streams(
         recovery_generation, boundary_slot = recovery_state
         if boundary_slot is None:
             try:
-                boundary_slot = await fetch_processed_slot()
+                boundary_slot = await _await_or_stop(
+                    fetch_processed_slot(),
+                    should_stop,
+                    stopped_message="Recovery stopped before processed boundary completed",
+                )
             except Exception:
                 log.error("Helius event recovery blocked: processed reconnect boundary is unavailable")
                 return False
@@ -1489,8 +1494,14 @@ async def recover_required_streams(
             if current_recovery is None or current_recovery[0] != recovery_generation:
                 return False
             try:
-                finalized_slot = await fetch_finalized_slot()
+                finalized_slot = await _await_or_stop(
+                    fetch_finalized_slot(),
+                    should_stop,
+                    stopped_message="Recovery stopped before finalized slot completed",
+                )
             except EventRecoveryError:
+                if should_stop is not None and should_stop():
+                    return False
                 log.error("Helius event recovery blocked: finalized slot response is invalid")
                 return False
             except Exception:
@@ -1511,7 +1522,14 @@ async def recover_required_streams(
                     "the persisted reconnect boundary"
                 )
                 next_wait_log = time.monotonic() + 30.0
-            await asyncio.sleep(_FINALITY_POLL_SECONDS)
+            try:
+                await _await_or_stop(
+                    asyncio.sleep(_FINALITY_POLL_SECONDS),
+                    should_stop,
+                    stopped_message="Recovery stopped while waiting for finality",
+                )
+            except EventRecoveryError:
+                return False
 
         for _attempt in range(3):
             if should_stop is not None and should_stop():
@@ -1566,14 +1584,16 @@ async def recover_required_streams(
 FetchSignaturePage = Callable[[str, str | None, int], Awaitable[list[dict]]]
 
 
-async def _await_history_page_or_stop(
-    operation: Awaitable[list[dict]],
+async def _await_or_stop(
+    operation: Awaitable[_Awaited],
     should_stop: Callable[[], bool] | None,
-) -> list[dict]:
-    """Cancel an in-flight read-only history page when operator stop is set."""
+    *,
+    stopped_message: str,
+) -> _Awaited:
+    """Cancel a read-only recovery operation promptly when operator stop is set."""
     if should_stop is None:
         return await operation
-    task: asyncio.Future[list[dict]] = asyncio.ensure_future(operation)
+    task: asyncio.Future[_Awaited] = asyncio.ensure_future(operation)
     try:
         while not task.done():
             if should_stop():
@@ -1584,23 +1604,38 @@ async def _await_history_page_or_stop(
                     pass
                 except Exception:
                     pass
-                raise EventRecoveryError("History replay stopped before completion")
+                raise EventRecoveryError(stopped_message)
             await asyncio.wait({task}, timeout=0.05)
         if should_stop():
             try:
                 task.result()
-            except Exception:
-                pass
-            raise EventRecoveryError("History replay stopped before completion")
-        return task.result()
-    except asyncio.CancelledError:
-        if not task.done():
-            task.cancel()
-            try:
-                await task
             except asyncio.CancelledError:
                 pass
+            except Exception:
+                pass
+            raise EventRecoveryError(stopped_message)
+        return task.result()
+    except asyncio.CancelledError:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            pass
         raise
+
+
+async def _await_history_page_or_stop(
+    operation: Awaitable[list[dict]],
+    should_stop: Callable[[], bool] | None,
+) -> list[dict]:
+    """Cancel an in-flight read-only history page when operator stop is set."""
+    return await _await_or_stop(
+        operation,
+        should_stop,
+        stopped_message="History replay stopped before completion",
+    )
 
 
 async def replay_stream_history(

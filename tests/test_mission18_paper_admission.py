@@ -130,6 +130,36 @@ def _reserve_then_exit(path):
     os._exit(0 if result == (True, None) else 1)
 
 
+def _commit_then_exit(path):
+    store = SQLitePaperAdmissionStore(path)
+    before = store.snapshot()
+    if store.reserve_entry(
+        "commit-crash-signal",
+        "commit-crash-group",
+        10.0,
+        max_exposure_usd=100.0,
+        max_open_positions=2,
+        max_session_loss_usd=50.0,
+    ) != (True, None):
+        os._exit(1)
+    store.commit_position(
+        "commit-crash-signal",
+        {
+            **before.state,
+            "open_positions": [{
+                "mission18_signal_id": "commit-crash-signal",
+                "token_mint": "synthetic-mint",
+                "cost_basis_usd": 9.0,
+                "units": 1.0,
+            }],
+        },
+        expected_revision=before.revision,
+    )
+    # Simulate process loss after SQLite reported the atomic commit but before
+    # any in-memory acknowledgement could run.
+    os._exit(0)
+
+
 def _reserve_exposure_in_process(path, barrier, result_queue, signal_id):
     store = SQLitePaperAdmissionStore(path)
     barrier.wait(timeout=20)
@@ -340,6 +370,77 @@ def test_position_and_reservation_commit_in_one_state_revision(tmp_path):
     assert persisted["open_positions"] == after["open_positions"]
     assert store.counts() == {"pending": 0, "unknown": 0, "committed": 1, "released": 0}
     assert store.snapshot().reserved_positions == 0
+
+
+def test_committed_position_survives_process_exit_and_replay_is_deduplicated(tmp_path):
+    path = tmp_path / "state.sqlite3"
+    _initialize_state(path)
+    worker = multiprocessing.get_context("spawn").Process(
+        target=_commit_then_exit,
+        args=(path,),
+    )
+    worker.start()
+    worker.join(timeout=30)
+    assert worker.exitcode == 0
+
+    restarted = SQLitePaperAdmissionStore(path)
+    snapshot = restarted.snapshot()
+    assert restarted.counts() == {
+        "pending": 0, "unknown": 0, "committed": 1, "released": 0,
+    }
+    assert len(snapshot.state["open_positions"]) == 1
+    assert snapshot.state["open_positions"][0]["mission18_signal_id"] == "commit-crash-signal"
+    assert restarted.reserve_entry(
+        "commit-crash-signal",
+        "commit-crash-group",
+        10.0,
+        max_exposure_usd=100.0,
+        max_open_positions=2,
+        max_session_loss_usd=50.0,
+    ) == (False, "duplicate_signal")
+    assert len(restarted.snapshot().state["open_positions"]) == 1
+
+
+def test_sqlite_failure_during_atomic_position_commit_keeps_old_state_and_pending_reservation(
+    tmp_path,
+):
+    path = tmp_path / "state.sqlite3"
+    _initialize_state(path)
+    store = SQLitePaperAdmissionStore(path)
+    before = store.snapshot()
+    assert store.reserve_entry(
+        "rollback-signal",
+        "rollback-group",
+        10.0,
+        max_exposure_usd=100.0,
+        max_open_positions=2,
+        max_session_loss_usd=50.0,
+    ) == (True, None)
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "CREATE TRIGGER reject_revision_update BEFORE UPDATE ON bot_state_revision "
+            "BEGIN SELECT RAISE(ABORT, 'simulated_commit_failure'); END"
+        )
+
+    after = {
+        **before.state,
+        "open_positions": [{
+            "mission18_signal_id": "rollback-signal",
+            "token_mint": "synthetic-mint",
+            "cost_basis_usd": 9.0,
+            "units": 1.0,
+        }],
+    }
+    with pytest.raises(PaperAdmissionStoreError, match="position_commit_failed"):
+        store.commit_position("rollback-signal", after, expected_revision=before.revision)
+
+    restarted = SQLitePaperAdmissionStore(path)
+    snapshot = restarted.snapshot()
+    assert snapshot.state["open_positions"] == []
+    assert snapshot.revision == before.revision
+    assert restarted.counts() == {
+        "pending": 1, "unknown": 0, "committed": 0, "released": 0,
+    }
 
 
 def test_state_revision_conflict_keeps_reservation_pending(tmp_path):
