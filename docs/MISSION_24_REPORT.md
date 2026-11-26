@@ -99,7 +99,9 @@ Python 3.11.9. La suite locale a utilisé `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` pou
 - `python -m compileall -q .` : réussi.
 - `mypy --follow-imports=silent helius_event_store.py mission18_paper_admission.py mission23_paper_runtime.py sol_usd_provenance.py` : `Success: no issues found in 4 source files`.
 - `git diff --check` et `git diff --cached --check` : réussis avant commit sur le diff complet, rapport inclus.
-- `ruff`, `pip-audit`, `gitleaks` et `coverage` : non installés localement. Ils doivent être vérifiés via GitHub Actions sur le SHA final de cette branche; le CI de #35 ou celui des PR sources ne suffit pas.
+- GitHub Actions CI run [#45790688225](https://github.com/cheicki225/-meme-coin/actions/runs/45790688225), run #286 : succès, associé à la tête PR `dad93a0a11820c004ce1ce553fd9e457bba36475` et à la base #35 `75537f966a068e1379fb4a33d4be9481971cbd00`. Comme il s’agit d’un événement `pull_request`, le runner a checkouté le commit de fusion temporaire GitHub `d27f3918e28d1ab654c620378e689ea8c261a831`, qui combine cette tête et cette base; il ne s’agissait pas d’un checkout direct du head seul.
+- Ce run CI a compilé les sources, confirmé le défaut PAPER, exécuté **933 tests en 35.56s**, et publié une couverture branch-aware totale de **48.99%** (artefact `mission-coverage-45790688225`). Le contrôle Ruff configuré (`E9,F63,F7,F82`) a réussi, `pip-audit -r requirements-ci.txt` n’a trouvé aucune vulnérabilité connue, et Gitleaks n’a détecté aucun secret (artefact SARIF `gitleaks-results.sarif`). La CI ne lance pas mypy; le mypy ciblé ci-dessus est local.
+- Ruff, pip-audit, Gitleaks et coverage ne sont pas installés dans l’environnement local. Leur preuve est le run GitHub Actions précité, pas une exécution locale. Les changements de rapport après le run déclencheront une nouvelle vérification PR.
 - Revue indépendante en lecture seule : aucun finding P0/P1/P2 sur le diff examiné. Elle ne couvre pas l’authenticité d’un provider, le déploiement cible, une opération réelle ou le soak.
 
 La recherche Pyth n’a contacté aucun endpoint Hermes/RPC. Aucun wallet, clé privée, secret, signature, ordre, transaction, endpoint d’exécution, dépense ou base opérationnelle n’a été utilisé. Aucun soak de 24 h, restauration en environnement cible ou audit DEX/CPI indépendant n’est revendiqué.
@@ -114,7 +116,7 @@ La recherche Pyth n’a contacté aucun endpoint Hermes/RPC. Aucun wallet, clé 
 | P1 | **Partiel / manuel** — reprise inter-bases | Les réservations ambiguës restent protégées; un opérateur doit rapprocher inbox Helius et bot-state avant toute résolution. |
 | P1 | **Non effectué** — exploitation | Pas de soak PAPER de 24 h, restauration cible neuve ni audit indépendant DEX/CPI. |
 | P2 | **Non mesuré** — service et environnement | Quotas/fraîcheur RPC cible, disponibilité Hermes, santé provider persistée, latence réelle et comportement réseau cible restent inconnus. |
-| P2 | **Partiel** — outillage local | Ruff, pip-audit, Gitleaks et couverture locale absents; le run CI exact-head doit couvrir ces contrôles. |
+| P2 | **Partiel** — couverture et typage | Couverture globale CI à 48.99%, sans seuil de mission configuré; mypy limité à quatre modules localement et absent de la CI. |
 
 ## Étapes prioritaires suivantes
 
